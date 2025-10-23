@@ -126,6 +126,65 @@ Effettua il logout dell'utente.
 
 ---
 
+### GET /auth/google/url
+Ottiene l'URL di autorizzazione Google OAuth.
+
+**Response (200):**
+```json
+{
+  "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?client_id=...&redirect_uri=...&scope=openid%20email%20profile&response_type=code&access_type=offline&prompt=consent"
+}
+```
+
+---
+
+### POST /auth/google/callback
+Gestisce il callback di Google OAuth.
+
+**Request:**
+```json
+{
+  "code": "4/0AX4XfWh...",
+  "redirect_uri": "http://localhost:3000/auth/google/callback"
+}
+```
+
+**Response (200):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer"
+}
+```
+
+**Errori:**
+- `401`: Autenticazione Google fallita
+
+---
+
+### POST /auth/google/login
+Login con Google OAuth (alias per callback).
+
+**Request:**
+```json
+{
+  "code": "4/0AX4XfWh...",
+  "redirect_uri": "http://localhost:3000/auth/google/callback"
+}
+```
+
+**Response (200):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer"
+}
+```
+
+---
+
 ## Profilo Utente
 
 ### GET /profile
@@ -1508,13 +1567,46 @@ Authorization: Bearer <access_token>
 
 ## Autenticazione
 
-Tutti gli endpoint (eccetto `/auth/register` e `/auth/login`) richiedono un token di accesso JWT nell'header:
+### Metodi di Autenticazione Supportati
+
+1. **Email/Password**: Registrazione e login tradizionale
+2. **Google OAuth**: Autenticazione tramite Google
+
+### Endpoint Pubblici (Non Richiedono Autenticazione)
+
+- `/` - Root endpoint
+- `/health` - Health check
+- `/docs` - Documentazione Swagger
+- `/redoc` - Documentazione ReDoc
+- `/openapi.json` - Schema OpenAPI
+- `/auth/register` - Registrazione utente
+- `/auth/login` - Login email/password
+- `/auth/google/url` - URL autorizzazione Google
+- `/auth/google/callback` - Callback Google OAuth
+- `/auth/google/login` - Login Google OAuth
+- `/profile/calculate-zones` - Calcolo zone (pubblico)
+
+### Endpoint Protetti
+
+Tutti gli altri endpoint richiedono un token di accesso JWT nell'header:
 
 ```
 Authorization: Bearer <access_token>
 ```
 
-Il token ha una durata di 30 minuti. Per rinnovarlo, usa l'endpoint `/auth/refresh` con il refresh token.
+### Gestione Token
+
+- **Access Token**: Durata 30 minuti
+- **Refresh Token**: Durata 7 giorni
+- **Rinnovo**: Usa `/auth/refresh` con il refresh token
+
+### Flusso Google OAuth
+
+1. **Frontend**: Chiama `GET /auth/google/url` per ottenere l'URL di autorizzazione
+2. **Utente**: Viene reindirizzato a Google per l'autorizzazione
+3. **Google**: Reindirizza a `redirect_uri` con il codice di autorizzazione
+4. **Frontend**: Invia il codice a `POST /auth/google/callback` o `POST /auth/google/login`
+5. **Backend**: Restituisce i token JWT per l'autenticazione
 
 ---
 

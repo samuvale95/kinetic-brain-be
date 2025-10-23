@@ -9,13 +9,15 @@ class User(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
-    password_hash = Column(String, nullable=False)
+    password_hash = Column(String, nullable=True)  # Nullable for OAuth users
     name = Column(String, nullable=False)
+    avatar_url = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
     last_login = Column(DateTime(timezone=True))
+    auth_provider = Column(String, default="email")  # email, google, etc.
     
     # Relationships
     profile = relationship("UserProfile", back_populates="user", uselist=False)
@@ -62,3 +64,25 @@ class PerformanceMetrics(Base):
     
     # Relationships
     user = relationship("User", back_populates="performance_metrics")
+
+
+class OAuthAccount(Base):
+    __tablename__ = "oauth_accounts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    provider = Column(String, nullable=False)  # google, facebook, etc.
+    provider_account_id = Column(String, nullable=False)
+    access_token = Column(Text, nullable=True)
+    refresh_token = Column(Text, nullable=True)
+    token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    user = relationship("User")
+    
+    # Unique constraint on provider + provider_account_id
+    __table_args__ = (
+        {"extend_existing": True}
+    )

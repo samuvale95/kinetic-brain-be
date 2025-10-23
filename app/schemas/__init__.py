@@ -1,4 +1,4 @@
-from .user import UserCreate, UserLogin, UserResponse, UserProfileCreate, UserProfileUpdate, PerformanceMetricsCreate, PerformanceMetricsResponse
+from .user import UserCreate, UserLogin, UserResponse, UserProfileCreate, UserProfileUpdate, PerformanceMetricsCreate, PerformanceMetricsResponse, GoogleAuthRequest, GoogleUserInfo, OAuthAccountResponse
 from .workout import WorkoutPlanCreate, WorkoutPlanUpdate, WorkoutPlanResponse, WorkoutCreate, WorkoutUpdate, WorkoutResponse, WorkoutSessionCreate, WorkoutSessionResponse
 from .calendar import CalendarEventCreate, CalendarEventUpdate, CalendarEventResponse
 from .auth import Token, TokenData

@@ -3,8 +3,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.schemas.auth import Token
-from app.schemas.user import UserCreate, UserLogin, UserResponse
+from app.schemas.user import UserCreate, UserLogin, UserResponse, GoogleAuthRequest
 from app.services.auth_service import AuthService
+from app.services.google_auth_service import GoogleAuthService
 from app.utils.security import verify_token
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -129,3 +130,49 @@ async def get_current_user_info(current_user: dict = Depends(get_current_user),
 async def logout():
     """Logout user (client should discard tokens)"""
     return {"message": "Successfully logged out"}
+
+
+@router.get("/google/url")
+async def get_google_auth_url():
+    """Get Google OAuth authorization URL"""
+    google_service = GoogleAuthService(next(get_db()))
+    auth_url = google_service.get_google_auth_url()
+    return {"auth_url": auth_url}
+
+
+@router.post("/google/callback", response_model=Token)
+async def google_auth_callback(request: GoogleAuthRequest, db: Session = Depends(get_db)):
+    """Handle Google OAuth callback"""
+    google_service = GoogleAuthService(db)
+    
+    result = await google_service.authenticate_google_user(
+        code=request.code,
+        redirect_uri=request.redirect_uri
+    )
+    
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google authentication failed"
+        )
+    
+    return result["tokens"]
+
+
+@router.post("/google/login", response_model=Token)
+async def google_login(request: GoogleAuthRequest, db: Session = Depends(get_db)):
+    """Login with Google OAuth (same as callback but with different endpoint name)"""
+    google_service = GoogleAuthService(db)
+    
+    result = await google_service.authenticate_google_user(
+        code=request.code,
+        redirect_uri=request.redirect_uri
+    )
+    
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google authentication failed"
+        )
+    
+    return result["tokens"]

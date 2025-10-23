@@ -18,8 +18,10 @@ class UserResponse(BaseModel):
     id: int
     email: str
     name: str
+    avatar_url: Optional[str] = None
     is_active: bool
     is_verified: bool
+    auth_provider: str
     created_at: datetime
     last_login: Optional[datetime] = None
     
@@ -103,3 +105,28 @@ class ZoneCalculationRequest(BaseModel):
 class ZoneCalculationResponse(BaseModel):
     zones: Dict[str, Dict[str, float]]
     calculated_at: datetime
+
+
+# Google OAuth Schemas
+class GoogleAuthRequest(BaseModel):
+    code: str = Field(..., description="Authorization code from Google")
+    redirect_uri: Optional[str] = None
+
+
+class GoogleUserInfo(BaseModel):
+    id: str
+    email: str
+    name: str
+    picture: Optional[str] = None
+    verified_email: bool = True
+
+
+class OAuthAccountResponse(BaseModel):
+    id: int
+    user_id: int
+    provider: str
+    provider_account_id: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True

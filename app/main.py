@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
@@ -9,6 +9,7 @@ import sys
 from app.config import settings
 from app.database import engine, Base
 from app.api import auth, profile, workouts, calendar, ai, dashboard
+from app.middleware.auth_middleware import AuthMiddleware
 
 
 @asynccontextmanager
@@ -51,6 +52,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add authentication middleware
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    return await AuthMiddleware.authenticate_request(request, call_next)
 
 
 # Global exception handler

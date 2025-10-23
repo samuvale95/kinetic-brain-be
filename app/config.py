@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4"
     openai_max_tokens: int = 2000
     
+    # Google OAuth
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = "http://localhost:3000/auth/google/callback"
+    
     # CORS
     cors_origins: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
     
