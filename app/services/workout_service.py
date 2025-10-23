@@ -1,0 +1,215 @@
+from sqlalchemy.orm import Session
+from sqlalchemy import select, and_, or_
+from typing import List, Optional, Dict, Any
+from datetime import date, datetime
+from app.models.workout import WorkoutPlan, Workout, WorkoutSession
+from app.models.calendar import CalendarEvent
+from app.schemas.workout import (
+    WorkoutPlanCreate, WorkoutPlanUpdate, 
+    WorkoutCreate, WorkoutUpdate,
+    WorkoutSessionCreate
+)
+
+
+class WorkoutService:
+    def __init__(self, db: Session):
+        self.db = db
+    
+    # Workout Plans
+    def create_workout_plan(self, user_id: int, plan_data: WorkoutPlanCreate) -> WorkoutPlan:
+        """Create a new workout plan"""
+        db_plan = WorkoutPlan(
+            user_id=user_id,
+            **plan_data.dict()
+        )
+        
+        # Calculate total weeks
+        delta = plan_data.end_date - plan_data.start_date
+        db_plan.total_weeks = delta.days // 7
+        
+        self.db.add(db_plan)
+        self.db.commit()
+        self.db.refresh(db_plan)
+        
+        return db_plan
+    
+    def get_workout_plans(self, user_id: int, skip: int = 0, limit: int = 100) -> List[WorkoutPlan]:
+        """Get user's workout plans"""
+        return self.db.execute(
+            select(WorkoutPlan)
+            .where(WorkoutPlan.user_id == user_id)
+            .offset(skip)
+            .limit(limit)
+        ).scalars().all()
+    
+    def get_workout_plan(self, plan_id: int, user_id: int) -> Optional[WorkoutPlan]:
+        """Get specific workout plan"""
+        return self.db.execute(
+            select(WorkoutPlan)
+            .where(and_(WorkoutPlan.id == plan_id, WorkoutPlan.user_id == user_id))
+        ).scalar_one_or_none()
+    
+    def update_workout_plan(self, plan_id: int, user_id: int, plan_data: WorkoutPlanUpdate) -> Optional[WorkoutPlan]:
+        """Update workout plan"""
+        plan = self.get_workout_plan(plan_id, user_id)
+        if not plan:
+            return None
+        
+        update_data = plan_data.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(plan, field, value)
+        
+        self.db.commit()
+        self.db.refresh(plan)
+        return plan
+    
+    def delete_workout_plan(self, plan_id: int, user_id: int) -> bool:
+        """Delete workout plan"""
+        plan = self.get_workout_plan(plan_id, user_id)
+        if not plan:
+            return False
+        
+        self.db.delete(plan)
+        self.db.commit()
+        return True
+    
+    # Workouts
+    def create_workout(self, user_id: int, workout_data: WorkoutCreate) -> Workout:
+        """Create a new workout"""
+        db_workout = Workout(
+            user_id=user_id,
+            **workout_data.dict()
+        )
+        
+        self.db.add(db_workout)
+        self.db.commit()
+        self.db.refresh(db_workout)
+        
+        return db_workout
+    
+    def get_workouts(self, user_id: int, skip: int = 0, limit: int = 100, 
+                    plan_id: Optional[int] = None) -> List[Workout]:
+        """Get user's workouts"""
+        query = select(Workout).where(Workout.user_id == user_id)
+        
+        if plan_id:
+            query = query.where(Workout.plan_id == plan_id)
+        
+        return self.db.execute(
+            query.offset(skip).limit(limit)
+        ).scalars().all()
+    
+    def get_workout(self, workout_id: int, user_id: int) -> Optional[Workout]:
+        """Get specific workout"""
+        return self.db.execute(
+            select(Workout)
+            .where(and_(Workout.id == workout_id, Workout.user_id == user_id))
+        ).scalar_one_or_none()
+    
+    def update_workout(self, workout_id: int, user_id: int, workout_data: WorkoutUpdate) -> Optional[Workout]:
+        """Update workout"""
+        workout = self.get_workout(workout_id, user_id)
+        if not workout:
+            return None
+        
+        update_data = workout_data.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(workout, field, value)
+        
+        self.db.commit()
+        self.db.refresh(workout)
+        return workout
+    
+    def delete_workout(self, workout_id: int, user_id: int) -> bool:
+        """Delete workout"""
+        workout = self.get_workout(workout_id, user_id)
+        if not workout:
+            return False
+        
+        self.db.delete(workout)
+        self.db.commit()
+        return True
+    
+    # Workout Sessions
+    def create_workout_session(self, user_id: int, session_data: WorkoutSessionCreate) -> WorkoutSession:
+        """Create a new workout session"""
+        db_session = WorkoutSession(
+            user_id=user_id,
+            **session_data.dict()
+        )
+        
+        self.db.add(db_session)
+        self.db.commit()
+        self.db.refresh(db_session)
+        
+        return db_session
+    
+    def get_workout_sessions(self, user_id: int, workout_id: Optional[int] = None,
+                           skip: int = 0, limit: int = 100) -> List[WorkoutSession]:
+        """Get workout sessions"""
+        query = select(WorkoutSession).where(WorkoutSession.user_id == user_id)
+        
+        if workout_id:
+            query = query.where(WorkoutSession.workout_id == workout_id)
+        
+        return self.db.execute(
+            query.offset(skip).limit(limit)
+        ).scalars().all()
+    
+    def get_workout_session(self, session_id: int, user_id: int) -> Optional[WorkoutSession]:
+        """Get specific workout session"""
+        return self.db.execute(
+            select(WorkoutSession)
+            .where(and_(WorkoutSession.id == session_id, WorkoutSession.user_id == user_id))
+        ).scalar_one_or_none()
+    
+    # Calendar Integration
+    def create_calendar_event(self, user_id: int, workout_id: Optional[int], 
+                            title: str, event_type: str, scheduled_date: date,
+                            duration_minutes: int, is_recurring: bool = False) -> CalendarEvent:
+        """Create calendar event for workout"""
+        db_event = CalendarEvent(
+            user_id=user_id,
+            workout_id=workout_id,
+            title=title,
+            event_type=event_type,
+            scheduled_date=scheduled_date,
+            duration_minutes=duration_minutes,
+            is_recurring=is_recurring
+        )
+        
+        self.db.add(db_event)
+        self.db.commit()
+        self.db.refresh(db_event)
+        
+        return db_event
+    
+    def get_calendar_events(self, user_id: int, start_date: date, end_date: date) -> List[CalendarEvent]:
+        """Get calendar events for date range"""
+        return self.db.execute(
+            select(CalendarEvent)
+            .where(
+                and_(
+                    CalendarEvent.user_id == user_id,
+                    CalendarEvent.scheduled_date >= start_date,
+                    CalendarEvent.scheduled_date <= end_date
+                )
+            )
+        ).scalars().all()
+    
+    def get_upcoming_workouts(self, user_id: int, days: int = 7) -> List[Workout]:
+        """Get upcoming workouts for the next N days"""
+        from datetime import timedelta
+        end_date = date.today() + timedelta(days=days)
+        
+        return self.db.execute(
+            select(Workout)
+            .where(
+                and_(
+                    Workout.user_id == user_id,
+                    Workout.scheduled_date >= date.today(),
+                    Workout.scheduled_date <= end_date,
+                    Workout.status == "scheduled"
+                )
+            )
+        ).scalars().all()

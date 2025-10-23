@@ -1,0 +1,42 @@
+from pydantic_settings import BaseSettings
+from typing import List, Optional
+import os
+
+
+class Settings(BaseSettings):
+    # Database
+    database_url: str = "postgresql://user:password@localhost/kinetic_brain"
+    database_url_async: str = "postgresql+asyncpg://user:password@localhost/kinetic_brain"
+    
+    # Security
+    secret_key: str = "your-secret-key-change-in-production"
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 7
+    
+    # OpenAI
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4"
+    openai_max_tokens: int = 2000
+    
+    # CORS
+    cors_origins: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    
+    # Redis (optional)
+    redis_url: str = "redis://localhost:6379"
+    
+    # App
+    app_name: str = "Kinetic Brain API"
+    app_version: str = "1.0.0"
+    debug: bool = False
+    
+    # File uploads
+    max_file_size: int = 5 * 1024 * 1024  # 5MB
+    upload_folder: str = "uploads"
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+
+
+settings = Settings()
