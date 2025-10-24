@@ -5,7 +5,14 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from app.config import settings
 
 # Synchronous database
-engine = create_engine(settings.database_url)
+engine = create_engine(
+    settings.database_url,
+    pool_size=20,          # Aumenta il pool size
+    max_overflow=30,       # Aumenta l'overflow
+    pool_timeout=60,       # Aumenta il timeout
+    pool_recycle=3600,     # Ricicla le connessioni ogni ora
+    pool_pre_ping=True     # Verifica le connessioni prima dell'uso
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Asynchronous database - initialize only when needed

@@ -74,18 +74,22 @@ class AuthMiddleware:
         
         # Get user from database
         db = next(get_db())
-        auth_service = AuthService(db)
-        user = auth_service.get_user_by_id(int(payload["sub"]))
-        
-        if not user or not user.is_active:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "User not found or inactive"}
-            )
-        
-        # Add user info to request state
-        request.state.user_id = user.id
-        request.state.user_email = user.email
-        request.state.user = user
-        
-        return await call_next(request)
+        try:
+            auth_service = AuthService(db)
+            user = auth_service.get_user_by_id(int(payload["sub"]))
+            
+            if not user or not user.is_active:
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "User not found or inactive"}
+                )
+            
+            # Add user info to request state
+            request.state.user_id = user.id
+            request.state.user_email = user.email
+            request.state.user = user
+            
+            return await call_next(request)
+        finally:
+            # Ensure database session is closed
+            db.close()
