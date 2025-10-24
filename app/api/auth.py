@@ -140,9 +140,51 @@ async def get_google_auth_url():
     return {"auth_url": auth_url}
 
 
+@router.get("/google/callback")
+async def google_auth_callback_get(code: str, db: Session = Depends(get_db)):
+    """Handle Google OAuth callback from browser redirect (GET)"""
+    google_service = GoogleAuthService(db)
+    
+    result = await google_service.authenticate_google_user(
+        code=code,
+        redirect_uri="http://localhost:8000/auth/google/callback"
+    )
+    
+    if not result:
+        # Redirect to frontend with error
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(
+            url="http://localhost:3000/auth/callback?error=authentication_failed",
+            status_code=302
+        )
+    
+    # Get tokens and user info
+    tokens = result["tokens"]
+    user = result["user"]
+    
+    # Redirect to frontend with tokens as URL parameters
+    from fastapi.responses import RedirectResponse
+    from urllib.parse import urlencode
+    from app.config import settings
+    
+    # Encode tokens for URL
+    params = {
+        "access_token": tokens["access_token"],
+        "refresh_token": tokens["refresh_token"],
+        "token_type": tokens["token_type"],
+        "user_id": str(user.id),
+        "user_email": user.email,
+        "user_name": user.name
+    }
+    
+    # Redirect to frontend callback page using config
+    frontend_callback_url = f"http://localhost:8080/auth/callback?{urlencode(params)}"
+    return RedirectResponse(url=frontend_callback_url, status_code=302)
+
+
 @router.post("/google/callback", response_model=Token)
-async def google_auth_callback(request: GoogleAuthRequest, db: Session = Depends(get_db)):
-    """Handle Google OAuth callback"""
+async def google_auth_callback_post(request: GoogleAuthRequest, db: Session = Depends(get_db)):
+    """Handle Google OAuth callback from API calls (POST)"""
     google_service = GoogleAuthService(db)
     
     result = await google_service.authenticate_google_user(

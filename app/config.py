@@ -22,10 +22,11 @@ class Settings(BaseSettings):
     # Google OAuth
     google_client_id: str = ""
     google_client_secret: str = ""
-    google_redirect_uri: str = "http://localhost:3000/auth/google/callback"
+    google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
+    frontend_callback_uri: str = "http://localhost:8080/auth/callback"
     
     # CORS
-    cors_origins: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    cors_origins: List[str] = ["http://localhost:8080", "http://127.0.0.1:8080"]
     
     # Redis (optional)
     redis_url: str = "redis://localhost:6379"
