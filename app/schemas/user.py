@@ -4,13 +4,13 @@ from datetime import datetime, date
 
 
 class UserCreate(BaseModel):
-    email: str = Field(..., regex=r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+    email: str = Field(..., pattern=r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
     password: str = Field(..., min_length=8)
     name: str = Field(..., min_length=2, max_length=100)
 
 
 class UserLogin(BaseModel):
-    email: str = Field(..., regex=r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+    email: str = Field(..., pattern=r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
     password: str
 
 
@@ -31,7 +31,7 @@ class UserResponse(BaseModel):
 
 class UserProfileCreate(BaseModel):
     age: Optional[int] = Field(None, ge=13, le=100)
-    gender: Optional[str] = Field(None, regex="^(male|female|other)$")
+    gender: Optional[str] = Field(None, pattern="^(male|female|other)$")
     weight: Optional[float] = Field(None, gt=0, le=300)  # kg
     height: Optional[float] = Field(None, gt=0, le=250)  # cm
     sports: Optional[List[str]] = None
@@ -43,7 +43,7 @@ class UserProfileCreate(BaseModel):
 
 class UserProfileUpdate(BaseModel):
     age: Optional[int] = Field(None, ge=13, le=100)
-    gender: Optional[str] = Field(None, regex="^(male|female|other)$")
+    gender: Optional[str] = Field(None, pattern="^(male|female|other)$")
     weight: Optional[float] = Field(None, gt=0, le=300)
     height: Optional[float] = Field(None, gt=0, le=250)
     sports: Optional[List[str]] = None
@@ -73,7 +73,7 @@ class UserProfileResponse(BaseModel):
 
 
 class PerformanceMetricsCreate(BaseModel):
-    metric_type: str = Field(..., regex="^(hr|pace|power)$")
+    metric_type: str = Field(..., pattern="^(hr|pace|power)$")
     threshold_value: float = Field(..., gt=0)
     max_value: Optional[float] = Field(None, gt=0)
     rest_value: Optional[float] = Field(None, ge=0)
@@ -96,7 +96,7 @@ class PerformanceMetricsResponse(BaseModel):
 
 
 class ZoneCalculationRequest(BaseModel):
-    metric_type: str = Field(..., regex="^(hr|pace|power)$")
+    metric_type: str = Field(..., pattern="^(hr|pace|power)$")
     threshold_value: float = Field(..., gt=0)
     max_value: Optional[float] = Field(None, gt=0)
     rest_value: Optional[float] = Field(None, ge=0)

@@ -17,7 +17,7 @@ class WorkoutPlanCreate(BaseModel):
     end_date: date
     goal: Optional[str] = Field(None, max_length=200)
     sport_type: Optional[str] = Field(None, max_length=50)
-    level: Optional[str] = Field(None, regex="^(beginner|intermediate|advanced)$")
+    level: Optional[str] = Field(None, pattern="^(beginner|intermediate|advanced)$")
 
 
 class WorkoutPlanUpdate(BaseModel):
@@ -27,8 +27,8 @@ class WorkoutPlanUpdate(BaseModel):
     end_date: Optional[date] = None
     goal: Optional[str] = Field(None, max_length=200)
     sport_type: Optional[str] = Field(None, max_length=50)
-    level: Optional[str] = Field(None, regex="^(beginner|intermediate|advanced)$")
-    status: Optional[str] = Field(None, regex="^(active|completed|paused)$")
+    level: Optional[str] = Field(None, pattern="^(beginner|intermediate|advanced)$")
+    status: Optional[str] = Field(None, pattern="^(active|completed|paused)$")
 
 
 class WorkoutPlanResponse(BaseModel):
@@ -57,8 +57,8 @@ class WorkoutCreate(BaseModel):
     day_number: Optional[int] = Field(None, ge=1)
     scheduled_date: Optional[date] = None
     duration_minutes: int = Field(..., gt=0, le=1440)  # Max 24 hours
-    intensity: Optional[str] = Field(None, regex="^(easy|moderate|hard)$")
-    zone: Optional[str] = Field(None, regex="^(Z1|Z2|Z3|Z4|Z5)$")
+    intensity: Optional[str] = Field(None, pattern="^(easy|moderate|hard)$")
+    zone: Optional[str] = Field(None, pattern="^(Z1|Z2|Z3|Z4|Z5)$")
     structure_json: Optional[Dict[str, Any]] = None
     notes: Optional[str] = None
 
@@ -69,8 +69,8 @@ class WorkoutUpdate(BaseModel):
     day_number: Optional[int] = Field(None, ge=1)
     scheduled_date: Optional[date] = None
     duration_minutes: Optional[int] = Field(None, gt=0, le=1440)
-    intensity: Optional[str] = Field(None, regex="^(easy|moderate|hard)$")
-    zone: Optional[str] = Field(None, regex="^(Z1|Z2|Z3|Z4|Z5)$")
+    intensity: Optional[str] = Field(None, pattern="^(easy|moderate|hard)$")
+    zone: Optional[str] = Field(None, pattern="^(Z1|Z2|Z3|Z4|Z5)$")
     structure_json: Optional[Dict[str, Any]] = None
     status: Optional[WorkoutStatus] = None
     notes: Optional[str] = None
@@ -135,7 +135,7 @@ class WorkoutStructure(BaseModel):
 
 class AIWorkoutPlanRequest(BaseModel):
     sport_type: str = Field(..., min_length=1, max_length=50)
-    level: str = Field(..., regex="^(beginner|intermediate|advanced)$")
+    level: str = Field(..., pattern="^(beginner|intermediate|advanced)$")
     goal: str = Field(..., min_length=1, max_length=200)
     duration_weeks: int = Field(..., ge=1, le=52)
     weekly_hours: float = Field(..., gt=0, le=168)

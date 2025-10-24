@@ -631,7 +631,7 @@ Authorization: Bearer <access_token>
 ---
 
 ### POST /workouts/plans/generate-ai
-Genera un piano di allenamento usando l'AI.
+Genera un piano di allenamento usando l'AI (metodo statico).
 
 **Headers:**
 ```
@@ -695,6 +695,264 @@ Authorization: Bearer <access_token>
       }
     ]
   }
+}
+```
+
+---
+
+### POST /workouts/plans/generate-progressive
+Genera un piano di allenamento progressivo con data target (metodo dinamico).
+
+**Headers:**
+```
+Authorization: Bearer <access_token>
+```
+
+**Request:**
+```json
+{
+  "sport_type": "running",
+  "level": "intermediate",
+  "goal": "Maratona di Roma",
+  "target_date": "2024-04-21",
+  "start_date": "2024-01-15",
+  "weekly_hours": 8.0,
+  "user_profile": {
+    "age": 30,
+    "experience_years": 3,
+    "weekly_hours": 8.0,
+    "weight": 70,
+    "height": 175
+  }
+}
+```
+
+**Response (200):**
+```json
+{
+  "plan": {
+    "id": 1,
+    "title": "Running - Maratona di Roma",
+    "description": "Piano progressivo per Maratona di Roma - Target: 2024-04-21",
+    "start_date": "2024-01-15",
+    "end_date": "2024-04-21",
+    "goal": "Maratona di Roma",
+    "sport_type": "running",
+    "level": "intermediate"
+  },
+  "first_week": {
+    "week": 1,
+    "focus": "Base building - 14 weeks to target",
+    "adaptations": {
+      "intensity_change": "0%",
+      "volume_change": "0%",
+      "rationale": "First week - establishing baseline"
+    },
+    "workouts": [
+      {
+        "day": "Monday",
+        "type": "Endurance",
+        "duration_minutes": 60,
+        "intensity": "Z2",
+        "target_hr": "140-150",
+        "rpe_target": 6,
+        "description": "Easy aerobic run to build base",
+        "key_focus": "Consistent pace, comfortable effort"
+      }
+    ],
+    "recovery_notes": "Focus on sleep and nutrition",
+    "next_week_preview": "Volume will increase by 10% if this week goes well",
+    "adaptation_rationale": "Starting conservatively to assess fitness level"
+  },
+  "target_date": "2024-04-21",
+  "total_weeks": 14
+}
+```
+
+---
+
+### POST /workouts/plans/generate-weekly
+Genera piano per una settimana specifica basandosi sui dati precedenti.
+
+**Headers:**
+```
+Authorization: Bearer <access_token>
+```
+
+**Request:**
+```json
+{
+  "week_number": 3,
+  "target_date": "2024-04-21",
+  "previous_week_data": {
+    "week": 2,
+    "completion_rate": 100,
+    "avg_rpe": 6.5,
+    "workouts_completed": 4
+  },
+  "current_fitness_level": {
+    "completion_rate": 95,
+    "avg_intensity": 6.2,
+    "consistency": 90,
+    "fatigue_level": "low"
+  }
+}
+```
+
+**Response (200):**
+```json
+{
+  "week": 3,
+  "focus": "Progressive overload - 12 weeks to target",
+  "adaptations": {
+    "intensity_change": "+5%",
+    "volume_change": "+10%",
+    "rationale": "Previous week completed easily, user ready for progression"
+  },
+  "workouts": [
+    {
+      "day": "Monday",
+      "type": "Endurance",
+      "duration_minutes": 70,
+      "intensity": "Z2",
+      "target_hr": "145-155",
+      "rpe_target": 6,
+      "description": "Increased duration based on previous performance",
+      "key_focus": "Maintain consistent effort for longer duration"
+    }
+  ],
+  "recovery_notes": "Monitor fatigue levels, increase protein intake",
+  "next_week_preview": "Will introduce tempo work if this week goes well",
+  "adaptation_rationale": "User completed all workouts at target RPE, ready for progression",
+  "generated_at": "2024-01-29T10:30:00Z",
+  "week_start_date": "2024-01-29",
+  "week_end_date": "2024-02-04"
+}
+```
+
+---
+
+### POST /workouts/plans/adapt-next-week
+Adatta automaticamente la prossima settimana basandosi sulle performance.
+
+**Headers:**
+```
+Authorization: Bearer <access_token>
+```
+
+**Request:**
+```json
+{
+  "target_date": "2024-04-21",
+  "force_regeneration": false,
+  "specific_focus": "Recovery week"
+}
+```
+
+**Response (200):**
+```json
+{
+  "week": 4,
+  "focus": "Recovery and adaptation - 11 weeks to target",
+  "adaptations": {
+    "intensity_change": "-15%",
+    "volume_change": "-20%",
+    "rationale": "User showing signs of fatigue, implementing recovery week"
+  },
+  "workouts": [
+    {
+      "day": "Monday",
+      "type": "Recovery",
+      "duration_minutes": 30,
+      "intensity": "Z1",
+      "target_hr": "120-130",
+      "rpe_target": 4,
+      "description": "Easy recovery run",
+      "key_focus": "Active recovery, focus on form"
+    }
+  ],
+  "recovery_notes": "Priority on sleep, nutrition, and light stretching",
+  "next_week_preview": "Will return to progressive overload",
+  "adaptation_rationale": "Fatigue indicators suggest need for recovery",
+  "generated_at": "2024-02-05T10:30:00Z",
+  "week_start_date": "2024-02-05",
+  "week_end_date": "2024-02-11"
+}
+```
+
+---
+
+### GET /workouts/plans/current-week
+Ottiene dati della settimana corrente e livello di fitness.
+
+**Headers:**
+```
+Authorization: Bearer <access_token>
+```
+
+**Response (200):**
+```json
+{
+  "current_week": {
+    "week_number": 3,
+    "workouts": [
+      {
+        "id": 15,
+        "title": "Endurance Run",
+        "type": "endurance",
+        "scheduled_date": "2024-01-29",
+        "duration_minutes": 70,
+        "intensity": "easy",
+        "zone": "Z2",
+        "status": "scheduled"
+      }
+    ],
+    "performance": {
+      "total_sessions": 4,
+      "avg_rpe": 6.5,
+      "total_duration": 280
+    },
+    "week_start": "2024-01-29",
+    "week_end": "2024-02-04"
+  },
+  "fitness_level": {
+    "completion_rate": 95,
+    "avg_intensity": 6.2,
+    "consistency": 90,
+    "fatigue_level": "low",
+    "performance_trend": "increasing",
+    "last_week_rpe": 6.5
+  }
+}
+```
+
+---
+
+### GET /workouts/plans/performance-analysis
+Ottiene analisi delle performance dell'utente.
+
+**Headers:**
+```
+Authorization: Bearer <access_token>
+```
+
+**Query Parameters:**
+- `weeks_back` (int, optional): Settimane da analizzare (default: 4, max: 12)
+
+**Response (200):**
+```json
+{
+  "completion_rate": 95.0,
+  "intensity_trend": "increasing",
+  "recovery_indicators": {
+    "avg_sleep_quality": 7.5,
+    "fatigue_score": 3.2,
+    "recovery_time": "normal"
+  },
+  "performance_improvement": 8.5,
+  "fatigue_level": "low",
+  "avg_rpe": 6.2,
+  "consistency_score": 90.0
 }
 ```
 
