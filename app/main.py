@@ -44,7 +44,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS
+# Add authentication middleware (before CORS)
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    return await AuthMiddleware.authenticate_request(request, call_next)
+
+# Configure CORS (after auth middleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -52,11 +57,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Add authentication middleware
-@app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    return await AuthMiddleware.authenticate_request(request, call_next)
 
 
 # Global exception handler

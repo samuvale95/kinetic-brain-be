@@ -45,6 +45,10 @@ class AuthMiddleware:
     @staticmethod
     async def authenticate_request(request: Request, call_next):
         """Authenticate the request"""
+        # Skip authentication for OPTIONS requests (CORS preflight)
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        
         # Skip authentication for public endpoints
         if AuthMiddleware.is_public_endpoint(request.url.path):
             return await call_next(request)

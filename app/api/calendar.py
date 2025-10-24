@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import date, datetime
@@ -11,6 +12,19 @@ from app.services.workout_service import WorkoutService
 from app.api.auth import get_current_user
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
+
+
+# OPTIONS endpoints for CORS preflight
+@router.options("/")
+async def options_calendar():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
+@router.options("/events")
+async def options_calendar_events():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
 
 
 @router.get("/", response_model=List[CalendarEventResponse])

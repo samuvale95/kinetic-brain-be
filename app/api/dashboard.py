@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
 from typing import Dict, Any, List
@@ -9,6 +10,30 @@ from app.models.calendar import CalendarEvent
 from app.api.auth import get_current_user
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+
+@router.options("/stats")
+async def options_dashboard_stats():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
+@router.options("/progress")
+async def options_dashboard_progress():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
+@router.options("/upcoming")
+async def options_dashboard_upcoming():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
+@router.options("/calendar-events")
+async def options_dashboard_calendar_events():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
 
 
 @router.get("/stats")

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime
@@ -19,6 +20,25 @@ from app.services.progressive_workout_service import ProgressiveWorkoutPlanServi
 from app.api.auth import get_current_user
 
 router = APIRouter(prefix="/workouts", tags=["workouts"])
+
+
+# OPTIONS endpoints for CORS preflight
+@router.options("/")
+async def options_workouts():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
+@router.options("/plans")
+async def options_workout_plans():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
+@router.options("/sessions")
+async def options_workout_sessions():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
 
 
 # Workout Plans

@@ -218,3 +218,9 @@ async def google_login(request: GoogleAuthRequest, db: Session = Depends(get_db)
         )
     
     return result["tokens"]
+
+
+@router.get("/test")
+async def test_auth():
+    """Test endpoint to verify authentication is working"""
+    return {"message": "Authentication test successful", "status": "ok"}
