@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
@@ -12,6 +13,25 @@ from app.services.calculation_service import CalculationService
 from app.api.auth import get_current_user
 
 router = APIRouter(prefix="/profile", tags=["profile"])
+
+
+# OPTIONS endpoints for CORS preflight
+@router.options("/")
+async def options_profile():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
+@router.options("/performance")
+async def options_profile_performance():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
+@router.options("/calculate-zones")
+async def options_profile_calculate_zones():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
 
 
 @router.get("/", response_model=UserProfileResponse)
