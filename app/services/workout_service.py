@@ -1,8 +1,8 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, or_
 from typing import List, Optional, Dict, Any
-from datetime import date, datetime
-from app.models.workout import WorkoutPlan, Workout, WorkoutSession
+from datetime import date, datetime, timedelta
+from app.models.workout import WorkoutPlan, Workout, WorkoutSession, WorkoutStatus
 from app.models.calendar import CalendarEvent
 from app.schemas.workout import (
     WorkoutPlanCreate, WorkoutPlanUpdate, 
@@ -18,6 +18,24 @@ class WorkoutService:
     # Workout Plans
     def create_workout_plan(self, user_id: int, plan_data: WorkoutPlanCreate) -> WorkoutPlan:
         """Create a new workout plan"""
+        # First, deactivate all existing active plans for this user
+        self.db.execute(
+            select(WorkoutPlan)
+            .where(and_(WorkoutPlan.user_id == user_id, WorkoutPlan.status == "active"))
+        ).scalars().all()
+        
+        # Update existing active plans to paused
+        existing_plans = self.db.execute(
+            select(WorkoutPlan)
+            .where(and_(WorkoutPlan.user_id == user_id, WorkoutPlan.status == "active"))
+        ).scalars().all()
+        
+        for plan in existing_plans:
+            plan.status = "paused"
+        
+        self.db.commit()
+        
+        # Create new plan
         db_plan = WorkoutPlan(
             user_id=user_id,
             **plan_data.dict()
@@ -32,6 +50,86 @@ class WorkoutService:
         self.db.refresh(db_plan)
         
         return db_plan
+    
+    def create_workouts_from_ai_plan(self, user_id: int, plan_id: int, ai_plan_data: Dict[str, Any]) -> List[Workout]:
+        """Create individual workouts from AI plan data"""
+        workouts = []
+        
+        if "weeks" not in ai_plan_data:
+            return workouts
+        
+        # Get the plan to get start date
+        plan = self.get_workout_plan(plan_id, user_id)
+        if not plan:
+            return workouts
+        
+        current_date = plan.start_date
+        
+        for week_data in ai_plan_data["weeks"]:
+            week_number = week_data.get("week", 1)
+            week_workouts = week_data.get("workouts", [])
+            
+            for workout_data in week_workouts:
+                # Calculate scheduled date
+                day_mapping = {
+                    "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
+                    "Friday": 4, "Saturday": 5, "Sunday": 6
+                }
+                day_offset = day_mapping.get(workout_data.get("day", "Monday"), 0)
+                scheduled_date = current_date + timedelta(days=day_offset)
+                
+                # Create workout
+                workout = Workout(
+                    plan_id=plan_id,
+                    user_id=user_id,
+                    title=workout_data.get("type", "Workout"),
+                    type=workout_data.get("type", "endurance"),
+                    day_number=len(workouts) + 1,
+                    scheduled_date=scheduled_date,
+                    duration_minutes=workout_data.get("duration_minutes", 60),
+                    intensity=workout_data.get("intensity", "moderate"),
+                    zone=workout_data.get("intensity", "Z2"),
+                    structure_json={
+                        "description": workout_data.get("description", ""),
+                        "rpe_target": workout_data.get("rpe_target", 6),
+                        "focus": week_data.get("focus", "Base Building")
+                    },
+                    status=WorkoutStatus.SCHEDULED
+                )
+                
+                self.db.add(workout)
+                workouts.append(workout)
+            
+            # Move to next week
+            current_date += timedelta(days=7)
+        
+        self.db.commit()
+        return workouts
+    
+    def create_calendar_events_from_workouts(self, user_id: int, workouts: List[Workout]) -> List[CalendarEvent]:
+        """Create calendar events from workouts"""
+        events = []
+        
+        for workout in workouts:
+            if not workout.scheduled_date:
+                continue
+                
+            # Create calendar event for workout
+            event = CalendarEvent(
+                user_id=user_id,
+                workout_id=workout.id,
+                title=workout.title,
+                event_type="workout",
+                scheduled_date=workout.scheduled_date,
+                duration_minutes=workout.duration_minutes,
+                is_recurring=False
+            )
+            
+            self.db.add(event)
+            events.append(event)
+        
+        self.db.commit()
+        return events
     
     def get_workout_plans(self, user_id: int, skip: int = 0, limit: int = 100) -> List[WorkoutPlan]:
         """Get user's workout plans"""

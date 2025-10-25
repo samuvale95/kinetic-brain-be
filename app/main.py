@@ -18,9 +18,9 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Kinetic Brain API...")
     
-    # Create database tables
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables created")
+    # Create database tables (disabled due to permission issues)
+    # Base.metadata.create_all(bind=engine)
+    # logger.info("Database tables created")
     
     yield
     

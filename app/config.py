@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     max_file_size: int = 5 * 1024 * 1024  # 5MB
     upload_folder: str = "uploads"
     
+    # Mock LLM for testing
+    mock_llm: bool = False
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

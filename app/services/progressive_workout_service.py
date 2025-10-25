@@ -5,14 +5,17 @@ from datetime import datetime, date, timedelta
 from app.models.workout import Workout, WorkoutSession, WorkoutPlan
 from app.services.ai_service import AIService
 from app.schemas.ai import AIRequest, WeeklyPlanRequest, PerformanceAnalysisData
+from app.config import settings
 import json
 import math
+import os
 
 
 class ProgressiveWorkoutPlanService:
     def __init__(self, db: Session):
         self.db = db
         self.ai_service = AIService()
+        self.mock_mode = settings.mock_llm
     
     def generate_weekly_plan(self, 
                            user_id: int, 
@@ -21,6 +24,9 @@ class ProgressiveWorkoutPlanService:
                            previous_week_data: Optional[Dict[str, Any]] = None,
                            current_fitness_level: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Genera piano per una settimana specifica basato sui dati precedenti"""
+        
+        if self.mock_mode:
+            return self._generate_mock_weekly_plan(week_number, target_date, previous_week_data, current_fitness_level)
         
         # 1. Raccoglie dati storici dell'utente
         user_history = self._get_user_workout_history(user_id, weeks_back=4)
@@ -392,4 +398,144 @@ class ProgressiveWorkoutPlanService:
             "next_week_preview": "Plan will be adapted based on this week's performance",
             "adaptation_rationale": "Initial plan generation"
         }
+    
+    def _generate_mock_weekly_plan(self, week_number: int, target_date: str, 
+                                 previous_week_data: Optional[Dict[str, Any]] = None,
+                                 current_fitness_level: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Generate mock weekly plan for triathlon progressive training"""
+        
+        # Calculate week dates
+        start_date = datetime(2025, 10, 25)
+        week_start = start_date + timedelta(weeks=week_number-1)
+        week_end = week_start + timedelta(days=6)
+        
+        # Get focus based on week
+        focus = self._get_mock_triathlon_focus(week_number)
+        
+        # Generate workouts for the week
+        workouts = self._generate_mock_triathlon_workouts(week_number)
+        
+        # Calculate adaptations based on previous week
+        adaptations = self._calculate_mock_adaptations(week_number, previous_week_data)
+        
+        return {
+            "week": week_number,
+            "focus": focus,
+            "adaptations": adaptations,
+            "workouts": workouts,
+            "recovery_notes": self._get_mock_recovery_notes(week_number),
+            "next_week_preview": self._get_mock_next_week_preview(week_number),
+            "generated_at": datetime.utcnow().isoformat(),
+            "adaptation_rationale": self._get_mock_adaptation_rationale(week_number, previous_week_data),
+            "week_start_date": week_start.strftime("%Y-%m-%d"),
+            "week_end_date": week_end.strftime("%Y-%m-%d"),
+            "weeks_remaining": max(0, 8 - week_number)
+        }
+    
+    def _get_mock_triathlon_focus(self, week_number: int) -> str:
+        """Get triathlon focus for specific week"""
+        focuses = [
+            "Base Building", "Base Building", "Brick Training", "Brick Training",
+            "Speed Work", "Speed Work", "Taper", "Race Week"
+        ]
+        return focuses[min(week_number-1, len(focuses)-1)]
+    
+    def _generate_mock_triathlon_workouts(self, week_number: int) -> list:
+        """Generate mock triathlon workouts for a week"""
+        workouts = []
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        
+        # Triathlon workouts
+        tri_workouts = [
+            {"type": "Swim", "duration_minutes": 45, "intensity": "Z2", "description": "Easy swim technique work"},
+            {"type": "Bike", "duration_minutes": 60, "intensity": "Z2", "description": "Endurance bike ride"},
+            {"type": "Run", "duration_minutes": 30, "intensity": "Z2", "description": "Easy transition run"},
+            {"type": "Brick", "duration_minutes": 90, "intensity": "Z3", "description": "Bike + Run brick workout"},
+            {"type": "Swim Intervals", "duration_minutes": 60, "intensity": "Z4", "description": "Swim interval training"},
+            {"type": "Bike Tempo", "duration_minutes": 45, "intensity": "Z3", "description": "Tempo bike workout"},
+            {"type": "Recovery", "duration_minutes": 30, "intensity": "Z1", "description": "Easy recovery workout"}
+        ]
+        
+        # Select workouts based on week
+        if week_number <= 2:
+            selected = [0, 1, 2, 6]  # Base building
+        elif week_number <= 4:
+            selected = [0, 1, 3, 2]  # Brick training
+        elif week_number <= 6:
+            selected = [4, 5, 3, 2]  # Speed work
+        else:
+            selected = [0, 1, 2, 6]  # Taper
+        
+        for i, workout_idx in enumerate(selected[:4]):  # Max 4 workouts per week
+            workout = tri_workouts[workout_idx].copy()
+            workout["day"] = days[i]
+            workout["rpe_target"] = 6 + (workout_idx % 3)
+            workouts.append(workout)
+        
+        return workouts
+    
+    def _calculate_mock_adaptations(self, week_number: int, previous_week_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Calculate mock adaptations based on week and previous data"""
+        if week_number == 1:
+            return {
+                "intensity_change": "0%",
+                "volume_change": "0%",
+                "rationale": "First week - establishing baseline"
+            }
+        
+        # Simulate adaptations based on previous week performance
+        if previous_week_data and previous_week_data.get("completion_rate", 100) > 90:
+            intensity_change = "+5%" if week_number <= 4 else "+2%"
+            volume_change = "+10%" if week_number <= 4 else "+5%"
+            rationale = "Previous week completed successfully, ready for progression"
+        else:
+            intensity_change = "0%"
+            volume_change = "0%"
+            rationale = "Maintaining current level due to previous week challenges"
+        
+        return {
+            "intensity_change": intensity_change,
+            "volume_change": volume_change,
+            "rationale": rationale
+        }
+    
+    def _get_mock_recovery_notes(self, week_number: int) -> str:
+        """Get mock recovery notes for specific week"""
+        notes = [
+            "Focus on sleep and nutrition for base building",
+            "Maintain consistent sleep schedule",
+            "Monitor fatigue levels during brick training",
+            "Prioritize recovery between brick sessions",
+            "Increase protein intake for speed work",
+            "Monitor recovery between high-intensity sessions",
+            "Focus on sleep and light stretching for taper",
+            "Minimal activity, focus on race preparation"
+        ]
+        return notes[min(week_number-1, len(notes)-1)]
+    
+    def _get_mock_next_week_preview(self, week_number: int) -> str:
+        """Get mock next week preview"""
+        if week_number >= 8:
+            return "Race week - minimal training, focus on preparation"
+        
+        previews = [
+            "Continue base building with slight volume increase",
+            "Introduce brick training sessions",
+            "Increase brick training intensity",
+            "Add speed work elements",
+            "Focus on high-intensity intervals",
+            "Begin tapering process",
+            "Final taper week before race"
+        ]
+        return previews[min(week_number-1, len(previews)-1)]
+    
+    def _get_mock_adaptation_rationale(self, week_number: int, previous_week_data: Optional[Dict[str, Any]] = None) -> str:
+        """Get mock adaptation rationale"""
+        if week_number == 1:
+            return "Initial plan generation based on user profile"
+        
+        if previous_week_data and previous_week_data.get("completion_rate", 100) > 90:
+            return "User completed previous week successfully, ready for progression"
+        else:
+            return "Maintaining current level to ensure proper adaptation"
 

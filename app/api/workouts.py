@@ -136,7 +136,6 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
     if ai_request.is_progressive and ai_request.target_date and ai_request.start_date:
         # Generate progressive workout plan
         from app.services.progressive_workout_service import ProgressiveWorkoutPlanService
-        from datetime import datetime
         
         progressive_service = ProgressiveWorkoutPlanService(db)
         
@@ -165,8 +164,25 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
             plan_data=plan_create
         )
         
+        # Convert SQLAlchemy object to dict for serialization
+        plan_dict = {
+            "id": plan.id,
+            "user_id": plan.user_id,
+            "title": plan.title,
+            "description": plan.description,
+            "start_date": plan.start_date.isoformat() if plan.start_date else None,
+            "end_date": plan.end_date.isoformat() if plan.end_date else None,
+            "total_weeks": plan.total_weeks,
+            "goal": plan.goal,
+            "sport_type": plan.sport_type,
+            "level": plan.level,
+            "status": plan.status,
+            "created_at": plan.created_at.isoformat() if plan.created_at else None,
+            "updated_at": plan.updated_at.isoformat() if plan.updated_at else None
+        }
+        
         return {
-            "plan": plan,
+            "plan": plan_dict,
             "first_week": first_week_plan,
             "target_date": ai_request.target_date,
             "total_weeks": first_week_plan.get("weeks_remaining", 12),
@@ -198,7 +214,43 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
                 plan_data=plan_create
             )
             
-            return {"plan": plan, "ai_data": plan_data, "is_progressive": False}
+            # Create individual workouts from AI plan data
+            workouts = workout_service.create_workouts_from_ai_plan(
+                user_id=current_user["user_id"],
+                plan_id=plan.id,
+                ai_plan_data=plan_data
+            )
+            
+            # Create calendar events from workouts
+            calendar_events = workout_service.create_calendar_events_from_workouts(
+                user_id=current_user["user_id"],
+                workouts=workouts
+            )
+            
+            # Convert SQLAlchemy object to dict for serialization
+            plan_dict = {
+                "id": plan.id,
+                "user_id": plan.user_id,
+                "title": plan.title,
+                "description": plan.description,
+                "start_date": plan.start_date.isoformat() if plan.start_date else None,
+                "end_date": plan.end_date.isoformat() if plan.end_date else None,
+                "total_weeks": plan.total_weeks,
+                "goal": plan.goal,
+                "sport_type": plan.sport_type,
+                "level": plan.level,
+                "status": plan.status,
+                "created_at": plan.created_at.isoformat() if plan.created_at else None,
+                "updated_at": plan.updated_at.isoformat() if plan.updated_at else None
+            }
+            
+            return {
+                "plan": plan_dict, 
+                "ai_data": plan_data, 
+                "is_progressive": False,
+                "workouts_created": len(workouts),
+                "calendar_events_created": len(calendar_events)
+            }
         
         return {"ai_data": plan_data, "is_progressive": False}
 
