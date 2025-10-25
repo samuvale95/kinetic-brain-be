@@ -130,33 +130,77 @@ async def delete_workout_plan(plan_id: int,
 async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
                                   current_user: dict = Depends(get_current_user),
                                   db: Session = Depends(get_db)):
-    """Generate workout plan using AI"""
-    ai_service = AIService()
-    plan_data = ai_service.generate_workout_plan(ai_request)
+    """Generate workout plan using AI - supports both traditional and progressive plans"""
     
-    # Optionally save the generated plan
-    if plan_data:
+    # Check if this is a progressive plan
+    if ai_request.is_progressive and ai_request.target_date and ai_request.start_date:
+        # Generate progressive workout plan
+        from app.services.progressive_workout_service import ProgressiveWorkoutPlanService
+        from datetime import datetime
+        
+        progressive_service = ProgressiveWorkoutPlanService(db)
+        
+        # Generate first week of progressive plan
+        first_week_plan = progressive_service.generate_weekly_plan(
+            user_id=current_user["user_id"],
+            week_number=1,
+            target_date=ai_request.target_date,
+            current_fitness_level=ai_request.user_profile
+        )
+        
+        # Create base plan in database
         workout_service = WorkoutService(db)
-        # Convert AI response to WorkoutPlanCreate format
         plan_create = WorkoutPlanCreate(
-            title=plan_data.get("title", "AI Generated Plan"),
-            description=plan_data.get("description", ""),
-            start_date=ai_request.start_date if hasattr(ai_request, 'start_date') else None,
-            end_date=ai_request.end_date if hasattr(ai_request, 'end_date') else None,
+            title=f"{ai_request.sport_type.title()} - {ai_request.goal}",
+            description=f"Piano progressivo per {ai_request.goal} - Target: {ai_request.target_date}",
+            start_date=datetime.strptime(ai_request.start_date, "%Y-%m-%d").date(),
+            end_date=datetime.strptime(ai_request.target_date, "%Y-%m-%d").date(),
             goal=ai_request.goal,
             sport_type=ai_request.sport_type,
             level=ai_request.level
         )
         
-        # Create the plan in database
         plan = workout_service.create_workout_plan(
             user_id=current_user["user_id"],
             plan_data=plan_create
         )
         
-        return {"plan": plan, "ai_data": plan_data}
+        return {
+            "plan": plan,
+            "first_week": first_week_plan,
+            "target_date": ai_request.target_date,
+            "total_weeks": first_week_plan.get("weeks_remaining", 12),
+            "is_progressive": True
+        }
     
-    return {"ai_data": plan_data}
+    else:
+        # Generate traditional workout plan using AI
+        ai_service = AIService()
+        plan_data = ai_service.generate_workout_plan(ai_request)
+        
+        # Optionally save the generated plan
+        if plan_data:
+            workout_service = WorkoutService(db)
+            # Convert AI response to WorkoutPlanCreate format
+            plan_create = WorkoutPlanCreate(
+                title=plan_data.get("title", "AI Generated Plan"),
+                description=plan_data.get("description", ""),
+                start_date=datetime.now().date() if not ai_request.start_date else datetime.strptime(ai_request.start_date, "%Y-%m-%d").date(),
+                end_date=datetime.now().date() if not ai_request.target_date else datetime.strptime(ai_request.target_date, "%Y-%m-%d").date(),
+                goal=ai_request.goal,
+                sport_type=ai_request.sport_type,
+                level=ai_request.level
+            )
+            
+            # Create the plan in database
+            plan = workout_service.create_workout_plan(
+                user_id=current_user["user_id"],
+                plan_data=plan_create
+            )
+            
+            return {"plan": plan, "ai_data": plan_data, "is_progressive": False}
+        
+        return {"ai_data": plan_data, "is_progressive": False}
 
 
 # Progressive Workout Plans

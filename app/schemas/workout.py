@@ -137,6 +137,13 @@ class AIWorkoutPlanRequest(BaseModel):
     sport_type: str = Field(..., min_length=1, max_length=50)
     level: str = Field(..., pattern="^(beginner|intermediate|advanced)$")
     goal: str = Field(..., min_length=1, max_length=200)
-    duration_weeks: int = Field(..., ge=1, le=52)
     weekly_hours: float = Field(..., gt=0, le=168)
     user_profile: Optional[Dict[str, Any]] = None
+    
+    # Parametri per piani tradizionali
+    duration_weeks: Optional[int] = Field(None, ge=1, le=52)
+    
+    # Parametri per piani progressivi
+    is_progressive: Optional[bool] = Field(False, description="Se true, crea un piano progressivo")
+    target_date: Optional[str] = Field(None, description="Data obiettivo per piano progressivo (YYYY-MM-DD)")
+    start_date: Optional[str] = Field(None, description="Data inizio per piano progressivo (YYYY-MM-DD)")
