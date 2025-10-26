@@ -70,21 +70,30 @@ async def create_workout_plan(plan_data: WorkoutPlanCreate,
     return plan
 
 
-@router.get("/plans/{plan_id}", response_model=WorkoutPlanResponse)
+@router.get("/plans/{plan_id}")
 async def get_workout_plan(plan_id: int,
                           current_user: dict = Depends(get_current_user),
                           db: Session = Depends(get_db)):
-    """Get specific workout plan"""
-    workout_service = WorkoutService(db)
-    plan = workout_service.get_workout_plan(plan_id, current_user["user_id"])
-    
-    if not plan:
+    """Get specific workout plan with all workouts, sessions, and Strava details"""
+    try:
+        workout_service = WorkoutService(db)
+        plan_details = workout_service.get_workout_plan_with_details(plan_id, current_user["user_id"])
+        
+        if not plan_details:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workout plan not found"
+            )
+        
+        return plan_details
+    except Exception as e:
+        print(f"Error in get_workout_plan: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workout plan not found"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
         )
-    
-    return plan
 
 
 @router.put("/plans/{plan_id}", response_model=WorkoutPlanResponse)

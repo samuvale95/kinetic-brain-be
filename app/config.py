@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # Mock LLM for testing
     mock_llm: bool = False
     
+    # Strava OAuth
+    strava_client_id: str = ""
+    strava_client_secret: str = ""
+    strava_redirect_uri: str = "http://localhost:8000/auth/strava/callback"
+    strava_webhook_verify_token: str = ""
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, select, or_
 from typing import Dict, Any, List
 from datetime import date, datetime, timedelta
 from app.database import get_db
@@ -186,17 +186,16 @@ async def get_progress_data(current_user: dict = Depends(get_current_user),
 @router.get("/calendar-events")
 async def get_dashboard_calendar_events(current_user: dict = Depends(get_current_user),
                                        db: Session = Depends(get_db)):
-    """Get calendar events for dashboard"""
+    """Get calendar events for dashboard, excluding inactive plans"""
+    from app.models.workout import Workout, WorkoutPlan
+    from app.services.workout_service import WorkoutService
+    
     user_id = current_user["user_id"]
     start_date = date.today()
     end_date = start_date + timedelta(days=30)  # Next 30 days
     
-    events = db.query(CalendarEvent).filter(
-        and_(
-            CalendarEvent.user_id == user_id,
-            CalendarEvent.scheduled_date >= start_date,
-            CalendarEvent.scheduled_date <= end_date
-        )
-    ).order_by(CalendarEvent.scheduled_date).all()
+    # Use the workout service method which already filters inactive plans
+    workout_service = WorkoutService(db)
+    events = workout_service.get_calendar_events(user_id, start_date, end_date)
     
     return events

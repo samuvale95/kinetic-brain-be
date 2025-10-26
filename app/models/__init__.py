@@ -1,6 +1,7 @@
 from .user import User, UserProfile, PerformanceMetrics, OAuthAccount
 from .workout import WorkoutPlan, Workout, WorkoutSession
 from .calendar import CalendarEvent
+from .strava import StravaAccount, StravaActivity, StravaWebhook
 
 __all__ = [
     "User",
@@ -10,5 +11,8 @@ __all__ = [
     "WorkoutPlan",
     "Workout",
     "WorkoutSession",
-    "CalendarEvent"
+    "CalendarEvent",
+    "StravaAccount",
+    "StravaActivity",
+    "StravaWebhook"
 ]

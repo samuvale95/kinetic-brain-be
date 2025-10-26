@@ -56,6 +56,7 @@ class Workout(Base):
     plan = relationship("WorkoutPlan", back_populates="workouts")
     user = relationship("User", back_populates="workouts")
     sessions = relationship("WorkoutSession", back_populates="workout")
+    strava_activity = relationship("StravaActivity", back_populates="workout", uselist=False)
 
 
 class WorkoutSession(Base):

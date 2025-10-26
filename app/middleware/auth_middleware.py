@@ -21,7 +21,9 @@ class AuthMiddleware:
         "/auth/google/url",
         "/auth/google/callback",
         "/auth/google/login",
-        "/profile/calculate-zones"  # Public endpoint for zone calculations
+        "/profile/calculate-zones",  # Public endpoint for zone calculations
+        "/strava/webhook",  # Strava webhook endpoint
+        "/strava/auth/callback"  # Strava OAuth callback
     }
     
     @staticmethod
