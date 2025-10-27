@@ -410,7 +410,7 @@ async def create_weekly_summaries(current_user: dict = Depends(get_current_user)
         )
 
 
-# DEBUG: Show activities in database
+# DEBUG: Show activities in database (NO AUTH REQUIRED)
 @router.get("/debug/activities")
 async def debug_activities(db: Session = Depends(get_db)):
     """DEBUG ONLY - Show activities in database"""
