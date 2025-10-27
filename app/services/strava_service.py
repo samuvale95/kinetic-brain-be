@@ -741,12 +741,12 @@ class StravaService:
         if not strava_account_ids:
             return 0
         
+        # Remove metrics_calculated filter for now - include all activities
         activities = self.db.execute(
             select(StravaActivity)
             .where(and_(
                 StravaActivity.strava_account_id.in_(strava_account_ids),
-                StravaActivity.start_date >= start_date,
-                StravaActivity.metrics_calculated == True
+                StravaActivity.start_date >= start_date
             ))
             .order_by(StravaActivity.start_date)
         ).scalars().all()
@@ -770,7 +770,13 @@ class StravaService:
                 }
             
             weekly_data[week_start]['activities'].append(activity)
-            weekly_data[week_start]['total_tss'] += activity.tss or 0
+            # Use TSS from activity if available, otherwise calculate from duration
+            activity_tss = activity.tss or 0
+            if activity_tss == 0 and activity.moving_time:
+                # Rough estimate: 1 hour at Z2 = ~50 TSS
+                activity_tss = (activity.moving_time / 3600) * 50
+            
+            weekly_data[week_start]['total_tss'] += activity_tss
             weekly_data[week_start]['total_trimp'] += activity.trimp or 0
             weekly_data[week_start]['total_duration'] += activity.moving_time or 0
             weekly_data[week_start]['total_distance'] += activity.distance or 0
@@ -789,13 +795,22 @@ class StravaService:
                 ))
             ).scalar_one_or_none()
             
-            if existing:
-                continue
-            
             # Calculate aggregate metrics
-            total_minutes = data['total_duration'] / 60 if data['total_duration'] else 0
-            volume_hours = total_minutes / 60
-            volume_km = data['total_distance'] / 1000 if data['total_distance'] else 0
+            total_duration_seconds = data.get('total_duration', 0) or 0
+            total_minutes = total_duration_seconds / 60
+            volume_hours = total_minutes / 60 if total_minutes else 0
+            total_distance_meters = data.get('total_distance', 0) or 0
+            volume_km = total_distance_meters / 1000
+            
+            # Update existing or create new
+            if existing:
+                # Update existing summary
+                existing.weekly_tss = data['total_tss']
+                existing.workouts_completed = len(data['activities'])
+                existing.volume_hours = round(volume_hours, 2)
+                existing.volume_kilometers = volume_km
+                # Keep existing CTL/ATL/TSB - will be recalculated separately
+                continue
             
             # Get average HR if available
             activities_with_hr = [a for a in data['activities'] if a.average_heartrate]
@@ -861,8 +876,10 @@ class StravaService:
                     week_daily_tss[day_date] = 0
             
             # Get last 42 days of daily TSS for this week
+            # Build list with most recent days FIRST (as required by calculate_ctl_atl_tsb)
             tss_list = []
-            for i in range(42):
+            # Loop backwards so most recent days are first in the list
+            for i in range(41, -1, -1):
                 check_date = week_start - timedelta(days=42-i)
                 # Get TSS for this day from all activities
                 day_activities = self.db.execute(
@@ -877,7 +894,7 @@ class StravaService:
                 day_tss = sum(a.tss or 0 for a in day_activities)
                 tss_list.append(day_tss)
             
-            # Calculate CTL/ATL/TSB
+            # Calculate CTL/ATL/TSB (expects most recent first)
             metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
             
             # Update weekly summary
