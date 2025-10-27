@@ -45,9 +45,22 @@ async def options_today_workouts():
 @router.get("/today-workouts")
 async def get_today_workouts(current_user: dict = Depends(get_current_user),
                              db: Session = Depends(get_db)):
-    """Get today's scheduled workouts"""
+    """Get today's scheduled workouts, excluding inactive plans"""
     user_id = current_user["user_id"]
     today = date.today()
+    
+    # Get workout IDs from inactive plans
+    inactive_plan_workout_ids = db.execute(
+        select(Workout.id)
+        .join(WorkoutPlan, Workout.plan_id == WorkoutPlan.id)
+        .where(
+            and_(
+                WorkoutPlan.user_id == user_id,
+                WorkoutPlan.status != "active"
+            )
+        )
+    ).scalars().all()
+    inactive_plan_workout_ids = set(inactive_plan_workout_ids)
     
     workouts = db.query(Workout).filter(
         and_(
@@ -56,6 +69,9 @@ async def get_today_workouts(current_user: dict = Depends(get_current_user),
             Workout.status.in_(["scheduled", "completed"])
         )
     ).order_by(Workout.scheduled_date, Workout.duration_minutes).all()
+    
+    # Filter out workouts from inactive plans
+    workouts = [w for w in workouts if w.id not in inactive_plan_workout_ids]
     
     # Format response
     result = []
@@ -180,9 +196,22 @@ async def get_dashboard_stats(current_user: dict = Depends(get_current_user),
 @router.get("/upcoming")
 async def get_upcoming_workouts(current_user: dict = Depends(get_current_user),
                                db: Session = Depends(get_db)):
-    """Get upcoming workouts for the next 7 days"""
+    """Get upcoming workouts for the next 7 days, excluding inactive plans"""
     user_id = current_user["user_id"]
     end_date = date.today() + timedelta(days=7)
+    
+    # Get workout IDs from inactive plans
+    inactive_plan_workout_ids = db.execute(
+        select(Workout.id)
+        .join(WorkoutPlan, Workout.plan_id == WorkoutPlan.id)
+        .where(
+            and_(
+                WorkoutPlan.user_id == user_id,
+                WorkoutPlan.status != "active"
+            )
+        )
+    ).scalars().all()
+    inactive_plan_workout_ids = set(inactive_plan_workout_ids)
     
     workouts = db.query(Workout).filter(
         and_(
@@ -193,7 +222,10 @@ async def get_upcoming_workouts(current_user: dict = Depends(get_current_user),
         )
     ).order_by(Workout.scheduled_date).all()
     
-    return workouts
+    # Filter out workouts from inactive plans
+    filtered_workouts = [w for w in workouts if w.id not in inactive_plan_workout_ids]
+    
+    return filtered_workouts
 
 
 @router.get("/progress")
