@@ -863,10 +863,10 @@ class StravaService:
             ))
         ).scalars().all()
         
-        logger.info(f"DEBUG: Found {len(all_summaries)} summaries to update with CTL/ATL/TSB")
+        print(f"DEBUG: Found {len(all_summaries)} summaries to update with CTL/ATL/TSB")
         
         if len(all_summaries) == 0:
-            logger.warning("DEBUG: No summaries found to update! Something is wrong.")
+            print("DEBUG: No summaries found to update! Something is wrong.")
             self.db.commit()
             return summaries_created
         
@@ -892,10 +892,10 @@ class StravaService:
                 day_tss = sum(a.tss or 0 for a in day_activities)
                 tss_list.append(day_tss)
             
-            logger.info(f"DEBUG Week {week_start}: tss_list length={len(tss_list)}, sum={sum(tss_list):.1f}, first_10=[{', '.join([str(round(t, 1)) for t in tss_list[:10]])}]")
+            print(f"DEBUG Week {week_start}: tss_list length={len(tss_list)}, sum={sum(tss_list):.1f}, first_10=[{', '.join([str(round(t, 1)) for t in tss_list[:10]])}]")
             
             metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
-            logger.info(f"DEBUG Week {week_start}: metrics calculated = {metrics}")
+            print(f"DEBUG Week {week_start}: metrics calculated = {metrics}")
             
             # Direct SQL UPDATE
             self.db.execute(
@@ -903,11 +903,11 @@ class StravaService:
                 .where(WeeklyPerformanceSummary.id == summary.id)
                 .values(ctl=metrics['ctl'], atl=metrics['atl'], tsb=metrics['tsb'])
             )
-            logger.info(f"DEBUG Week {week_start}: UPDATE executed with values ctl={metrics['ctl']}, atl={metrics['atl']}, tsb={metrics['tsb']}")
+            print(f"DEBUG Week {week_start}: UPDATE executed with values ctl={metrics['ctl']}, atl={metrics['atl']}, tsb={metrics['tsb']}")
             updates_made += 1
         
         self.db.commit()
-        logger.info(f"Created {summaries_created} and updated CTL/ATL/TSB for {updates_made} summaries")
+        print(f"DEBUG: Created {summaries_created} and updated CTL/ATL/TSB for {updates_made} summaries")
         
         return summaries_created
 
