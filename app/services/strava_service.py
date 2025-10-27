@@ -902,7 +902,9 @@ class StravaService:
             completion_rate = (summary.workouts_completed or 0) / max(summary.workouts_planned or 1, 1) * 100 if summary.workouts_planned else None
             summary.completion_rate = completion_rate
         
+        # Commit all changes at once
         self.db.commit()
+        logger.info(f"Committed CTL/ATL/TSB updates for all {len(all_summaries)} summaries")
         
         return summaries_created
 
