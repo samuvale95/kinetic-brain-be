@@ -410,6 +410,28 @@ async def create_weekly_summaries(current_user: dict = Depends(get_current_user)
         )
 
 
+# DEBUG: Temporary endpoint without auth for testing
+@router.post("/debug/create-summaries")
+async def debug_create_summaries(db: Session = Depends(get_db)):
+    """DEBUG ONLY - No auth required - Create weekly summaries with logging"""
+    from app.services.strava_service import StravaService
+    from app.models.user import User
+    
+    # Get first user (for debugging only)
+    user = db.execute(select(User)).scalar_one_or_none()
+    if not user:
+        return {"error": "No users found"}
+    
+    strava_service = StravaService(db)
+    summaries_created = strava_service._create_weekly_summaries(user.id)
+    
+    return {
+        "success": True,
+        "user_id": user.id,
+        "weekly_summaries_created": summaries_created
+    }
+
+
 # Debug endpoint to show current CTL/ATL/TSB values
 @router.get("/debug/weekly-summaries")
 async def debug_weekly_summaries(current_user: dict = Depends(get_current_user),
