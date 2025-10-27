@@ -899,21 +899,13 @@ class StravaService:
                 if len(all_activities_this_day) > 0:
                     print(f"  Day {i} ({check_date}): Found {len(all_activities_this_day)} activities with broader query")
                 
-                day_activities = self.db.execute(
-                    select(StravaActivity)
-                    .where(and_(
-                        StravaActivity.strava_account_id.in_(strava_account_ids),
-                        StravaActivity.start_date >= check_date - timedelta(hours=12),
-                        StravaActivity.start_date < check_date + timedelta(hours=12)
-                    ))
-                ).scalars().all()
+                # Use the broader query results (all_activities_this_day) instead of the narrow ±12h query
+                day_tss = sum(a.tss or 0 for a in all_activities_this_day)
                 
-                if len(day_activities) > 0:
+                if len(all_activities_this_day) > 0:
                     activities_found_count += 1
                     if i >= 38:  # Debug only for first few days
-                        print(f"  Day {i}: found {len(day_activities)} activities on {check_date}, first tss={day_activities[0].tss if day_activities else 'N/A'}")
-                
-                day_tss = sum(a.tss or 0 for a in day_activities)
+                        print(f"  Day {i}: found {len(all_activities_this_day)} activities on {check_date}, first tss={all_activities_this_day[0].tss if all_activities_this_day else 'N/A'}")
                 tss_list.append(day_tss)
             
             print(f"DEBUG Week {week_start}: found activities on {activities_found_count}/42 days")
