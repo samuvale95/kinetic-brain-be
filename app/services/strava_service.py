@@ -852,11 +852,11 @@ class StravaService:
             self.db.add(weekly_summary)
             summaries_created += 1
         
-        # Calculate CTL/ATL/TSB for each week and update
-        self.db.commit()
+        # Don't commit yet - we need to update CTL/ATL/TSB for all summaries
+        # Refresh the session to ensure we can update objects
+        self.db.flush()
         
-        # Now update with CTL/ATL/TSB calculated from daily TSS
-        # Get all weekly summaries for the user in the period to update CTL/ATL/TSB
+        # Now get all summaries (newly created and existing) to update CTL/ATL/TSB
         all_summaries = self.db.execute(
             select(WeeklyPerformanceSummary)
             .where(and_(
@@ -865,7 +865,7 @@ class StravaService:
             ))
         ).scalars().all()
         
-        logger.info(f"Found {len(all_summaries)} existing summaries to update with CTL/ATL/TSB")
+        logger.info(f"Found {len(all_summaries)} summaries to update with CTL/ATL/TSB")
         
         for summary in all_summaries:
             week_start = summary.week_start_date
