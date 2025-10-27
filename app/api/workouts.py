@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import List, Optional
 from datetime import datetime
 from app.database import get_db
@@ -10,6 +11,7 @@ from app.schemas.workout import (
     WorkoutSessionCreate, WorkoutSessionResponse,
     AIWorkoutPlanRequest
 )
+from app.models.workout import Workout, WorkoutSession
 from app.schemas.ai import (
     ProgressiveWorkoutPlanRequest, WeeklyPlanRequest, WeeklyPlanResponse,
     AdaptivePlanRequest, PerformanceAnalysisData
@@ -116,6 +118,113 @@ async def update_workout_plan(plan_id: int,
         )
     
     return plan
+
+
+@router.post("/plans/{plan_id}/archive")
+async def archive_workout_plan(plan_id: int,
+                              current_user: dict = Depends(get_current_user),
+                              db: Session = Depends(get_db)):
+    """Archive a workout plan"""
+    workout_service = WorkoutService(db)
+    
+    # Get the plan
+    plan = workout_service.get_workout_plan(plan_id, current_user["user_id"])
+    if not plan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workout plan not found"
+        )
+    
+    # Update status to archived
+    plan.status = "archived"
+    db.commit()
+    
+    return {
+        "message": "Piano archiviato con successo",
+        "plan_id": plan.id
+    }
+
+
+@router.get("/plans/{plan_id}/statistics")
+async def get_plan_statistics(plan_id: int,
+                              current_user: dict = Depends(get_current_user),
+                              db: Session = Depends(get_db)):
+    """Get plan statistics"""
+    from app.models.strava import StravaActivity
+    from datetime import timedelta
+    
+    user_id = current_user["user_id"]
+    
+    # Get the plan
+    workout_service = WorkoutService(db)
+    plan = workout_service.get_workout_plan(plan_id, user_id)
+    
+    if not plan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workout plan not found"
+        )
+    
+    # Get all workouts for this plan
+    workouts = db.query(Workout).filter(
+        Workout.plan_id == plan_id
+    ).all()
+    
+    # Calculate duration in days
+    if plan.start_date and plan.end_date:
+        duration_days = (plan.end_date - plan.start_date).days
+    else:
+        duration_days = 0
+    
+    # Total workouts
+    total_workouts = len(workouts)
+    
+    # Completed workouts
+    completed_workouts = len([w for w in workouts if w.status == "completed"])
+    
+    # Total distance from Strava
+    workout_ids = [w.id for w in workouts]
+    total_distance = 0
+    if workout_ids:
+        total_distance = db.query(func.sum(StravaActivity.distance)).filter(
+            StravaActivity.workout_id.in_(workout_ids)
+        ).scalar() or 0
+    
+    # Total time from sessions
+    sessions = db.query(WorkoutSession).filter(
+        WorkoutSession.workout_id.in_(workout_ids)
+    ).all()
+    total_time = sum([s.duration_minutes for s in sessions]) * 60  # Convert to seconds
+    
+    # Average heart rate
+    avg_heart_rate = db.query(func.avg(WorkoutSession.avg_hr)).filter(
+        WorkoutSession.workout_id.in_(workout_ids)
+    ).scalar()
+    avg_heart_rate = round(avg_heart_rate, 0) if avg_heart_rate else None
+    
+    # Average power (for cycling)
+    avg_power = db.query(func.avg(WorkoutSession.avg_power)).filter(
+        WorkoutSession.workout_id.in_(workout_ids)
+    ).scalar()
+    avg_power = round(avg_power, 0) if avg_power else None
+    
+    # Simple improvements (placeholder - can be enhanced with AI)
+    improvements = []
+    if completed_workouts > 0:
+        improvements.append(f"Completati {completed_workouts} allenamenti")
+    if avg_heart_rate and avg_heart_rate > 150:
+        improvements.append(f"Medio FC {avg_heart_rate} bpm")
+    
+    return {
+        "duration_days": duration_days,
+        "total_workouts": total_workouts,
+        "completed_workouts": completed_workouts,
+        "total_distance": int(total_distance),
+        "total_time": total_time,
+        "avg_heart_rate": int(avg_heart_rate) if avg_heart_rate else None,
+        "avg_power": int(avg_power) if avg_power else None,
+        "improvements": improvements
+    }
 
 
 @router.delete("/plans/{plan_id}")
@@ -379,6 +488,24 @@ async def get_performance_analysis(
     return PerformanceAnalysisData(**performance_trends)
 
 
+# Workout Sessions - MUST be defined BEFORE /{workout_id} route
+@router.get("/sessions", response_model=List[WorkoutSessionResponse])
+async def get_workout_sessions(skip: int = Query(0, ge=0),
+                              limit: int = Query(100, ge=1, le=100),
+                              workout_id: Optional[int] = Query(None),
+                              current_user: dict = Depends(get_current_user),
+                              db: Session = Depends(get_db)):
+    """Get workout sessions"""
+    workout_service = WorkoutService(db)
+    sessions = workout_service.get_workout_sessions(
+        user_id=current_user["user_id"],
+        workout_id=workout_id,
+        skip=skip,
+        limit=limit
+    )
+    return sessions
+
+
 # Workouts
 @router.get("/", response_model=List[WorkoutResponse])
 async def get_workouts(skip: int = Query(0, ge=0),
@@ -466,12 +593,11 @@ async def delete_workout(workout_id: int,
     return {"message": "Workout deleted successfully"}
 
 
-@router.post("/{workout_id}/complete", response_model=WorkoutSessionResponse, status_code=status.HTTP_201_CREATED)
+@router.patch("/{workout_id}/complete")
 async def complete_workout(workout_id: int,
-                          session_data: WorkoutSessionCreate,
                           current_user: dict = Depends(get_current_user),
                           db: Session = Depends(get_db)):
-    """Complete a workout by creating a session"""
+    """Mark workout as completed"""
     workout_service = WorkoutService(db)
     
     # Verify workout exists and belongs to user
@@ -482,32 +608,13 @@ async def complete_workout(workout_id: int,
             detail="Workout not found"
         )
     
-    # Create workout session
-    session = workout_service.create_workout_session(
-        user_id=current_user["user_id"],
-        session_data=session_data
-    )
-    
-    # Update workout status
+    # Update workout status to completed
     workout.status = "completed"
     db.commit()
+    db.refresh(workout)
     
-    return session
-
-
-# Workout Sessions
-@router.get("/sessions", response_model=List[WorkoutSessionResponse])
-async def get_workout_sessions(skip: int = Query(0, ge=0),
-                              limit: int = Query(100, ge=1, le=100),
-                              workout_id: Optional[int] = Query(None),
-                              current_user: dict = Depends(get_current_user),
-                              db: Session = Depends(get_db)):
-    """Get workout sessions"""
-    workout_service = WorkoutService(db)
-    sessions = workout_service.get_workout_sessions(
-        user_id=current_user["user_id"],
-        workout_id=workout_id,
-        skip=skip,
-        limit=limit
-    )
-    return sessions
+    return {
+        "id": workout.id,
+        "completed": True,
+        "completed_at": workout.updated_at.isoformat() if workout.updated_at else None
+    }

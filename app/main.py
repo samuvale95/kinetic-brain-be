@@ -8,7 +8,7 @@ import sys
 
 from app.config import settings
 from app.database import engine, Base
-from app.api import auth, profile, workouts, calendar, ai, dashboard, strava
+from app.api import auth, profile, workouts, calendar, ai, dashboard, strava, weather
 from app.middleware.auth_middleware import AuthMiddleware
 
 
@@ -88,6 +88,7 @@ app.include_router(calendar.router)
 app.include_router(ai.router)
 app.include_router(dashboard.router)
 app.include_router(strava.router)
+app.include_router(weather.router)
 
 
 # Root endpoint

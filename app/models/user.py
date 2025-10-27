@@ -43,6 +43,9 @@ class UserProfile(Base):
     weekly_hours = Column(Float)
     main_goal = Column(String(100))
     physical_notes = Column(Text)
+    city = Column(String(100))  # City for weather
+    latitude = Column(Float)  # Latitude for weather
+    longitude = Column(Float)  # Longitude for weather
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     

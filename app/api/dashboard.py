@@ -36,14 +36,75 @@ async def options_dashboard_calendar_events():
     return Response(status_code=200)
 
 
+@router.options("/today-workouts")
+async def options_today_workouts():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
+@router.get("/today-workouts")
+async def get_today_workouts(current_user: dict = Depends(get_current_user),
+                             db: Session = Depends(get_db)):
+    """Get today's scheduled workouts"""
+    user_id = current_user["user_id"]
+    today = date.today()
+    
+    workouts = db.query(Workout).filter(
+        and_(
+            Workout.user_id == user_id,
+            Workout.scheduled_date == today,
+            Workout.status.in_(["scheduled", "completed"])
+        )
+    ).order_by(Workout.scheduled_date, Workout.duration_minutes).all()
+    
+    # Format response
+    result = []
+    for workout in workouts:
+        # Determine emoji based on type
+        emoji_map = {
+            "run": "🏃",
+            "ride": "🚴", 
+            "swim": "🏊",
+            "strength": "💪",
+            "rest": "😴",
+            "yoga": "🧘"
+        }
+        
+        emoji = emoji_map.get(workout.type.lower(), "🏃")
+        
+        # Check if completed
+        completed = workout.status == "completed"
+        
+        result.append({
+            "id": workout.id,
+            "title": workout.title,
+            "duration": f"{workout.duration_minutes} min",
+            "zone": workout.zone or "Z2",
+            "emoji": emoji,
+            "type": workout.type,
+            "scheduled_date": workout.scheduled_date.isoformat() if workout.scheduled_date else None,
+            "completed": completed
+        })
+    
+    return result
+
+
 @router.get("/stats")
 async def get_dashboard_stats(current_user: dict = Depends(get_current_user),
                              db: Session = Depends(get_db)):
     """Get dashboard statistics"""
+    from app.models.strava import StravaActivity
+    from app.models.user import UserProfile
+    
     user_id = current_user["user_id"]
     
     # Total workouts completed
     total_workouts = db.query(Workout).filter(
+        and_(Workout.user_id == user_id, Workout.status == "completed")
+    ).count()
+    
+    # Total completed workouts (all time)
+    completed_workouts = db.query(Workout).filter(
         and_(Workout.user_id == user_id, Workout.status == "completed")
     ).count()
     
@@ -90,13 +151,29 @@ async def get_dashboard_stats(current_user: dict = Depends(get_current_user),
         )
     ).count()
     
+    # Calculate average heart rate from sessions
+    avg_heart_rate = db.query(func.avg(WorkoutSession.avg_hr)).filter(
+        WorkoutSession.user_id == user_id
+    ).scalar()
+    avg_heart_rate = round(avg_heart_rate, 0) if avg_heart_rate else None
+    
+    # Calculate total distance from Strava activities
+    total_distance = db.query(func.sum(StravaActivity.distance)).join(
+        Workout, StravaActivity.workout_id == Workout.id
+    ).filter(
+        Workout.user_id == user_id
+    ).scalar() or 0
+    
     return {
         "total_workouts": total_workouts,
         "workouts_this_week": workouts_this_week,
         "total_training_time_minutes": total_duration,
         "total_training_time_hours": round(total_duration / 60, 1),
         "active_plans": active_plans,
-        "upcoming_workouts": upcoming_workouts
+        "upcoming_workouts": upcoming_workouts,
+        "completed_workouts": completed_workouts,
+        "avg_heart_rate": int(avg_heart_rate) if avg_heart_rate else None,
+        "total_distance": int(total_distance)
     }
 
 

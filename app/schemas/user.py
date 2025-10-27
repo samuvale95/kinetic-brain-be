@@ -39,6 +39,9 @@ class UserProfileCreate(BaseModel):
     weekly_hours: Optional[float] = Field(None, ge=0, le=168)
     main_goal: Optional[str] = Field(None, max_length=100)
     physical_notes: Optional[str] = None
+    city: Optional[str] = Field(None, max_length=100)  # City for weather
+    latitude: Optional[float] = Field(None, ge=-90, le=90)  # Latitude for weather
+    longitude: Optional[float] = Field(None, ge=-180, le=180)  # Longitude for weather
 
 
 class UserProfileUpdate(BaseModel):
@@ -51,6 +54,9 @@ class UserProfileUpdate(BaseModel):
     weekly_hours: Optional[float] = Field(None, ge=0, le=168)
     main_goal: Optional[str] = Field(None, max_length=100)
     physical_notes: Optional[str] = None
+    city: Optional[str] = Field(None, max_length=100)  # City for weather
+    latitude: Optional[float] = Field(None, ge=-90, le=90)  # Latitude for weather
+    longitude: Optional[float] = Field(None, ge=-180, le=180)  # Longitude for weather
 
 
 class UserProfileResponse(BaseModel):
@@ -65,6 +71,9 @@ class UserProfileResponse(BaseModel):
     weekly_hours: Optional[float] = None
     main_goal: Optional[str] = None
     physical_notes: Optional[str] = None
+    city: Optional[str] = None  # City for weather
+    latitude: Optional[float] = None  # Latitude for weather
+    longitude: Optional[float] = None  # Longitude for weather
     created_at: datetime
     updated_at: Optional[datetime] = None
     
