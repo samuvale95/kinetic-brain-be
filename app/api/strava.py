@@ -431,8 +431,7 @@ async def debug_activities(db: Session = Depends(get_db)):
     activities = db.execute(
         select(StravaActivity)
         .where(StravaActivity.strava_account_id == accounts[0].id)
-        .order_by(StravaActivity.start_date.desc())
-        .limit(10)
+        .order_by(StravaActivity.start_date.asc())  # Oldest first
     ).scalars().all()
     
     result = []
