@@ -75,7 +75,7 @@ fi
 
 # Create tables
 echo -e "\n${BLUE}🏗️  Creating database tables...${NC}"
-if psql "$DB_URL" -f create_tables.sql; then
+if psql "$DB_URL" -f database/create_tables.sql; then
     print_status "success" "Database tables created successfully"
 else
     print_status "error" "Failed to create database tables"

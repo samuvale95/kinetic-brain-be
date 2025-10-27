@@ -34,7 +34,7 @@ Script bash automatizzato per eseguire la creazione delle tabelle.
 ### Metodo 2: Esecuzione Manuale
 ```bash
 # Esegui direttamente lo script SQL
-psql "postgresql://user:password@host:port/database" -f create_tables.sql
+psql "postgresql://user:password@host:port/database" -f database/create_tables.sql
 ```
 
 ## 📊 Struttura Database
