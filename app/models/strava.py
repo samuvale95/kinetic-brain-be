@@ -89,6 +89,19 @@ class StravaActivity(Base):
     is_synced = Column(Boolean, default=False)  # Synced with workout plan
     sync_status = Column(String(50), default="pending")  # pending, matched, manual, ignored
     
+    # Calculated metrics (denormalized for quick access)
+    tss = Column(Float)  # Training Stress Score
+    normalized_power = Column(Float)
+    intensity_factor = Column(Float)
+    trimp = Column(Float)  # Training Impulse
+    time_in_zone_1 = Column(Integer, default=0)
+    time_in_zone_2 = Column(Integer, default=0)
+    time_in_zone_3 = Column(Integer, default=0)
+    time_in_zone_4 = Column(Integer, default=0)
+    time_in_zone_5 = Column(Integer, default=0)
+    metrics_calculated = Column(Boolean, default=False)
+    zone_distribution = Column(JSON)  # JSON with zone distribution
+    
     # Raw Strava data
     raw_data = Column(JSON)  # Complete Strava response
     
@@ -98,6 +111,7 @@ class StravaActivity(Base):
     # Relationships
     strava_account = relationship("StravaAccount", back_populates="activities")
     workout = relationship("Workout", back_populates="strava_activity")
+    training_metrics = relationship("TrainingMetrics", back_populates="strava_activity", uselist=False)
 
 
 class StravaWebhook(Base):

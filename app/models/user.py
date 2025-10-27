@@ -26,6 +26,7 @@ class User(Base):
     workouts = relationship("Workout", back_populates="user")
     workout_sessions = relationship("WorkoutSession", back_populates="user")
     calendar_events = relationship("CalendarEvent", back_populates="user")
+    weekly_summaries = relationship("WeeklyPerformanceSummary", back_populates="user")
     # strava_account = relationship("StravaAccount", back_populates="user", uselist=False)  # Temporarily disabled
 
 
@@ -46,6 +47,7 @@ class UserProfile(Base):
     city = Column(String(100))  # City for weather
     latitude = Column(Float)  # Latitude for weather
     longitude = Column(Float)  # Longitude for weather
+    preferred_zone_type = Column(String(10), default="hr")  # hr, pace, power
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     

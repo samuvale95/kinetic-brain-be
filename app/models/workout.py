@@ -78,3 +78,4 @@ class WorkoutSession(Base):
     # Relationships
     workout = relationship("Workout", back_populates="sessions")
     user = relationship("User", back_populates="workout_sessions")
+    training_metrics = relationship("TrainingMetrics", back_populates="workout_session", uselist=False)

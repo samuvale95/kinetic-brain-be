@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+from sqlalchemy import and_
 from typing import List
 from app.database import get_db
 from app.schemas.user import (
@@ -8,6 +9,7 @@ from app.schemas.user import (
     PerformanceMetricsCreate, PerformanceMetricsResponse,
     ZoneCalculationRequest, ZoneCalculationResponse
 )
+from app.schemas.statistics import ZonePreferenceRequest, ZonePreferenceResponse
 from app.models.user import UserProfile, PerformanceMetrics
 from app.services.calculation_service import CalculationService
 from app.api.auth import get_current_user
@@ -34,6 +36,12 @@ async def options_profile_calculate_zones():
     return Response(status_code=200)
 
 
+@router.options("/zone-preference")
+async def options_profile_zone_preference():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
 @router.get("/", response_model=UserProfileResponse)
 async def get_profile(current_user: dict = Depends(get_current_user), 
                      db: Session = Depends(get_db)):
@@ -47,6 +55,11 @@ async def get_profile(current_user: dict = Depends(get_current_user),
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Profile not found"
         )
+    
+    # Ensure preferred_zone_type is set (for backward compatibility)
+    if not profile.preferred_zone_type:
+        profile.preferred_zone_type = 'hr'
+        db.commit()
     
     return profile
 
@@ -155,3 +168,45 @@ async def calculate_zones(zone_request: ZoneCalculationRequest):
         zones=zones["zones"],
         calculated_at=zones["calculated_at"]
     )
+
+
+@router.put("/zone-preference", response_model=ZonePreferenceResponse)
+async def update_zone_preference(request: ZonePreferenceRequest,
+                                 current_user: dict = Depends(get_current_user),
+                                 db: Session = Depends(get_db)):
+    """Update user's preferred zone type"""
+    profile = db.query(UserProfile).filter(
+        UserProfile.user_id == current_user["user_id"]
+    ).first()
+    
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Profile not found"
+        )
+    
+    # Update preferred zone type
+    profile.preferred_zone_type = request.preferred_zone_type
+    db.commit()
+    db.refresh(profile)
+    
+    # Get current zones based on preference
+    current_zones = None
+    if request.preferred_zone_type in ["hr", "pace", "power"]:
+        # Get the latest performance metrics for this zone type
+        metrics = db.query(PerformanceMetrics).filter(
+            and_(
+                PerformanceMetrics.user_id == current_user["user_id"],
+                PerformanceMetrics.metric_type == request.preferred_zone_type
+            )
+        ).order_by(PerformanceMetrics.test_date.desc()).first()
+        
+        if metrics and metrics.zones_json:
+            current_zones = metrics.zones_json
+    
+    return {
+        'success': True,
+        'preferred_zone_type': request.preferred_zone_type,
+        'zones_calculated': current_zones is not None,
+        'current_zones': current_zones
+    }

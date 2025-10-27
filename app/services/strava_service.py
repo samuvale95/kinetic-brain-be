@@ -1,12 +1,15 @@
 import requests
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, func, desc
 from app.models.strava import StravaAccount, StravaActivity, StravaWebhook
 from app.models.workout import Workout, WorkoutStatus
-from app.models.user import User
+from app.models.user import User, UserProfile, PerformanceMetrics
+from app.models.training_metrics import TrainingMetrics
+from app.models.weekly_summary import WeeklyPerformanceSummary
+from app.services.metrics_calculation_service import MetricsCalculationService
 from app.config import settings
 import logging
 
@@ -18,6 +21,7 @@ class StravaService:
         self.db = db
         self.base_url = "https://www.strava.com/api/v3"
         self.auth_url = "https://www.strava.com/oauth"
+        self.metrics_service = MetricsCalculationService()
     
     def get_auth_url(self, user_id: int) -> str:
         """Generate Strava OAuth authorization URL"""
@@ -428,4 +432,471 @@ class StravaService:
             result.append(activity_data)
         
         return result
+    
+    def calculate_activity_metrics(self, strava_activity: StravaActivity, user_id: int) -> TrainingMetrics:
+        """
+        Calculate training metrics for a Strava activity
+        
+        Args:
+            strava_activity: Strava activity to calculate metrics for
+            user_id: User ID to get threshold values from
+        
+        Returns:
+            TrainingMetrics object with calculated values
+        """
+        # Get user's performance thresholds
+        hr_metrics = self.db.execute(
+            select(PerformanceMetrics)
+            .where(and_(
+                PerformanceMetrics.user_id == user_id,
+                PerformanceMetrics.metric_type == "hr"
+            ))
+            .order_by(desc(PerformanceMetrics.test_date))
+        ).scalar_one_or_none()
+        
+        power_metrics = self.db.execute(
+            select(PerformanceMetrics)
+            .where(and_(
+                PerformanceMetrics.user_id == user_id,
+                PerformanceMetrics.metric_type == "power"
+            ))
+            .order_by(desc(PerformanceMetrics.test_date))
+        ).scalar_one_or_none()
+        
+        # Extract zones
+        hr_zones = None
+        if hr_metrics and hr_metrics.zones_json:
+            hr_zones = hr_metrics.zones_json
+        
+        # Get threshold values
+        threshold_hr = hr_metrics.threshold_value if hr_metrics else None
+        threshold_power = power_metrics.threshold_value if power_metrics else None
+        max_hr = hr_metrics.max_value if hr_metrics else None
+        resting_hr = hr_metrics.rest_value if hr_metrics else None
+        
+        # Calculate duration
+        duration_seconds = strava_activity.moving_time or strava_activity.elapsed_time or 0
+        
+        # Calculate Intensity Factor
+        intensity_factor = None
+        if strava_activity.weighted_average_watts and threshold_power:
+            intensity_factor = self.metrics_service.calculate_intensity_factor(
+                normalized_power=strava_activity.weighted_average_watts,
+                threshold_power=threshold_power
+            )
+        elif strava_activity.average_watts and threshold_power:
+            intensity_factor = self.metrics_service.calculate_intensity_factor(
+                avg_power=strava_activity.average_watts,
+                threshold_power=threshold_power
+            )
+        elif strava_activity.average_heartrate and threshold_hr:
+            intensity_factor = self.metrics_service.calculate_intensity_factor(
+                avg_hr=strava_activity.average_heartrate,
+                threshold_hr=threshold_hr
+            )
+        
+        # Calculate TSS
+        tss = self.metrics_service.calculate_tss(
+            duration_seconds=duration_seconds,
+            intensity_factor=intensity_factor,
+            normalized_power=strava_activity.weighted_average_watts,
+            threshold_power=threshold_power
+        )
+        
+        # Calculate TRIMP
+        trimp = 0
+        if strava_activity.average_heartrate and max_hr:
+            trimp = self.metrics_service.calculate_trimp(
+                duration_seconds=duration_seconds,
+                avg_hr=strava_activity.average_heartrate,
+                max_hr=max_hr,
+                resting_hr=resting_hr
+            )
+        
+        # Calculate time in zones
+        time_in_zones = {}
+        if strava_activity.average_heartrate and hr_zones:
+            time_in_zones = self.metrics_service.calculate_time_in_zones(
+                hr_data=None,
+                zones=hr_zones,
+                duration_seconds=duration_seconds,
+                avg_hr=strava_activity.average_heartrate
+            )
+        
+        # Create TrainingMetrics record
+        training_metrics = TrainingMetrics(
+            strava_activity_id=strava_activity.id,
+            tss=tss,
+            normalized_power=strava_activity.weighted_average_watts,
+            intensity_factor=intensity_factor,
+            trimp=trimp,
+            time_in_zone_1=time_in_zones.get('z1', 0),
+            time_in_zone_2=time_in_zones.get('z2', 0),
+            time_in_zone_3=time_in_zones.get('z3', 0),
+            time_in_zone_4=time_in_zones.get('z4', 0),
+            time_in_zone_5=time_in_zones.get('z5', 0),
+            zone_distribution={
+                "z1": time_in_zones.get('z1', 0),
+                "z2": time_in_zones.get('z2', 0),
+                "z3": time_in_zones.get('z3', 0),
+                "z4": time_in_zones.get('z4', 0),
+                "z5": time_in_zones.get('z5', 0)
+            }
+        )
+        
+        # Update StravaActivity with denormalized values for quick access
+        strava_activity.tss = tss
+        strava_activity.normalized_power = strava_activity.weighted_average_watts
+        strava_activity.intensity_factor = intensity_factor
+        strava_activity.trimp = trimp
+        strava_activity.time_in_zone_1 = time_in_zones.get('z1', 0)
+        strava_activity.time_in_zone_2 = time_in_zones.get('z2', 0)
+        strava_activity.time_in_zone_3 = time_in_zones.get('z3', 0)
+        strava_activity.time_in_zone_4 = time_in_zones.get('z4', 0)
+        strava_activity.time_in_zone_5 = time_in_zones.get('z5', 0)
+        strava_activity.metrics_calculated = True
+        strava_activity.zone_distribution = training_metrics.zone_distribution
+        
+        return training_metrics
+    
+    def recalculate_all_metrics(self, user_id: int) -> Dict[str, Any]:
+        """
+        Recalculate metrics for all existing activities for a user
+        
+        This is called on first Strava connection and when user explicitly requests recalculation
+        
+        Args:
+            user_id: User ID to recalculate metrics for
+        
+        Returns:
+            Dictionary with recalculation results
+        """
+        start_time = datetime.now()
+        
+        # Get user's Strava account
+        strava_account = self.db.execute(
+            select(StravaAccount)
+            .where(StravaAccount.user_id == user_id)
+        ).scalar_one_or_none()
+        
+        if not strava_account:
+            raise Exception("No Strava account found for user")
+        
+        # Get all activities
+        activities = self.db.execute(
+            select(StravaActivity)
+            .where(StravaActivity.strava_account_id == strava_account.id)
+            .order_by(StravaActivity.start_date)
+        ).scalars().all()
+        
+        metrics_calculated = {
+            'tss_calculated': 0,
+            'trimp_calculated': 0,
+            'if_calculated': 0,
+            'zones_calculated': 0
+        }
+        
+        activities_processed = 0
+        metrics_to_update = []
+        
+        for activity in activities:
+            # Check if metrics already exist
+            existing_metrics = self.db.execute(
+                select(TrainingMetrics)
+                .where(TrainingMetrics.strava_activity_id == activity.id)
+            ).scalar_one_or_none()
+            
+            # Skip if already calculated
+            if existing_metrics and activity.metrics_calculated:
+                metrics_calculated['tss_calculated'] += 1 if existing_metrics.tss else 0
+                metrics_calculated['trimp_calculated'] += 1 if existing_metrics.trimp else 0
+                metrics_calculated['if_calculated'] += 1 if existing_metrics.intensity_factor else 0
+                metrics_calculated['zones_calculated'] += 1 if existing_metrics.time_in_zone_1 or existing_metrics.time_in_zone_2 else 0
+                activities_processed += 1
+                continue
+            
+            # Calculate new metrics
+            try:
+                metrics = self.calculate_activity_metrics(activity, user_id)
+                
+                # Update existing or add new
+                if existing_metrics:
+                    # Update existing - just update fields, don't add new record
+                    existing_metrics.tss = metrics.tss
+                    existing_metrics.normalized_power = metrics.normalized_power
+                    existing_metrics.intensity_factor = metrics.intensity_factor
+                    existing_metrics.trimp = metrics.trimp
+                    existing_metrics.time_in_zone_1 = metrics.time_in_zone_1
+                    existing_metrics.time_in_zone_2 = metrics.time_in_zone_2
+                    existing_metrics.time_in_zone_3 = metrics.time_in_zone_3
+                    existing_metrics.time_in_zone_4 = metrics.time_in_zone_4
+                    existing_metrics.time_in_zone_5 = metrics.time_in_zone_5
+                    existing_metrics.zone_distribution = metrics.zone_distribution
+                    # Don't append to metrics_to_update since we're updating, not inserting
+                else:
+                    # Add new to list for bulk insert (only if it doesn't exist)
+                    metrics_to_update.append(metrics)
+                
+                metrics_calculated['tss_calculated'] += 1 if metrics.tss else 0
+                metrics_calculated['trimp_calculated'] += 1 if metrics.trimp else 0
+                metrics_calculated['if_calculated'] += 1 if metrics.intensity_factor else 0
+                metrics_calculated['zones_calculated'] += 1 if metrics.time_in_zone_1 or metrics.time_in_zone_2 else 0
+                
+                activities_processed += 1
+            except Exception as e:
+                logger.error(f"Error calculating metrics for activity {activity.id}: {e}")
+                continue
+        
+        # Bulk add new metrics only
+        if metrics_to_update:
+            self.db.add_all(metrics_to_update)
+        
+        # Commit all changes
+        self.db.commit()
+        
+        # Calculate initial CTL/ATL/TSB
+        initial_metrics = self._calculate_initial_fitness_metrics(user_id)
+        
+        # Create weekly summaries
+        weekly_summaries_created = self._create_weekly_summaries(user_id)
+        
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        return {
+            'success': True,
+            'activities_processed': activities_processed,
+            'metrics_calculated': metrics_calculated,
+            'weekly_summaries_created': weekly_summaries_created,
+            'initial_ctl': initial_metrics.get('ctl'),
+            'initial_atl': initial_metrics.get('atl'),
+            'initial_tsb': initial_metrics.get('tsb'),
+            'processing_time_seconds': round(processing_time, 2)
+        }
+    
+    def _calculate_initial_fitness_metrics(self, user_id: int) -> Dict[str, float]:
+        """
+        Calculate initial CTL/ATL/TSB based on historical data
+        
+        IMPORTANT: This includes ALL 42 days in the period, even days with no activity (TSS=0).
+        This is crucial for the exponential decay calculation - rest days cause fitness/fatigue to decay.
+        """
+        from datetime import date
+        
+        # Get last 42 days (for CTL)
+        end_date = date.today()
+        start_date = end_date - timedelta(days=41)  # 42 days total (including today)
+        
+        # Get activities with metrics in this period
+        activities = self.db.execute(
+            select(StravaActivity)
+            .where(and_(
+                StravaActivity.strava_account_id == (
+                    select(StravaAccount.id)
+                    .where(StravaAccount.user_id == user_id)
+                    .scalar_subquery()
+                ),
+                StravaActivity.start_date >= start_date,
+                StravaActivity.tss.isnot(None)
+            ))
+            .order_by(StravaActivity.start_date)
+        ).scalars().all()
+        
+        # Group TSS by date
+        daily_tss = {}
+        for activity in activities:
+            activity_date = activity.start_date.date()
+            daily_tss[activity_date] = daily_tss.get(activity_date, 0) + (activity.tss or 0)
+        
+        # Build complete list of ALL days in period (most recent first)
+        # This is critical: we include days with 0 TSS (rest days)
+        tss_list = []
+        for i in range(42):
+            day_date = end_date - timedelta(days=i)
+            tss_for_day = daily_tss.get(day_date, 0)  # 0 for rest days
+            tss_list.append(tss_for_day)
+        
+        # Calculate CTL/ATL/TSB with all days
+        # The exponential decay happens on EVERY day, including rest days
+        metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
+        
+        return metrics
+    
+    def _create_weekly_summaries(self, user_id: int) -> int:
+        """
+        Create weekly summaries for historical data
+        
+        This creates weekly summaries for all weeks with activities in the last 12 weeks
+        """
+        from app.models.weekly_summary import WeeklyPerformanceSummary
+        
+        end_date = date.today()
+        start_date = end_date - timedelta(weeks=12)
+        
+        # Get all activities in the period
+        strava_account_ids = self.db.execute(
+            select(StravaAccount.id)
+            .where(StravaAccount.user_id == user_id)
+        ).scalars().all()
+        
+        if not strava_account_ids:
+            return 0
+        
+        activities = self.db.execute(
+            select(StravaActivity)
+            .where(and_(
+                StravaActivity.strava_account_id.in_(strava_account_ids),
+                StravaActivity.start_date >= start_date,
+                StravaActivity.metrics_calculated == True
+            ))
+            .order_by(StravaActivity.start_date)
+        ).scalars().all()
+        
+        if not activities:
+            return 0
+        
+        # Group activities by week
+        weekly_data = {}
+        for activity in activities:
+            activity_date = activity.start_date.date()
+            week_start = activity_date - timedelta(days=activity_date.weekday())
+            
+            if week_start not in weekly_data:
+                weekly_data[week_start] = {
+                    'activities': [],
+                    'total_tss': 0,
+                    'total_trimp': 0,
+                    'total_duration': 0,
+                    'total_distance': 0
+                }
+            
+            weekly_data[week_start]['activities'].append(activity)
+            weekly_data[week_start]['total_tss'] += activity.tss or 0
+            weekly_data[week_start]['total_trimp'] += activity.trimp or 0
+            weekly_data[week_start]['total_duration'] += activity.moving_time or 0
+            weekly_data[week_start]['total_distance'] += activity.distance or 0
+        
+        # Create weekly summaries
+        summaries_created = 0
+        for week_start, data in weekly_data.items():
+            week_end = week_start + timedelta(days=6)
+            
+            # Check if summary already exists
+            existing = self.db.execute(
+                select(WeeklyPerformanceSummary)
+                .where(and_(
+                    WeeklyPerformanceSummary.user_id == user_id,
+                    WeeklyPerformanceSummary.week_start_date == week_start
+                ))
+            ).scalar_one_or_none()
+            
+            if existing:
+                continue
+            
+            # Calculate aggregate metrics
+            total_minutes = data['total_duration'] / 60 if data['total_duration'] else 0
+            volume_hours = total_minutes / 60
+            volume_km = data['total_distance'] / 1000 if data['total_distance'] else 0
+            
+            # Get average HR if available
+            activities_with_hr = [a for a in data['activities'] if a.average_heartrate]
+            avg_hr = sum(a.average_heartrate for a in activities_with_hr) / len(activities_with_hr) if activities_with_hr else None
+            
+            # Get max HR
+            max_hr = max((a.max_heartrate for a in data['activities'] if a.max_heartrate), default=None)
+            
+            # Calculate zone distribution
+            zone_time = {
+                'z1': sum(a.time_in_zone_1 or 0 for a in data['activities']),
+                'z2': sum(a.time_in_zone_2 or 0 for a in data['activities']),
+                'z3': sum(a.time_in_zone_3 or 0 for a in data['activities']),
+                'z4': sum(a.time_in_zone_4 or 0 for a in data['activities']),
+                'z5': sum(a.time_in_zone_5 or 0 for a in data['activities'])
+            }
+            
+            total_zone_time = sum(zone_time.values())
+            if total_zone_time > 0:
+                zone_distribution = {
+                    'z1': round((zone_time['z1'] / total_zone_time) * 100, 1),
+                    'z2': round((zone_time['z2'] / total_zone_time) * 100, 1),
+                    'z3': round((zone_time['z3'] / total_zone_time) * 100, 1),
+                    'z4': round((zone_time['z4'] / total_zone_time) * 100, 1),
+                    'z5': round((zone_time['z5'] / total_zone_time) * 100, 1)
+                }
+            else:
+                zone_distribution = None
+            
+            # Create weekly summary
+            weekly_summary = WeeklyPerformanceSummary(
+                user_id=user_id,
+                week_start_date=week_start,
+                week_end_date=week_end,
+                weekly_tss=data['total_tss'],
+                weekly_trimp=data['total_trimp'],
+                volume_hours=round(volume_hours, 2),
+                volume_kilometers=round(volume_km, 2),
+                workouts_completed=len(data['activities']),
+                avg_hr=avg_hr,
+                max_hr=max_hr,
+                zone_distribution=zone_distribution
+            )
+            
+            self.db.add(weekly_summary)
+            summaries_created += 1
+        
+        # Calculate CTL/ATL/TSB for each week and update
+        self.db.commit()
+        
+        # Now update with CTL/ATL/TSB calculated from daily TSS
+        for week_start, data in weekly_data.items():
+            # Get daily TSS for this week
+            week_daily_tss = {}
+            for activity in data['activities']:
+                activity_date = activity.start_date.date()
+                week_daily_tss[activity_date] = week_daily_tss.get(activity_date, 0) + (activity.tss or 0)
+            
+            # Fill in rest days with 0
+            for i in range(7):
+                day_date = week_start + timedelta(days=i)
+                if day_date not in week_daily_tss:
+                    week_daily_tss[day_date] = 0
+            
+            # Get last 42 days of daily TSS for this week
+            tss_list = []
+            for i in range(42):
+                check_date = week_start - timedelta(days=42-i)
+                # Get TSS for this day from all activities
+                day_activities = self.db.execute(
+                    select(StravaActivity)
+                    .where(and_(
+                        StravaActivity.strava_account_id.in_(strava_account_ids),
+                        StravaActivity.start_date >= check_date - timedelta(hours=12),
+                        StravaActivity.start_date < check_date + timedelta(hours=12)
+                    ))
+                ).scalars().all()
+                
+                day_tss = sum(a.tss or 0 for a in day_activities)
+                tss_list.append(day_tss)
+            
+            # Calculate CTL/ATL/TSB
+            metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
+            
+            # Update weekly summary
+            weekly_summary = self.db.execute(
+                select(WeeklyPerformanceSummary)
+                .where(and_(
+                    WeeklyPerformanceSummary.user_id == user_id,
+                    WeeklyPerformanceSummary.week_start_date == week_start
+                ))
+            ).scalar_one_or_none()
+            
+            if weekly_summary:
+                weekly_summary.ctl = metrics['ctl']
+                weekly_summary.atl = metrics['atl']
+                weekly_summary.tsb = metrics['tsb']
+                completion_rate = (weekly_summary.workouts_completed or 0) / max(weekly_summary.workouts_planned or 1, 1) * 100 if weekly_summary.workouts_planned else None
+                weekly_summary.completion_rate = completion_rate
+        
+        self.db.commit()
+        
+        return summaries_created
 

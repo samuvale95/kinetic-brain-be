@@ -11,6 +11,7 @@ from app.schemas.strava import (
     StravaSyncResponse, StravaMatchResponse, StravaAuthResponse,
     StravaCallbackRequest, StravaCallbackResponse
 )
+from app.schemas.statistics import RecalculateMetricsResponse
 from app.services.strava_service import StravaService
 from app.api.auth import get_current_user
 from app.models.strava import StravaAccount
@@ -305,6 +306,12 @@ async def update_activity_sync_status(activity_id: int,
 
 
 # Webhook endpoint for Strava
+@router.options("/recalculate-metrics")
+async def options_recalculate_metrics():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
 @router.post("/webhook")
 async def strava_webhook(request: dict, db: Session = Depends(get_db)):
     """Handle Strava webhook notifications"""
@@ -352,3 +359,52 @@ async def strava_webhook(request: dict, db: Session = Depends(get_db)):
         db.commit()
     
     return {"status": "ok"}
+
+
+@router.post("/recalculate-metrics", response_model=RecalculateMetricsResponse)
+async def recalculate_metrics(current_user: dict = Depends(get_current_user),
+                             db: Session = Depends(get_db)):
+    """
+    Recalculate metrics for all activities and create weekly summaries
+    
+    This will:
+    1. Calculate TSS/TRIMP/IF for all existing activities
+    2. Create weekly performance summaries for last 12 weeks
+    3. Calculate initial CTL/ATL/TSB
+    """
+    from app.services.strava_service import StravaService
+    from app.schemas.statistics import RecalculateMetricsResponse
+    
+    try:
+        strava_service = StravaService(db)
+        result = strava_service.recalculate_all_metrics(current_user["user_id"])
+        
+        return RecalculateMetricsResponse(**result)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to recalculate metrics: {str(e)}"
+        )
+
+
+# Debug endpoint to manually trigger weekly summary creation
+@router.post("/create-weekly-summaries")
+async def create_weekly_summaries(current_user: dict = Depends(get_current_user),
+                                  db: Session = Depends(get_db)):
+    """Manually create weekly summaries - useful for testing"""
+    try:
+        from app.services.strava_service import StravaService
+        strava_service = StravaService(db)
+        
+        summaries_created = strava_service._create_weekly_summaries(current_user["user_id"])
+        
+        return {
+            "success": True,
+            "weekly_summaries_created": summaries_created,
+            "message": f"Created {summaries_created} weekly summaries"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create weekly summaries: {str(e)}"
+        )
