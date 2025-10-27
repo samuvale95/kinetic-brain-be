@@ -863,6 +863,13 @@ class StravaService:
             ))
         ).scalars().all()
         
+        logger.info(f"DEBUG: Found {len(all_summaries)} summaries to update with CTL/ATL/TSB")
+        
+        if len(all_summaries) == 0:
+            logger.warning("DEBUG: No summaries found to update! Something is wrong.")
+            self.db.commit()
+            return summaries_created
+        
         from sqlalchemy import update
         
         updates_made = 0
