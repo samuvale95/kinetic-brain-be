@@ -883,6 +883,9 @@ class StravaService:
             activities_found_count = 0
             for i in range(41, -1, -1):
                 check_date = week_start - timedelta(days=42-i)
+                # Debug first and last dates being checked
+                if i == 41 or i == 0:
+                    print(f"  Checking date {check_date} (i={i}, days_back={42-i})")
                 day_activities = self.db.execute(
                     select(StravaActivity)
                     .where(and_(
