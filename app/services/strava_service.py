@@ -775,31 +775,10 @@ class StravaService:
             weekly_data[week_start]['total_duration'] += activity.moving_time or 0
             weekly_data[week_start]['total_distance'] += activity.distance or 0
         
-        # Create weekly summaries AND calculate CTL/ATL/TSB in one pass
+        # Create weekly summaries (without CTL/ATL/TSB for now)
         summaries_created = 0
         for week_start, data in weekly_data.items():
             week_end = week_start + timedelta(days=6)
-            
-            # Calculate CTL/ATL/TSB first (before checking if exists)
-            # Get last 42 days of daily TSS for this week
-            tss_list = []
-            for i in range(41, -1, -1):
-                check_date = week_start - timedelta(days=42-i)
-                day_activities = self.db.execute(
-                    select(StravaActivity)
-                    .where(and_(
-                        StravaActivity.strava_account_id.in_(strava_account_ids),
-                        StravaActivity.start_date >= check_date - timedelta(hours=12),
-                        StravaActivity.start_date < check_date + timedelta(hours=12)
-                    ))
-                ).scalars().all()
-                
-                day_tss = sum(a.tss or 0 for a in day_activities)
-                tss_list.append(day_tss)
-            
-            # Calculate CTL/ATL/TSB
-            metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
-            logger.info(f"Week {week_start}: Calculated CTL={metrics['ctl']:.2f}, ATL={metrics['atl']:.2f}, TSB={metrics['tsb']:.2f} (sum TSS={sum(tss_list):.1f})")
             
             # Check if summary already exists
             existing = self.db.execute(
@@ -819,17 +798,11 @@ class StravaService:
             
             # Update existing or create new
             if existing:
-                # Update existing summary WITH CTL/ATL/TSB
+                # Update existing summary
                 existing.weekly_tss = data['total_tss']
                 existing.workouts_completed = len(data['activities'])
                 existing.volume_hours = round(volume_hours, 2)
                 existing.volume_kilometers = volume_km
-                existing.ctl = metrics['ctl']
-                existing.atl = metrics['atl']
-                existing.tsb = metrics['tsb']
-                completion_rate = (existing.workouts_completed or 0) / max(existing.workouts_planned or 1, 1) * 100 if existing.workouts_planned else None
-                existing.completion_rate = completion_rate
-                logger.info(f"Week {week_start}: Updated existing summary with CTL={existing.ctl}, ATL={existing.atl}, TSB={existing.tsb}")
                 continue
             
             # Get average HR if available
@@ -860,7 +833,7 @@ class StravaService:
             else:
                 zone_distribution = None
             
-            # Create weekly summary WITH CTL/ATL/TSB
+            # Create weekly summary
             weekly_summary = WeeklyPerformanceSummary(
                 user_id=user_id,
                 week_start_date=week_start,
@@ -872,18 +845,58 @@ class StravaService:
                 workouts_completed=len(data['activities']),
                 avg_hr=avg_hr,
                 max_hr=max_hr,
-                zone_distribution=zone_distribution,
-                ctl=metrics['ctl'],
-                atl=metrics['atl'],
-                tsb=metrics['tsb']
+                zone_distribution=zone_distribution
             )
             
             self.db.add(weekly_summary)
             summaries_created += 1
         
-        # Commit all changes (summaries with CTL/ATL/TSB already calculated above)
+        # Commit summaries first
         self.db.commit()
-        logger.info(f"Created/updated {summaries_created} summaries with CTL/ATL/TSB")
+        
+        # Now update CTL/ATL/TSB for ALL summaries using direct SQL UPDATE
+        all_summaries = self.db.execute(
+            select(WeeklyPerformanceSummary)
+            .where(and_(
+                WeeklyPerformanceSummary.user_id == user_id,
+                WeeklyPerformanceSummary.week_start_date >= start_date
+            ))
+        ).scalars().all()
+        
+        from sqlalchemy import update
+        
+        updates_made = 0
+        for summary in all_summaries:
+            week_start = summary.week_start_date
+            
+            # Calculate CTL/ATL/TSB
+            tss_list = []
+            for i in range(41, -1, -1):
+                check_date = week_start - timedelta(days=42-i)
+                day_activities = self.db.execute(
+                    select(StravaActivity)
+                    .where(and_(
+                        StravaActivity.strava_account_id.in_(strava_account_ids),
+                        StravaActivity.start_date >= check_date - timedelta(hours=12),
+                        StravaActivity.start_date < check_date + timedelta(hours=12)
+                    ))
+                ).scalars().all()
+                
+                day_tss = sum(a.tss or 0 for a in day_activities)
+                tss_list.append(day_tss)
+            
+            metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
+            
+            # Direct SQL UPDATE
+            self.db.execute(
+                update(WeeklyPerformanceSummary)
+                .where(WeeklyPerformanceSummary.id == summary.id)
+                .values(ctl=metrics['ctl'], atl=metrics['atl'], tsb=metrics['tsb'])
+            )
+            updates_made += 1
+        
+        self.db.commit()
+        logger.info(f"Created {summaries_created} and updated CTL/ATL/TSB for {updates_made} summaries")
         
         return summaries_created
 
