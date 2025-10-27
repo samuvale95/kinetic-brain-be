@@ -408,3 +408,41 @@ async def create_weekly_summaries(current_user: dict = Depends(get_current_user)
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create weekly summaries: {str(e)}"
         )
+
+
+# Debug endpoint to show current CTL/ATL/TSB values
+@router.get("/debug/weekly-summaries")
+async def debug_weekly_summaries(current_user: dict = Depends(get_current_user),
+                                 db: Session = Depends(get_db)):
+    """Debug endpoint to see CTL/ATL/TSB values in database"""
+    from app.models.weekly_summary import WeeklyPerformanceSummary
+    from sqlalchemy import select, and_, desc
+    from datetime import date, timedelta
+    
+    end_date = date.today()
+    start_date = end_date - timedelta(weeks=12)
+    
+    summaries = db.execute(
+        select(WeeklyPerformanceSummary)
+        .where(and_(
+            WeeklyPerformanceSummary.user_id == current_user["user_id"],
+            WeeklyPerformanceSummary.week_start_date >= start_date
+        ))
+        .order_by(WeeklyPerformanceSummary.week_start_date.desc())
+        .limit(5)
+    ).scalars().all()
+    
+    result = []
+    for summary in summaries:
+        result.append({
+            "week_start": summary.week_start_date.isoformat(),
+            "ctl": summary.ctl,
+            "atl": summary.atl,
+            "tsb": summary.tsb,
+            "weekly_tss": summary.weekly_tss
+        })
+    
+    return {
+        "count": len(summaries),
+        "summaries": result
+    }
