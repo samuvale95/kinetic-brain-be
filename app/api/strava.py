@@ -410,6 +410,50 @@ async def create_weekly_summaries(current_user: dict = Depends(get_current_user)
         )
 
 
+# DEBUG: Show activities in database
+@router.get("/debug/activities")
+async def debug_activities(db: Session = Depends(get_db)):
+    """DEBUG ONLY - Show activities in database"""
+    from app.models.strava import StravaActivity, StravaAccount
+    from app.models.user import User
+    
+    user = db.execute(select(User)).scalar_one_or_none()
+    if not user:
+        return {"error": "No users found"}
+    
+    accounts = db.execute(
+        select(StravaAccount).where(StravaAccount.user_id == user.id)
+    ).scalars().all()
+    
+    if not accounts:
+        return {"error": "No Strava accounts found"}
+    
+    activities = db.execute(
+        select(StravaActivity)
+        .where(StravaActivity.strava_account_id == accounts[0].id)
+        .order_by(StravaActivity.start_date.desc())
+        .limit(10)
+    ).scalars().all()
+    
+    result = []
+    for act in activities:
+        result.append({
+            "id": act.id,
+            "name": act.name,
+            "start_date": act.start_date.isoformat() if act.start_date else None,
+            "tss": act.tss,
+            "moving_time": act.moving_time,
+            "distance": act.distance
+        })
+    
+    return {
+        "user_id": user.id,
+        "strava_account_id": accounts[0].id,
+        "activities_found": len(activities),
+        "sample_activities": result
+    }
+
+
 # DEBUG: Temporary endpoint without auth for testing
 @router.post("/debug/create-summaries")
 async def debug_create_summaries(db: Session = Depends(get_db)):
