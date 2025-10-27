@@ -732,6 +732,8 @@ class StravaService:
             .where(StravaAccount.user_id == user_id)
         ).scalars().all()
         
+        print(f"DEBUG: Found {len(strava_account_ids)} strava accounts for user {user_id}")
+        
         if not strava_account_ids:
             return 0
         
@@ -878,6 +880,7 @@ class StravaService:
             
             # Calculate CTL/ATL/TSB
             tss_list = []
+            activities_found_count = 0
             for i in range(41, -1, -1):
                 check_date = week_start - timedelta(days=42-i)
                 day_activities = self.db.execute(
@@ -889,8 +892,15 @@ class StravaService:
                     ))
                 ).scalars().all()
                 
+                if len(day_activities) > 0:
+                    activities_found_count += 1
+                    if i >= 38:  # Debug only for first few days
+                        print(f"  Day {i}: found {len(day_activities)} activities on {check_date}, first tss={day_activities[0].tss if day_activities else 'N/A'}")
+                
                 day_tss = sum(a.tss or 0 for a in day_activities)
                 tss_list.append(day_tss)
+            
+            print(f"DEBUG Week {week_start}: found activities on {activities_found_count}/42 days")
             
             print(f"DEBUG Week {week_start}: tss_list length={len(tss_list)}, sum={sum(tss_list):.1f}, first_10=[{', '.join([str(round(t, 1)) for t in tss_list[:10]])}]")
             
