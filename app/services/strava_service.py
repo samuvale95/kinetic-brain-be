@@ -886,6 +886,19 @@ class StravaService:
                 # Debug first and last dates being checked
                 if i == 41 or i == 0:
                     print(f"  Checking date {check_date} (i={i}, days_back={42-i})")
+                # Check if activities exist for this day by testing with broader range first
+                all_activities_this_day = self.db.execute(
+                    select(StravaActivity)
+                    .where(and_(
+                        StravaActivity.strava_account_id.in_(strava_account_ids),
+                        StravaActivity.start_date >= check_date,
+                        StravaActivity.start_date < check_date + timedelta(days=1)
+                    ))
+                ).scalars().all()
+                
+                if len(all_activities_this_day) > 0:
+                    print(f"  Day {i} ({check_date}): Found {len(all_activities_this_day)} activities with broader query")
+                
                 day_activities = self.db.execute(
                     select(StravaActivity)
                     .where(and_(
