@@ -895,12 +895,21 @@ class StravaService:
             metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
             logger.info(f"Week {week_start}: CTL={metrics['ctl']}, ATL={metrics['atl']}, TSB={metrics['tsb']}")
             
-            # Update the summary object we already have
-            summary.ctl = metrics['ctl']
-            summary.atl = metrics['atl']
-            summary.tsb = metrics['tsb']
+            # Use direct UPDATE query to ensure changes are persisted
+            from sqlalchemy import update
+            
             completion_rate = (summary.workouts_completed or 0) / max(summary.workouts_planned or 1, 1) * 100 if summary.workouts_planned else None
-            summary.completion_rate = completion_rate
+            
+            self.db.execute(
+                update(WeeklyPerformanceSummary)
+                .where(WeeklyPerformanceSummary.id == summary.id)
+                .values(
+                    ctl=metrics['ctl'],
+                    atl=metrics['atl'],
+                    tsb=metrics['tsb'],
+                    completion_rate=completion_rate
+                )
+            )
         
         # Commit all changes at once
         self.db.commit()
