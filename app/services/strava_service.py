@@ -799,6 +799,7 @@ class StravaService:
             
             # Calculate CTL/ATL/TSB
             metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
+            logger.info(f"Week {week_start}: Calculated CTL={metrics['ctl']:.2f}, ATL={metrics['atl']:.2f}, TSB={metrics['tsb']:.2f} (sum TSS={sum(tss_list):.1f})")
             
             # Check if summary already exists
             existing = self.db.execute(
@@ -828,6 +829,7 @@ class StravaService:
                 existing.tsb = metrics['tsb']
                 completion_rate = (existing.workouts_completed or 0) / max(existing.workouts_planned or 1, 1) * 100 if existing.workouts_planned else None
                 existing.completion_rate = completion_rate
+                logger.info(f"Week {week_start}: Updated existing summary with CTL={existing.ctl}, ATL={existing.atl}, TSB={existing.tsb}")
                 continue
             
             # Get average HR if available
