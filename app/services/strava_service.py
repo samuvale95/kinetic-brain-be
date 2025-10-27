@@ -856,18 +856,19 @@ class StravaService:
         self.db.commit()
         
         # Now update with CTL/ATL/TSB calculated from daily TSS
-        for week_start, data in weekly_data.items():
-            # Get daily TSS for this week
-            week_daily_tss = {}
-            for activity in data['activities']:
-                activity_date = activity.start_date.date()
-                week_daily_tss[activity_date] = week_daily_tss.get(activity_date, 0) + (activity.tss or 0)
-            
-            # Fill in rest days with 0
-            for i in range(7):
-                day_date = week_start + timedelta(days=i)
-                if day_date not in week_daily_tss:
-                    week_daily_tss[day_date] = 0
+        # Get all weekly summaries for the user in the period to update CTL/ATL/TSB
+        all_summaries = self.db.execute(
+            select(WeeklyPerformanceSummary)
+            .where(and_(
+                WeeklyPerformanceSummary.user_id == user_id,
+                WeeklyPerformanceSummary.week_start_date >= start_date
+            ))
+        ).scalars().all()
+        
+        logger.info(f"Found {len(all_summaries)} existing summaries to update with CTL/ATL/TSB")
+        
+        for summary in all_summaries:
+            week_start = summary.week_start_date
             
             # Get last 42 days of daily TSS for this week
             # Build list with most recent days FIRST (as required by calculate_ctl_atl_tsb)
@@ -888,24 +889,18 @@ class StravaService:
                 day_tss = sum(a.tss or 0 for a in day_activities)
                 tss_list.append(day_tss)
             
+            logger.info(f"Building CTL/ATL/TSB for week {week_start}: tss_list sum = {sum(tss_list)}, non-zero days = {sum(1 for tss in tss_list if tss > 0)}")
+            
             # Calculate CTL/ATL/TSB (expects most recent first)
             metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
+            logger.info(f"Week {week_start}: CTL={metrics['ctl']}, ATL={metrics['atl']}, TSB={metrics['tsb']}")
             
-            # Update weekly summary
-            weekly_summary = self.db.execute(
-                select(WeeklyPerformanceSummary)
-                .where(and_(
-                    WeeklyPerformanceSummary.user_id == user_id,
-                    WeeklyPerformanceSummary.week_start_date == week_start
-                ))
-            ).scalar_one_or_none()
-            
-            if weekly_summary:
-                weekly_summary.ctl = metrics['ctl']
-                weekly_summary.atl = metrics['atl']
-                weekly_summary.tsb = metrics['tsb']
-                completion_rate = (weekly_summary.workouts_completed or 0) / max(weekly_summary.workouts_planned or 1, 1) * 100 if weekly_summary.workouts_planned else None
-                weekly_summary.completion_rate = completion_rate
+            # Update the summary object we already have
+            summary.ctl = metrics['ctl']
+            summary.atl = metrics['atl']
+            summary.tsb = metrics['tsb']
+            completion_rate = (summary.workouts_completed or 0) / max(summary.workouts_planned or 1, 1) * 100 if summary.workouts_planned else None
+            summary.completion_rate = completion_rate
         
         self.db.commit()
         
