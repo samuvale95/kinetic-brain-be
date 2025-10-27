@@ -606,14 +606,8 @@ class StravaService:
                 .where(TrainingMetrics.strava_activity_id == activity.id)
             ).scalar_one_or_none()
             
-            # Skip if already calculated
-            if existing_metrics and activity.metrics_calculated:
-                metrics_calculated['tss_calculated'] += 1 if existing_metrics.tss else 0
-                metrics_calculated['trimp_calculated'] += 1 if existing_metrics.trimp else 0
-                metrics_calculated['if_calculated'] += 1 if existing_metrics.intensity_factor else 0
-                metrics_calculated['zones_calculated'] += 1 if existing_metrics.time_in_zone_1 or existing_metrics.time_in_zone_2 else 0
-                activities_processed += 1
-                continue
+            # Always recalculate metrics to ensure accuracy
+            # Don't skip - force recalculation
             
             # Calculate new metrics
             try:
