@@ -125,10 +125,7 @@ async def get_training_load(current_user: dict = Depends(get_current_user),
     acute_chronic_ratio = None
     if ctl is not None and atl is not None and ctl > 0:
         # Calculate ratio even if ATL is 0 (e.g., after rest periods)
-        acute_chronic_ratio = round(atl / ctl, 2)
-    
-    # Debug output
-    print(f"[TRAINING_LOAD] CTL={ctl}, ATL={atl}, Ratio={acute_chronic_ratio}")
+        acute_chronic_ratio = round(atl / ctl, 2) if atl is not None else 0.0
     
     # Get TS B color
     tsb_color = "yellow"
