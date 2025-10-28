@@ -315,12 +315,39 @@ Quando ATL scende sotto CTL. Con il decadimento esponenziale:
 
 Ma poiché ATL è partito più alto, ci vorranno alcuni giorni prima che ATL scenda sotto CTL.
 
-## Prossimi Passi
+## ✅ SOLUZIONE TROVATA
 
-1. Creare uno script di verifica per controllare i calcoli
-2. Mostrare i TSS per ogni giorno degli ultimi 42 giorni
-3. Simulare ATL/CTL/TSB manualmente
-4. Verificare se c'è un bug nel calcolo
+**Problema risolto!** Il bug era nell'ordine di processing dei giorni.
 
-Vuoi che proceda con la creazione di questo script di verifica?
+### Cosa era sbagliato:
+1. La lista `daily_tss` era costruita con "most recent first" (corretto)
+2. Ma veniva processata da più recente a più vecchio (SBAGLIATO!)
+3. Questo causava valori non corretti per CTL/ATL
+
+### Cosa è stato corretto:
+```python
+# PRIMA (SBAGLIATO):
+ctl = daily_tss[0]  # Start from today
+for tss in daily_tss[1:]:  # Process backwards
+    ctl = ctl + (tss - ctl) * ctl_lambda
+
+# DOPO (CORRETTO):
+ctl = daily_tss[-1]  # Start from oldest
+for tss in reversed(daily_tss[:-1]):  # Process from oldest to newest
+    ctl = ctl + (tss - ctl) * ctl_lambda
+```
+
+### Risultati dopo il fix:
+
+**Prima del fix:**
+- CTL: 21.39
+- ATL: 33.19  
+- TSB: -11.80 (FATIGUED)
+
+**Dopo il fix:**
+- CTL: 3.69
+- ATL: 0.00
+- TSB: 3.69 (OPTIMAL) ✅
+
+Questo ora riflette correttamente il fatto che dopo 13 giorni senza allenamento dovresti essere quasi completamente riposato!
 
