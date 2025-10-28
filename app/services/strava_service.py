@@ -747,11 +747,9 @@ class StravaService:
             .order_by(StravaActivity.start_date)
         ).scalars().all()
         
-        if not activities:
-            return 0
-        
         # Group activities by week
         weekly_data = {}
+        earliest_activity_date = None
         for activity in activities:
             activity_date = activity.start_date.date()
             week_start = activity_date - timedelta(days=activity_date.weekday())
@@ -776,18 +774,42 @@ class StravaService:
             weekly_data[week_start]['total_trimp'] += activity.trimp or 0
             weekly_data[week_start]['total_duration'] += activity.moving_time or 0
             weekly_data[week_start]['total_distance'] += activity.distance or 0
+            
+            if earliest_activity_date is None or activity_date < earliest_activity_date:
+                earliest_activity_date = activity_date
         
-        # Create weekly summaries (without CTL/ATL/TSB for now)
+        # Determine the range of weeks to create summaries for
+        # Start from the week of the earliest activity, end with current week
+        today = date.today()
+        current_week_start = today - timedelta(days=today.weekday())
+        
+        # If no activities, we still want to create summaries for recent weeks
+        if earliest_activity_date is None:
+            earliest_activity_date = today - timedelta(weeks=12)
+        
+        earliest_week_start = earliest_activity_date - timedelta(days=earliest_activity_date.weekday())
+        
+        # Create summaries for ALL weeks from earliest to current, even if they have no activities
         summaries_created = 0
-        for week_start, data in weekly_data.items():
-            week_end = week_start + timedelta(days=6)
+        week_start_iter = earliest_week_start
+        while week_start_iter <= current_week_start:
+            # Get data for this week (might be empty)
+            data = weekly_data.get(week_start_iter, {
+                'activities': [],
+                'total_tss': 0,
+                'total_trimp': 0,
+                'total_duration': 0,
+                'total_distance': 0
+            })
+            
+            week_end = week_start_iter + timedelta(days=6)
             
             # Check if summary already exists
             existing = self.db.execute(
                 select(WeeklyPerformanceSummary)
                 .where(and_(
                     WeeklyPerformanceSummary.user_id == user_id,
-                    WeeklyPerformanceSummary.week_start_date == week_start
+                    WeeklyPerformanceSummary.week_start_date == week_start_iter
                 ))
             ).scalar_one_or_none()
             
@@ -838,7 +860,7 @@ class StravaService:
             # Create weekly summary
             weekly_summary = WeeklyPerformanceSummary(
                 user_id=user_id,
-                week_start_date=week_start,
+                week_start_date=week_start_iter,
                 week_end_date=week_end,
                 weekly_tss=data['total_tss'],
                 weekly_trimp=data['total_trimp'],
@@ -852,6 +874,9 @@ class StravaService:
             
             self.db.add(weekly_summary)
             summaries_created += 1
+            
+            # Move to next week
+            week_start_iter += timedelta(weeks=1)
         
         # Commit summaries first
         self.db.commit()
