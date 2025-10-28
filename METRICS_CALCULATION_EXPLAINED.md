@@ -351,3 +351,19 @@ for tss in reversed(daily_tss[:-1]):  # Process from oldest to newest
 
 Questo ora riflette correttamente il fatto che dopo 13 giorni senza allenamento dovresti essere quasi completamente riposato!
 
+## ✅ Modifiche Implementate
+
+1. **Fix in `calculate_ctl_atl_tsb()`** (`app/services/metrics_calculation_service.py`):
+   - Ora processa i giorni dal più vecchio al più recente (come TrainingPeaks)
+   - Inizializza con il valore più vecchio invece del più recente
+
+2. **Fix in `get_overview()`** (`app/services/statistics_service.py`):
+   - Ora **sempre** calcola CTL/ATL/TSB on-the-fly per ottenere lo stato attuale
+   - Non usa più i valori cached nel weekly summary (che potrebbero essere obsoleti)
+
+## Come Verificare
+
+1. Esegui `recalculate-metrics` per aggiornare i weekly summaries nel DB
+2. Chiama `overview` per ottenere CTL/ATL/TSB calcolati "on-the-fly" per OGGI
+3. Dovresti vedere TSB ~3.69 (OPTIMAL) dopo 13 giorni senza allenamento
+
