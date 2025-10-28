@@ -153,6 +153,43 @@ class StravaService:
         
         return response.json()
     
+    def fetch_activity_streams(self, strava_account: StravaAccount, 
+                              activity_id: int, 
+                              stream_types: List[str] = None) -> Dict[str, Any]:
+        """
+        Fetch activity streams (detailed data) from Strava
+        
+        Args:
+            strava_account: Strava account
+            activity_id: Activity ID
+            stream_types: List of stream types to fetch (e.g., ['heartrate', 'time', 'distance'])
+        
+        Returns:
+            Dictionary with stream data
+        """
+        access_token = self.get_valid_access_token(strava_account)
+        if not access_token:
+            raise Exception("Invalid access token")
+        
+        headers = {"Authorization": f"Bearer {access_token}"}
+        
+        # Default stream types for HR zone calculation
+        if stream_types is None:
+            stream_types = ['heartrate', 'time', 'distance']
+        
+        params = {
+            "keys": ",".join(stream_types),
+            "key_by_type": "true"
+        }
+        
+        response = requests.get(f"{self.base_url}/activities/{activity_id}/streams", 
+                              headers=headers, params=params)
+        
+        if response.status_code != 200:
+            raise Exception(f"Failed to fetch activity streams: {response.text}")
+        
+        return response.json()
+    
     def sync_user_activities(self, user_id: int, days_back: int = 30) -> Dict[str, Any]:
         """Sync user's Strava activities"""
         # Get user's Strava account
@@ -513,11 +550,28 @@ class StravaService:
                 resting_hr=resting_hr
             )
         
-        # Calculate time in zones
+        # Calculate time in zones using real HR data from Strava streams
         time_in_zones = {}
-        if strava_activity.average_heartrate and hr_zones:
+        hr_data = None
+        
+        # Try to fetch detailed HR data from Strava streams
+        try:
+            streams = self.fetch_activity_streams(
+                strava_account=strava_activity.strava_account,
+                activity_id=strava_activity.strava_activity_id,
+                stream_types=['heartrate', 'time']
+            )
+            
+            if 'heartrate' in streams and streams['heartrate'].get('data'):
+                hr_data = streams['heartrate']['data']
+                logger.info(f"Fetched {len(hr_data)} HR data points for activity {strava_activity.id}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch HR streams for activity {strava_activity.id}: {e}")
+        
+        # Calculate zones with real HR data or fallback to average HR
+        if strava_activity.average_heartrate:
             time_in_zones = self.metrics_service.calculate_time_in_zones(
-                hr_data=None,
+                hr_data=hr_data,
                 zones=hr_zones,
                 duration_seconds=duration_seconds,
                 avg_hr=strava_activity.average_heartrate

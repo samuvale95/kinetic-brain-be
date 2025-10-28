@@ -512,3 +512,58 @@ async def debug_weekly_summaries(current_user: dict = Depends(get_current_user),
         "summaries": result
     }
 
+@router.get("/debug/hr-streams/{activity_id}")
+async def debug_hr_streams(activity_id: int,
+                          current_user: dict = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    """Debug endpoint to test HR streams fetching"""
+    from app.models.strava import StravaActivity, StravaAccount
+    from sqlalchemy import select, and_
+    
+    # Get the activity
+    activity = db.execute(
+        select(StravaActivity)
+        .where(and_(
+            StravaActivity.id == activity_id,
+            StravaActivity.strava_account.has(StravaAccount.user_id == current_user["user_id"])
+        ))
+    ).scalar_one_or_none()
+    
+    if not activity:
+        return {"error": "Activity not found"}
+    
+    # Get Strava account
+    strava_account = db.execute(
+        select(StravaAccount)
+        .where(StravaAccount.id == activity.strava_account_id)
+    ).scalar_one_or_none()
+    
+    if not strava_account:
+        return {"error": "Strava account not found"}
+    
+    # Fetch HR streams
+    try:
+        from app.services.strava_service import StravaService
+        strava_service = StravaService(db)
+        
+        streams = strava_service.fetch_activity_streams(
+            strava_account=strava_account,
+            activity_id=activity.strava_activity_id,
+            stream_types=['heartrate', 'time']
+        )
+        
+        hr_data = streams.get('heartrate', {}).get('data', [])
+        
+        return {
+            "activity_id": activity_id,
+            "strava_activity_id": activity.strava_activity_id,
+            "activity_name": activity.name,
+            "average_heartrate": activity.average_heartrate,
+            "hr_data_points": len(hr_data),
+            "hr_data_sample": hr_data[:10] if hr_data else [],
+            "streams_available": list(streams.keys())
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
