@@ -153,6 +153,31 @@ class StravaService:
         
         return response.json()
     
+    def _calculate_lthr_zones(self, lthr: float) -> Dict[str, Dict[str, float]]:
+        """
+        Calculate HR zones based on LTHR using Joe Friel's formula
+        
+        Joe Friel's zones (Training Bible):
+        - Zone 1: 65-80% of LTHR
+        - Zone 2: 81-90% of LTHR
+        - Zone 3: 91-100% of LTHR
+        - Zone 4: 101-105% of LTHR
+        - Zone 5: 106-125% of LTHR (we'll split this into Z5a/b/c later if needed)
+        
+        Args:
+            lthr: Lactate Threshold Heart Rate
+            
+        Returns:
+            Dictionary with zone boundaries
+        """
+        return {
+            'z1': {'min': round(lthr * 0.65), 'max': round(lthr * 0.80)},
+            'z2': {'min': round(lthr * 0.81), 'max': round(lthr * 0.90)},
+            'z3': {'min': round(lthr * 0.91), 'max': round(lthr * 1.00)},
+            'z4': {'min': round(lthr * 1.01), 'max': round(lthr * 1.05)},
+            'z5': {'min': round(lthr * 1.06), 'max': round(lthr * 1.25)}
+        }
+    
     def fetch_activity_streams(self, strava_account: StravaAccount, 
                               activity_id: int, 
                               stream_types: List[str] = None) -> Dict[str, Any]:
@@ -500,7 +525,7 @@ class StravaService:
             .order_by(desc(PerformanceMetrics.test_date))
         ).scalar_one_or_none()
         
-        # Extract zones
+        # Extract zones from PerformanceMetrics if available
         hr_zones = None
         if hr_metrics and hr_metrics.zones_json:
             hr_zones = hr_metrics.zones_json
@@ -510,6 +535,10 @@ class StravaService:
         threshold_power = power_metrics.threshold_value if power_metrics else None
         max_hr = hr_metrics.max_value if hr_metrics else None
         resting_hr = hr_metrics.rest_value if hr_metrics else None
+        
+        # If no zones provided but we have LTHR, calculate zones based on Joe Friel's formula
+        if hr_zones is None and threshold_hr:
+            hr_zones = self._calculate_lthr_zones(threshold_hr)
         
         # Calculate duration
         duration_seconds = strava_activity.moving_time or strava_activity.elapsed_time or 0
