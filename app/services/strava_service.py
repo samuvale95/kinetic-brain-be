@@ -590,6 +590,7 @@ class StravaService:
             .order_by(StravaActivity.start_date)
         ).scalars().all()
         print(f"[RECALC] Loaded {len(activities)} activities for user {user_id}")
+        print(f"[RECALC] Processing {len(activities)} activities...")
         
         metrics_calculated = {
             'tss_calculated': 0,
@@ -608,8 +609,12 @@ class StravaService:
                 .where(TrainingMetrics.strava_activity_id == activity.id)
             ).scalar_one_or_none()
             
-            # Always recalculate metrics to ensure accuracy
-            # Don't skip - force recalculation
+            # Skip if metrics already exist (cached)
+            if existing_metrics and existing_metrics.tss:
+                activities_processed += 1
+                if idx % 25 == 0:
+                    print(f"[RECALC] Processed {idx}/{len(activities)} activities (skipping cached)...")
+                continue
             
             # Calculate new metrics
             try:
