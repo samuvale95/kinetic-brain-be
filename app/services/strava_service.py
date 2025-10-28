@@ -572,6 +572,7 @@ class StravaService:
             Dictionary with recalculation results
         """
         start_time = datetime.now()
+        print(f"[RECALC] Start recalculation for user {user_id} at {start_time.isoformat()}")
         
         # Get user's Strava account
         strava_account = self.db.execute(
@@ -588,6 +589,7 @@ class StravaService:
             .where(StravaActivity.strava_account_id == strava_account.id)
             .order_by(StravaActivity.start_date)
         ).scalars().all()
+        print(f"[RECALC] Loaded {len(activities)} activities for user {user_id}")
         
         metrics_calculated = {
             'tss_calculated': 0,
@@ -599,7 +601,7 @@ class StravaService:
         activities_processed = 0
         metrics_to_update = []
         
-        for activity in activities:
+        for idx, activity in enumerate(activities, start=1):
             # Check if metrics already exist
             existing_metrics = self.db.execute(
                 select(TrainingMetrics)
@@ -637,24 +639,34 @@ class StravaService:
                 metrics_calculated['zones_calculated'] += 1 if metrics.time_in_zone_1 or metrics.time_in_zone_2 else 0
                 
                 activities_processed += 1
+                if idx % 25 == 0:
+                    print(f"[RECALC] Processed {idx}/{len(activities)} activities... (tss_calc={metrics_calculated['tss_calculated']})")
             except Exception as e:
                 logger.error(f"Error calculating metrics for activity {activity.id}: {e}")
+                print(f"[RECALC][ERROR] Activity {activity.id} failed: {e}")
                 continue
         
         # Bulk add new metrics only
         if metrics_to_update:
             self.db.add_all(metrics_to_update)
-        
+        print(f"[RECALC] Committing metrics updates (bulk_inserts={len(metrics_to_update)})")
         # Commit all changes
         self.db.commit()
+        print(f"[RECALC] Metrics commit complete")
         
         # Calculate initial CTL/ATL/TSB
+        print(f"[RECALC] Calculating initial CTL/ATL/TSB (42-day window)")
         initial_metrics = self._calculate_initial_fitness_metrics(user_id)
+        print(f"[RECALC] Initial metrics: {initial_metrics}")
         
         # Create weekly summaries
+        print(f"[RECALC] Creating/updating weekly summaries...")
         weekly_summaries_created = self._create_weekly_summaries(user_id)
+        print(f"[RECALC] Weekly summaries created/updated: {weekly_summaries_created}")
         
-        processing_time = (datetime.now() - start_time).total_seconds()
+        end_time = datetime.now()
+        processing_time = (end_time - start_time).total_seconds()
+        print(f"[RECALC] Completed at {end_time.isoformat()} in {processing_time:.2f}s. Activities processed={activities_processed}")
         
         return {
             'success': True,
