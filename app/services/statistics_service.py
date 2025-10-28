@@ -47,10 +47,12 @@ class StatisticsService:
             ).scalar() or 0
         total_training_hours = (total_training_hours or 0) / 3600  # Convert to hours
         
-        # Get current week summary
+        # Get most recent week summary (not necessarily current week)
+        # This ensures we show metrics even if current week summary doesn't exist yet
         today = date.today()
         week_start = today - timedelta(days=today.weekday())
         
+        # First try to get current week summary
         current_week_summary = self.db.execute(
             select(WeeklyPerformanceSummary)
             .where(and_(
@@ -58,6 +60,15 @@ class StatisticsService:
                 WeeklyPerformanceSummary.week_start_date == week_start
             ))
         ).scalar_one_or_none()
+        
+        # If no current week summary, get the most recent one
+        if not current_week_summary:
+            current_week_summary = self.db.execute(
+                select(WeeklyPerformanceSummary)
+                .where(WeeklyPerformanceSummary.user_id == user_id)
+                .order_by(WeeklyPerformanceSummary.week_start_date.desc())
+                .limit(1)
+            ).scalar_one_or_none()
         
         # Current metrics
         current_ctl = current_week_summary.ctl if current_week_summary else None
