@@ -178,6 +178,31 @@ class StravaService:
             'z5': {'min': round(lthr * 1.06), 'max': round(lthr * 1.25)}
         }
     
+    def _calculate_maxhr_zones(self, max_hr: float) -> Dict[str, Dict[str, float]]:
+        """
+        Calculate HR zones based on Max HR (fallback method)
+        
+        Standard % of max HR zones:
+        - Zone 1: 50-60% of max HR
+        - Zone 2: 60-70% of max HR
+        - Zone 3: 70-80% of max HR
+        - Zone 4: 80-90% of max HR
+        - Zone 5: 90-100% of max HR
+        
+        Args:
+            max_hr: Maximum Heart Rate
+            
+        Returns:
+            Dictionary with zone boundaries
+        """
+        return {
+            'z1': {'min': round(max_hr * 0.50), 'max': round(max_hr * 0.60)},
+            'z2': {'min': round(max_hr * 0.60), 'max': round(max_hr * 0.70)},
+            'z3': {'min': round(max_hr * 0.70), 'max': round(max_hr * 0.80)},
+            'z4': {'min': round(max_hr * 0.80), 'max': round(max_hr * 0.90)},
+            'z5': {'min': round(max_hr * 0.90), 'max': round(max_hr * 1.00)}
+        }
+    
     def fetch_activity_streams(self, strava_account: StravaAccount, 
                               activity_id: int, 
                               stream_types: List[str] = None) -> Dict[str, Any]:
@@ -536,9 +561,14 @@ class StravaService:
         max_hr = hr_metrics.max_value if hr_metrics else None
         resting_hr = hr_metrics.rest_value if hr_metrics else None
         
-        # If no zones provided but we have LTHR, calculate zones based on Joe Friel's formula
+        # If no zones provided, try to calculate them
+        # Priority: LTHR > Max HR > skip (will use fallback in calculate_time_in_zones)
         if hr_zones is None and threshold_hr:
+            # Use LTHR-based zones (Joe Friel's formula)
             hr_zones = self._calculate_lthr_zones(threshold_hr)
+        elif hr_zones is None and max_hr:
+            # Fallback to max HR-based zones if LTHR not available
+            hr_zones = self._calculate_maxhr_zones(max_hr)
         
         # Calculate duration
         duration_seconds = strava_activity.moving_time or strava_activity.elapsed_time or 0
