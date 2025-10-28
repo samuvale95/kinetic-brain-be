@@ -583,14 +583,50 @@ class StravaService:
         if not strava_account:
             raise Exception("No Strava account found for user")
         
-        # Get all activities
-        activities = self.db.execute(
-            select(StravaActivity)
+        # Quick check: Get last activity ID that has metrics
+        last_activity_with_metrics = self.db.execute(
+            select(StravaActivity.id)
+            .join(TrainingMetrics, StravaActivity.id == TrainingMetrics.strava_activity_id)
             .where(StravaActivity.strava_account_id == strava_account.id)
-            .order_by(StravaActivity.start_date)
-        ).scalars().all()
-        print(f"[RECALC] Loaded {len(activities)} activities for user {user_id}")
-        print(f"[RECALC] Processing {len(activities)} activities...")
+            .order_by(StravaActivity.id.desc())
+            .limit(1)
+        ).scalar()
+        
+        # Get last activity ID overall
+        last_activity_id = self.db.execute(
+            select(func.max(StravaActivity.id))
+            .where(StravaActivity.strava_account_id == strava_account.id)
+        ).scalar()
+        
+        # If all activities already have metrics, skip entire recalculation
+        if last_activity_id and last_activity_with_metrics and last_activity_id == last_activity_with_metrics:
+            print(f"[RECALC] All activities already have metrics calculated. Skipping activities processing.")
+            activities = []  # Skip processing activities
+            activities_count = 0
+        else:
+            # Get activities that need metrics (don't have metrics yet OR are newer than last calculated)
+            if last_activity_with_metrics:
+                # Only get activities that don't have metrics yet
+                activities = self.db.execute(
+                    select(StravaActivity)
+                    .outerjoin(TrainingMetrics, StravaActivity.id == TrainingMetrics.strava_activity_id)
+                    .where(and_(
+                        StravaActivity.strava_account_id == strava_account.id,
+                        TrainingMetrics.id.is_(None)
+                    ))
+                    .order_by(StravaActivity.start_date)
+                ).scalars().all()
+                activities_count = len(activities)
+            else:
+                # First time: get all activities
+                activities = self.db.execute(
+                    select(StravaActivity)
+                    .where(StravaActivity.strava_account_id == strava_account.id)
+                    .order_by(StravaActivity.start_date)
+                ).scalars().all()
+                activities_count = len(activities)
+        
+        print(f"[RECALC] Activities needing metrics: {activities_count}")
         
         metrics_calculated = {
             'tss_calculated': 0,
@@ -602,41 +638,15 @@ class StravaService:
         activities_processed = 0
         metrics_to_update = []
         
+        print(f"[RECALC] Processing {len(activities)} activities...")
+        
         for idx, activity in enumerate(activities, start=1):
-            # Check if metrics already exist
-            existing_metrics = self.db.execute(
-                select(TrainingMetrics)
-                .where(TrainingMetrics.strava_activity_id == activity.id)
-            ).scalar_one_or_none()
-            
-            # Skip if metrics already exist (cached)
-            if existing_metrics and existing_metrics.tss:
-                activities_processed += 1
-                if idx % 25 == 0:
-                    print(f"[RECALC] Processed {idx}/{len(activities)} activities (skipping cached)...")
-                continue
-            
-            # Calculate new metrics
+            # Calculate new metrics (we already filtered to only activities without metrics)
             try:
                 metrics = self.calculate_activity_metrics(activity, user_id)
                 
-                # Update existing or add new
-                if existing_metrics:
-                    # Update existing - just update fields, don't add new record
-                    existing_metrics.tss = metrics.tss
-                    existing_metrics.normalized_power = metrics.normalized_power
-                    existing_metrics.intensity_factor = metrics.intensity_factor
-                    existing_metrics.trimp = metrics.trimp
-                    existing_metrics.time_in_zone_1 = metrics.time_in_zone_1
-                    existing_metrics.time_in_zone_2 = metrics.time_in_zone_2
-                    existing_metrics.time_in_zone_3 = metrics.time_in_zone_3
-                    existing_metrics.time_in_zone_4 = metrics.time_in_zone_4
-                    existing_metrics.time_in_zone_5 = metrics.time_in_zone_5
-                    existing_metrics.zone_distribution = metrics.zone_distribution
-                    # Don't append to metrics_to_update since we're updating, not inserting
-                else:
-                    # Add new to list for bulk insert (only if it doesn't exist)
-                    metrics_to_update.append(metrics)
+                # Add to list for bulk insert (all activities here need metrics)
+                metrics_to_update.append(metrics)
                 
                 metrics_calculated['tss_calculated'] += 1 if metrics.tss else 0
                 metrics_calculated['trimp_calculated'] += 1 if metrics.trimp else 0
