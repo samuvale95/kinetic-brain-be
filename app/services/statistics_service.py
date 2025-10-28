@@ -118,33 +118,60 @@ class StatisticsService:
         
         Returns:
             Dictionary with weekly data points and trend analysis
+            Includes all weeks up to current week, padding missing weeks with zeros
         """
-        end_date = date.today()
-        start_date = end_date - timedelta(weeks=weeks)
+        today = date.today()
+        current_week_start = today - timedelta(days=today.weekday())
+        start_date = current_week_start - timedelta(weeks=weeks-1)  # Include current week in count
         
         # Get weekly summaries
         summaries = self.db.execute(
             select(WeeklyPerformanceSummary)
             .where(and_(
                 WeeklyPerformanceSummary.user_id == user_id,
-                WeeklyPerformanceSummary.week_start_date >= start_date
+                WeeklyPerformanceSummary.week_start_date >= start_date,
+                WeeklyPerformanceSummary.week_start_date <= current_week_start
             ))
             .order_by(WeeklyPerformanceSummary.week_start_date.asc())
         ).scalars().all()
         
+        # Create a map of existing summaries by week_start_date
+        summary_map = {s.week_start_date: s for s in summaries}
+        
+        # Build complete weeks list, padding missing weeks with zeros
         weeks_data = []
-        for summary in summaries:
-            weeks_data.append({
-                'week_start': summary.week_start_date.isoformat(),
-                'week_end': summary.week_end_date.isoformat(),
-                'ctl': summary.ctl,
-                'atl': summary.atl,
-                'tsb': summary.tsb,
-                'weekly_tss': summary.weekly_tss or 0,
-                'volume_hours': summary.volume_hours or 0,
-                'workouts_completed': summary.workouts_completed or 0,
-                'avg_rpe': summary.avg_rpe
-            })
+        week_iter = start_date
+        while week_iter <= current_week_start:
+            week_end = week_iter + timedelta(days=6)
+            
+            if week_iter in summary_map:
+                summary = summary_map[week_iter]
+                weeks_data.append({
+                    'week_start': summary.week_start_date.isoformat(),
+                    'week_end': summary.week_end_date.isoformat(),
+                    'ctl': summary.ctl,
+                    'atl': summary.atl,
+                    'tsb': summary.tsb,
+                    'weekly_tss': summary.weekly_tss or 0,
+                    'volume_hours': summary.volume_hours or 0,
+                    'workouts_completed': summary.workouts_completed or 0,
+                    'avg_rpe': summary.avg_rpe
+                })
+            else:
+                # Pad missing week with zeros/nulls
+                weeks_data.append({
+                    'week_start': week_iter.isoformat(),
+                    'week_end': week_end.isoformat(),
+                    'ctl': None,
+                    'atl': None,
+                    'tsb': None,
+                    'weekly_tss': 0,
+                    'volume_hours': 0,
+                    'workouts_completed': 0,
+                    'avg_rpe': None
+                })
+            
+            week_iter += timedelta(weeks=1)
         
         # Trend analysis
         trend_analysis = {}

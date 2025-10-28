@@ -964,5 +964,12 @@ class StravaService:
         self.db.commit()
         print(f"DEBUG: Created {summaries_created} and updated CTL/ATL/TSB for {updates_made} summaries")
         
+        # Log summary of what was created
+        if updates_made > 0:
+            first_summary = all_summaries[0]
+            last_summary = all_summaries[-1]
+            print(f"DEBUG SUMMARY: Created summaries from {first_summary.week_start_date} to {last_summary.week_start_date} ({updates_made} weeks)")
+            print(f"DEBUG SUMMARY: Latest week CTL={last_summary.ctl}, ATL={last_summary.atl}, TSB={last_summary.tsb}")
+        
         return summaries_created
 
