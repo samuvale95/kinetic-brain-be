@@ -61,9 +61,12 @@ class StatisticsService:
             ))
         ).scalar_one_or_none()
         
-        # Current metrics - calculate TODAY's CTL/ATL/TSB
-        # If we don't have current week summary, calculate on-the-fly from last 42 days
-        if not current_week_summary or not current_week_summary.ctl:
+        # Current metrics - ALWAYS calculate TODAY's CTL/ATL/TSB from last 42 days
+        # Don't use weekly summary CTL/ATL as they may be stale
+        # Recalculate on-the-fly for accurate current state
+        # if not current_week_summary or not current_week_summary.ctl:
+        # TODO: For now, always recalculate to ensure fresh values
+        if True:
             # Calculate current metrics from last 42 days of activities
             from datetime import timedelta as td
             end_date = date.today()
@@ -99,6 +102,9 @@ class StatisticsService:
             current_ctl = metrics.get('ctl')
             current_atl = metrics.get('atl')
             current_tsb = metrics.get('tsb')
+            
+            # Debug logging
+            print(f"[STATS] Calculated CTL/ATL/TSB: CTL={current_ctl}, ATL={current_atl}, TSB={current_tsb}")
         else:
             current_ctl = current_week_summary.ctl
             current_atl = current_week_summary.atl
