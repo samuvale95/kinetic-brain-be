@@ -283,13 +283,14 @@ class MetricsCalculationService:
         ctl_lambda = 1.0 - math.exp(-1.0 / ctl_tc)
         atl_lambda = 1.0 - math.exp(-1.0 / atl_tc)
         
-        # Initialize with first value (or 0 if list is empty)
-        ctl = daily_tss[0] if len(daily_tss) > 0 else 0.0
-        atl = daily_tss[0] if len(daily_tss) > 0 else 0.0
+        # IMPORTANT: Initialize with OLDEST value (last in list since it's "most recent first")
+        # We need to process from OLDEST to NEWEST to get today's state
+        ctl = daily_tss[-1] if len(daily_tss) > 0 else 0.0
+        atl = daily_tss[-1] if len(daily_tss) > 0 else 0.0
         
-        # Apply exponential moving average
-        # Each day (including rest days with TSS=0) causes decay of fitness/fatigue
-        for tss in daily_tss[1:]:
+        # Apply exponential moving average from OLDEST to NEWEST
+        # Reverse the list to process from oldest (42 days ago) to most recent (today)
+        for tss in reversed(daily_tss[:-1]):
             # Apply decay even on rest days (TSS=0)
             # This is the correct TrainingPeaks methodology
             ctl = ctl + (tss - ctl) * ctl_lambda
