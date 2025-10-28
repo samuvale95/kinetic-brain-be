@@ -68,7 +68,7 @@ class StatisticsService:
             from datetime import timedelta as td
             end_date = date.today()
             start_date = end_date - td(days=41)
-            
+
             # Get activities from last 42 days
             activities = self.db.execute(
                 select(StravaActivity)
@@ -79,20 +79,21 @@ class StatisticsService:
                 ))
                 .order_by(StravaActivity.start_date)
             ).scalars().all()
-            
+
+
             # Group TSS by date
             daily_tss = {}
             for activity in activities:
                 activity_date = activity.start_date.date()
                 daily_tss[activity_date] = daily_tss.get(activity_date, 0) + (activity.tss or 0)
-            
+
             # Build complete list of ALL days in period (most recent first)
             tss_list = []
             for i in range(42):
                 day_date = end_date - td(days=i)
                 tss_for_day = daily_tss.get(day_date, 0)  # 0 for rest days
                 tss_list.append(tss_for_day)
-            
+
             # Calculate CTL/ATL/TSB for TODAY
             metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
             current_ctl = metrics.get('ctl')

@@ -511,3 +511,4 @@ async def debug_weekly_summaries(current_user: dict = Depends(get_current_user),
         "count": len(summaries),
         "summaries": result
     }
+
