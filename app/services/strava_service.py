@@ -885,6 +885,8 @@ class StravaService:
                 existing.workouts_completed = len(data['activities'])
                 existing.volume_hours = round(volume_hours, 2)
                 existing.volume_kilometers = volume_km
+                # Advance to next week to avoid infinite loop
+                week_start_iter += timedelta(weeks=1)
                 continue
             
             # Get average HR if available
