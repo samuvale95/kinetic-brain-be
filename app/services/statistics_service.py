@@ -61,19 +61,47 @@ class StatisticsService:
             ))
         ).scalar_one_or_none()
         
-        # If no current week summary, get the most recent one
-        if not current_week_summary:
-            current_week_summary = self.db.execute(
-                select(WeeklyPerformanceSummary)
-                .where(WeeklyPerformanceSummary.user_id == user_id)
-                .order_by(WeeklyPerformanceSummary.week_start_date.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-        
-        # Current metrics
-        current_ctl = current_week_summary.ctl if current_week_summary else None
-        current_atl = current_week_summary.atl if current_week_summary else None
-        current_tsb = current_week_summary.tsb if current_week_summary else None
+        # Current metrics - calculate TODAY's CTL/ATL/TSB
+        # If we don't have current week summary, calculate on-the-fly from last 42 days
+        if not current_week_summary or not current_week_summary.ctl:
+            # Calculate current metrics from last 42 days of activities
+            from datetime import timedelta as td
+            end_date = date.today()
+            start_date = end_date - td(days=41)
+            
+            # Get activities from last 42 days
+            activities = self.db.execute(
+                select(StravaActivity)
+                .where(and_(
+                    StravaActivity.strava_account_id.in_(strava_account_ids),
+                    StravaActivity.start_date >= start_date,
+                    StravaActivity.tss.isnot(None)
+                ))
+                .order_by(StravaActivity.start_date)
+            ).scalars().all()
+            
+            # Group TSS by date
+            daily_tss = {}
+            for activity in activities:
+                activity_date = activity.start_date.date()
+                daily_tss[activity_date] = daily_tss.get(activity_date, 0) + (activity.tss or 0)
+            
+            # Build complete list of ALL days in period (most recent first)
+            tss_list = []
+            for i in range(42):
+                day_date = end_date - td(days=i)
+                tss_for_day = daily_tss.get(day_date, 0)  # 0 for rest days
+                tss_list.append(tss_for_day)
+            
+            # Calculate CTL/ATL/TSB for TODAY
+            metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
+            current_ctl = metrics.get('ctl')
+            current_atl = metrics.get('atl')
+            current_tsb = metrics.get('tsb')
+        else:
+            current_ctl = current_week_summary.ctl
+            current_atl = current_week_summary.atl
+            current_tsb = current_week_summary.tsb
         
         # TSB status
         tsb_status = "optimal"
