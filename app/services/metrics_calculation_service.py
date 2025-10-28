@@ -213,7 +213,29 @@ class MetricsCalculationService:
             'z5': 0
         }
         
-        # If no zones provided, return zeros
+        # If no zones provided, try to estimate them from average HR
+        if zones is None and avg_hr is not None and duration_seconds > 0:
+            # Estimate max HR using age (rough approximation: 220 - age)
+            # For now, use a standard max HR estimate based on avg HR
+            # If avg_hr is high (>150), assume younger athlete, if low (<130), assume older
+            if avg_hr > 150:
+                estimated_max_hr = avg_hr + 40  # High intensity, probably max around 190
+            elif avg_hr > 130:
+                estimated_max_hr = avg_hr + 50  # Moderate intensity, probably max around 180
+            else:
+                estimated_max_hr = avg_hr + 60  # Low intensity, probably max around 190
+            
+            # Create default zones based on percentage of max HR
+            # Zone 1: 50-60%, Zone 2: 60-70%, Zone 3: 70-80%, Zone 4: 80-90%, Zone 5: 90-100%
+            zones = {
+                'z1': {'min': estimated_max_hr * 0.50, 'max': estimated_max_hr * 0.60},
+                'z2': {'min': estimated_max_hr * 0.60, 'max': estimated_max_hr * 0.70},
+                'z3': {'min': estimated_max_hr * 0.70, 'max': estimated_max_hr * 0.80},
+                'z4': {'min': estimated_max_hr * 0.80, 'max': estimated_max_hr * 0.90},
+                'z5': {'min': estimated_max_hr * 0.90, 'max': estimated_max_hr * 1.00}
+            }
+        
+        # If still no zones, return zeros
         if zones is None:
             return result
         
