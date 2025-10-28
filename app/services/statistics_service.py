@@ -336,7 +336,13 @@ class StatisticsService:
         )
         
         if sport_type:
-            query = query.where(StravaActivity.type == sport_type)
+            # Normalize sport_type to lowercase and filter against both 'type' and 'sport_type'
+            sport_norm = sport_type.lower()
+            from sqlalchemy import or_
+            query = query.where(
+                or_(func.lower(StravaActivity.type) == sport_norm,
+                    func.lower(StravaActivity.sport_type) == sport_norm)
+            )
         
         activities = self.db.execute(query).scalars().all()
         
