@@ -724,7 +724,9 @@ class StravaService:
         from app.models.weekly_summary import WeeklyPerformanceSummary
         
         end_date = date.today()
-        start_date = end_date - timedelta(weeks=12)
+        # We need to look back at least 12 weeks to calculate metrics, but we want ALL activities
+        # to properly calculate CTL/ATL/TSB for all weeks up to today
+        start_date = end_date - timedelta(weeks=20)  # Look back 20 weeks to ensure we have data for calculations
         
         # Get all activities in the period
         strava_account_ids = self.db.execute(
@@ -737,12 +739,13 @@ class StravaService:
         if not strava_account_ids:
             return 0
         
-        # Remove metrics_calculated filter for now - include all activities
+        # Get activities from a reasonable period (we need them for CTL/ATL/TSB calculation)
+        # The 42-day lookback for CTL calculation needs historical data
         activities = self.db.execute(
             select(StravaActivity)
             .where(and_(
                 StravaActivity.strava_account_id.in_(strava_account_ids),
-                StravaActivity.start_date >= start_date
+                StravaActivity.start_date >= start_date - timedelta(days=42)  # Need 42 days before for CTL calculation
             ))
             .order_by(StravaActivity.start_date)
         ).scalars().all()
@@ -785,9 +788,18 @@ class StravaService:
         
         # If no activities, we still want to create summaries for recent weeks
         if earliest_activity_date is None:
-            earliest_activity_date = today - timedelta(weeks=12)
+            earliest_activity_date = today - timedelta(weeks=20)
         
         earliest_week_start = earliest_activity_date - timedelta(days=earliest_activity_date.weekday())
+        
+        # Ensure we create summaries for at least the last 12 weeks up to today
+        # This ensures we have recent data even if the last activity was a while ago
+        target_date = today - timedelta(weeks=12)
+        min_week_start = target_date - timedelta(days=target_date.weekday())
+        if earliest_week_start > min_week_start:
+            earliest_week_start = min_week_start
+        
+        print(f"DEBUG: Creating summaries from {earliest_week_start} to {current_week_start}")
         
         # Create summaries for ALL weeks from earliest to current, even if they have no activities
         summaries_created = 0
