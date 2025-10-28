@@ -726,7 +726,7 @@ class StravaService:
         end_date = date.today()
         # We need to look back at least 12 weeks to calculate metrics, but we want ALL activities
         # to properly calculate CTL/ATL/TSB for all weeks up to today
-        start_date = end_date - timedelta(weeks=20)  # Look back 20 weeks to ensure we have data for calculations
+        baseline_start_date = end_date - timedelta(weeks=20)  # Default backfill horizon
         
         # Get all activities in the period
         strava_account_ids = self.db.execute(
@@ -739,13 +739,47 @@ class StravaService:
         if not strava_account_ids:
             return 0
         
-        # Get activities from a reasonable period (we need them for CTL/ATL/TSB calculation)
-        # The 42-day lookback for CTL calculation needs historical data
+        # Incremental recalculation window determination
+        # 1) Find last summarized week
+        last_summary_week = self.db.execute(
+            select(func.max(WeeklyPerformanceSummary.week_start_date))
+            .where(WeeklyPerformanceSummary.user_id == user_id)
+        ).scalar()
+
+        # 2) Find last activity date (UTC)
+        last_activity_dt = self.db.execute(
+            select(func.max(StravaActivity.start_date))
+            .where(StravaActivity.strava_account_id.in_(strava_account_ids))
+        ).scalar()
+
+        today = date.today()
+        current_week_start = today - timedelta(days=today.weekday())
+
+        # If nothing new since the last summary week, skip early
+        if last_summary_week and last_activity_dt and last_activity_dt.date() < last_summary_week:
+            print(f"DEBUG: No new activities since last summarized week {last_summary_week}. Skipping recalculation.")
+            return 0
+
+        # Decide recompute start week: go back a few weeks to ensure continuity of EMA
+        # We use a 6-week bleed-in to stabilize CTL/ATL for updated weeks
+        if last_summary_week:
+            recompute_start_week = max(
+                last_summary_week - timedelta(weeks=6),
+                current_week_start - timedelta(weeks=12)
+            )
+        else:
+            # No summaries yet: start from baseline horizon
+            recompute_start_week = (baseline_start_date - timedelta(days=baseline_start_date.weekday()))
+
+        # Activities need an extra 42-day lead-in before the first week to recompute
+        activities_start_dt = recompute_start_week - timedelta(days=42)
+
+        # Get activities only for the recompute window (plus 42-day bleed-in)
         activities = self.db.execute(
             select(StravaActivity)
             .where(and_(
                 StravaActivity.strava_account_id.in_(strava_account_ids),
-                StravaActivity.start_date >= start_date - timedelta(days=42)  # Need 42 days before for CTL calculation
+                StravaActivity.start_date >= activities_start_dt
             ))
             .order_by(StravaActivity.start_date)
         ).scalars().all()
@@ -782,15 +816,15 @@ class StravaService:
                 earliest_activity_date = activity_date
         
         # Determine the range of weeks to create summaries for
-        # Start from the week of the earliest activity, end with current week
-        today = date.today()
-        current_week_start = today - timedelta(days=today.weekday())
+        # Start from the recompute_start_week (or earliest activity if earlier), end with current week
         
         # If no activities, we still want to create summaries for recent weeks
         if earliest_activity_date is None:
             earliest_activity_date = today - timedelta(weeks=20)
         
         earliest_week_start = earliest_activity_date - timedelta(days=earliest_activity_date.weekday())
+        if earliest_week_start > recompute_start_week:
+            earliest_week_start = recompute_start_week
         
         # Ensure we create summaries for at least the last 12 weeks up to today
         # This ensures we have recent data even if the last activity was a while ago
@@ -893,13 +927,15 @@ class StravaService:
         # Commit summaries first
         self.db.commit()
         
-        # Now update CTL/ATL/TSB for ALL summaries using direct SQL UPDATE
+        # Now update CTL/ATL/TSB for summaries in the recompute window using direct SQL UPDATE
         all_summaries = self.db.execute(
             select(WeeklyPerformanceSummary)
             .where(and_(
                 WeeklyPerformanceSummary.user_id == user_id,
-                WeeklyPerformanceSummary.week_start_date >= start_date
+                WeeklyPerformanceSummary.week_start_date >= earliest_week_start,
+                WeeklyPerformanceSummary.week_start_date <= current_week_start
             ))
+            .order_by(WeeklyPerformanceSummary.week_start_date.asc())
         ).scalars().all()
         
         print(f"DEBUG: Found {len(all_summaries)} summaries to update with CTL/ATL/TSB")
