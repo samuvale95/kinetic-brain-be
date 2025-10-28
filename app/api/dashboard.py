@@ -73,9 +73,37 @@ async def get_today_workouts(current_user: dict = Depends(get_current_user),
     # Filter out workouts from inactive plans
     workouts = [w for w in workouts if w.id not in inactive_plan_workout_ids]
     
+    # Deduplicate workouts: if multiple workouts have the same scheduled_date and similar type,
+    # prefer completed workouts, then keep the one with the most recent creation date
+    seen_workouts = {}
+    deduplicated_workouts = []
+    
+    for workout in workouts:
+        # Create a key based on scheduled_date and type similarity
+        key = f"{workout.scheduled_date}-{workout.type.lower()}"
+        
+        if key not in seen_workouts:
+            seen_workouts[key] = workout
+            deduplicated_workouts.append(workout)
+        else:
+            # If we already have a workout for this date/type, decide which one to keep
+            existing_workout = seen_workouts[key]
+            
+            # Prefer completed workouts if they exist
+            if workout.status == "completed" and existing_workout.status != "completed":
+                # Replace with completed workout
+                index = deduplicated_workouts.index(existing_workout)
+                deduplicated_workouts[index] = workout
+                seen_workouts[key] = workout
+            # If workout is more recent than existing one and both have same status
+            elif workout.created_at and existing_workout.created_at and workout.created_at > existing_workout.created_at:
+                index = deduplicated_workouts.index(existing_workout)
+                deduplicated_workouts[index] = workout
+                seen_workouts[key] = workout
+    
     # Format response
     result = []
-    for workout in workouts:
+    for workout in deduplicated_workouts:
         # Determine emoji based on type
         emoji_map = {
             "run": "🏃",
