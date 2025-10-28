@@ -761,10 +761,17 @@ class StravaService:
                 # Add to list for bulk insert (all activities here need metrics)
                 metrics_to_update.append(metrics)
                 
+                # Debug zones calculation
+                if activity.average_heartrate:
+                    zones_sum = (metrics.time_in_zone_1 or 0) + (metrics.time_in_zone_2 or 0) + \
+                                (metrics.time_in_zone_3 or 0) + (metrics.time_in_zone_4 or 0) + (metrics.time_in_zone_5 or 0)
+                    if zones_sum == 0:
+                        print(f"[RECALC][ZONES] Activity {activity.id} '{activity.name}' has HR={activity.average_heartrate} but zones are 0")
+                
                 metrics_calculated['tss_calculated'] += 1 if metrics.tss else 0
                 metrics_calculated['trimp_calculated'] += 1 if metrics.trimp else 0
                 metrics_calculated['if_calculated'] += 1 if metrics.intensity_factor else 0
-                metrics_calculated['zones_calculated'] += 1 if metrics.time_in_zone_1 or metrics.time_in_zone_2 else 0
+                metrics_calculated['zones_calculated'] += 1 if (metrics.time_in_zone_1 or metrics.time_in_zone_2 or metrics.time_in_zone_3) else 0
                 
                 activities_processed += 1
                 if idx % 25 == 0:
