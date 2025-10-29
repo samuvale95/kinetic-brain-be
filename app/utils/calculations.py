@@ -160,3 +160,75 @@ def calculate_speed_from_pace(pace_min_km: float) -> float:
     if pace_min_km <= 0:
         return 0.0
     return 60.0 / pace_min_km
+
+
+def format_hr_zone_string(min_hr: float, max_hr: float) -> str:
+    """Format HR zone as string 'min-max'"""
+    return f"{int(min_hr)}-{int(max_hr)}"
+
+
+def format_pace_zone_string(min_pace: float, max_pace: float) -> str:
+    """Format pace zone as string 'mm:ss-mm:ss'"""
+    def pace_to_string(pace_min: float) -> str:
+        minutes = int(pace_min)
+        seconds = int((pace_min - minutes) * 60)
+        return f"{minutes}:{seconds:02d}"
+    
+    return f"{pace_to_string(min_pace)}-{pace_to_string(max_pace)}"
+
+
+def format_power_zone_string(min_power: float, max_power: float) -> str:
+    """Format power zone as string 'min-max'"""
+    return f"{int(min_power)}-{int(max_power)}"
+
+
+def convert_zones_to_string_format(zones: Dict[str, Dict[str, float]], metric_type: str) -> Dict[str, str]:
+    """
+    Convert zones from old format (Z1-Z5 with min/max) to new format (z1-z5 with string ranges)
+    """
+    result = {}
+    
+    if metric_type == "hr":
+        for zone_name, zone_data in zones.items():
+            zone_key = zone_name.lower()  # Z1 -> z1
+            result[zone_key] = format_hr_zone_string(zone_data["min"], zone_data["max"])
+    elif metric_type == "pace":
+        for zone_name, zone_data in zones.items():
+            zone_key = zone_name.lower()
+            result[zone_key] = format_pace_zone_string(zone_data["min"], zone_data["max"])
+    elif metric_type == "power":
+        for zone_name, zone_data in zones.items():
+            zone_key = zone_name.lower()
+            result[zone_key] = format_power_zone_string(zone_data["min"], zone_data["max"])
+    
+    return result
+
+
+def parse_pace_string(pace_str: str) -> float:
+    """
+    Parse pace string format "mm:ss" or "mm.ss" to minutes (float)
+    Returns pace in minutes per km
+    """
+    pace_str = pace_str.strip()
+    
+    # Support both ":" and "." separators
+    if ":" in pace_str:
+        parts = pace_str.split(":")
+    elif "." in pace_str:
+        parts = pace_str.split(".")
+    else:
+        raise ValueError(f"Invalid pace format: {pace_str}")
+    
+    if len(parts) != 2:
+        raise ValueError(f"Invalid pace format: {pace_str}")
+    
+    try:
+        minutes = int(parts[0])
+        seconds = int(parts[1])
+        
+        if seconds < 0 or seconds >= 60:
+            raise ValueError(f"Seconds must be 0-59: {pace_str}")
+        
+        return minutes + (seconds / 60.0)
+    except ValueError as e:
+        raise ValueError(f"Invalid pace format: {pace_str}") from e

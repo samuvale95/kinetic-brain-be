@@ -4,7 +4,9 @@ from app.utils.calculations import (
     calculate_pace_zones, 
     calculate_power_zones,
     calculate_wkg,
-    calculate_training_load
+    calculate_training_load,
+    convert_zones_to_string_format,
+    parse_pace_string
 )
 from datetime import datetime
 
@@ -12,27 +14,77 @@ from datetime import datetime
 class CalculationService:
     """Service for calculating training zones and metrics"""
     
+    
     @staticmethod
-    def calculate_zones(metric_type: str, threshold_value: float, 
-                       max_value: Optional[float] = None, 
-                       rest_value: Optional[float] = None) -> Dict[str, Any]:
-        """Calculate training zones based on metric type"""
+    def calculate_zones_string_format(metric_type: str, 
+                                     threshold_value: Optional[float] = None,
+                                     threshold_hr: Optional[float] = None,
+                                     hr_max: Optional[float] = None,
+                                     hr_rest: Optional[float] = None,
+                                     threshold_pace: Optional[str] = None,
+                                     ftp: Optional[float] = None) -> Dict[str, Any]:
+        """Calculate training zones and return in string format (z1-z5/z7 with ranges)"""
         
         if metric_type == "hr":
-            zones = calculate_hr_zones(threshold_value, max_value, rest_value)
+            if threshold_hr is None:
+                threshold_hr = threshold_value
+            if threshold_hr is None:
+                raise ValueError("threshold_hr or threshold_value required for HR zones")
+            
+            zones = calculate_hr_zones(threshold_hr, hr_max, hr_rest)
+            zones_string = convert_zones_to_string_format(zones, "hr")
+            
+            return {
+                "hr_zones": zones_string,
+                "hr_zones_source": "auto",
+                "hr_threshold_used": threshold_hr
+            }
+        
         elif metric_type == "pace":
-            zones = calculate_pace_zones(threshold_value, max_value)
+            if threshold_pace:
+                threshold_pace_float = parse_pace_string(threshold_pace)
+            elif threshold_value:
+                threshold_pace_float = threshold_value
+            else:
+                raise ValueError("threshold_pace or threshold_value required for pace zones")
+            
+            # Estimate max pace if needed
+            max_pace = threshold_pace_float * 0.8
+            zones = calculate_pace_zones(threshold_pace_float, max_pace)
+            zones_string = convert_zones_to_string_format(zones, "pace")
+            
+            return {
+                "pace_zones": zones_string,
+                "pace_zones_source": "auto",
+                "threshold_pace_used": threshold_pace if threshold_pace else f"{int(threshold_pace_float)}:{int((threshold_pace_float - int(threshold_pace_float)) * 60):02d}"
+            }
+        
         elif metric_type == "power":
-            zones = calculate_power_zones(threshold_value, max_value)
+            if ftp is None:
+                ftp = threshold_value
+            if ftp is None:
+                raise ValueError("ftp or threshold_value required for power zones")
+            
+            # Calculate 7-zone Coggan/Allen system
+            zones = {
+                "Z1": {"min": 0, "max": ftp * 0.55},
+                "Z2": {"min": ftp * 0.55, "max": ftp * 0.75},
+                "Z3": {"min": ftp * 0.75, "max": ftp * 0.90},
+                "Z4": {"min": ftp * 0.90, "max": ftp * 1.05},
+                "Z5": {"min": ftp * 1.05, "max": ftp * 1.20},
+                "Z6": {"min": ftp * 1.20, "max": ftp * 1.50},
+                "Z7": {"min": ftp * 1.50, "max": ftp * 2.00}
+            }
+            zones_string = convert_zones_to_string_format(zones, "power")
+            
+            return {
+                "power_zones": zones_string,
+                "power_zones_source": "auto",
+                "ftp_used": ftp
+            }
+        
         else:
             raise ValueError(f"Unsupported metric type: {metric_type}")
-        
-        return {
-            "zones": zones,
-            "calculated_at": datetime.utcnow().isoformat(),
-            "metric_type": metric_type,
-            "threshold_value": threshold_value
-        }
     
     @staticmethod
     def calculate_workout_metrics(workout_data: Dict[str, Any]) -> Dict[str, Any]:

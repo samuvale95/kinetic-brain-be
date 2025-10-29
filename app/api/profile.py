@@ -2,12 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
-from typing import List
+from typing import List, Dict, Any
+from datetime import datetime, timezone
 from app.database import get_db
 from app.schemas.user import (
     UserProfileCreate, UserProfileUpdate, UserProfileResponse,
-    PerformanceMetricsCreate, PerformanceMetricsResponse,
-    ZoneCalculationRequest, ZoneCalculationResponse
+    PerformanceMetricsCreate, PerformanceMetricsUpdate, PerformanceMetricsResponse
 )
 from app.schemas.statistics import ZonePreferenceRequest, ZonePreferenceResponse
 from app.models.user import UserProfile, PerformanceMetrics
@@ -26,12 +26,6 @@ async def options_profile():
 
 @router.options("/performance")
 async def options_profile_performance():
-    """Handle OPTIONS request for CORS preflight"""
-    return Response(status_code=200)
-
-
-@router.options("/calculate-zones")
-async def options_profile_calculate_zones():
     """Handle OPTIONS request for CORS preflight"""
     return Response(status_code=200)
 
@@ -133,18 +127,61 @@ async def create_performance_metrics(metrics_data: PerformanceMetricsCreate,
                                     current_user: dict = Depends(get_current_user),
                                     db: Session = Depends(get_db)):
     """Create performance metrics"""
-    # Calculate zones
-    zones = CalculationService.calculate_zones(
-        metric_type=metrics_data.metric_type,
-        threshold_value=metrics_data.threshold_value,
-        max_value=metrics_data.max_value,
-        rest_value=metrics_data.rest_value
-    )
+    update_data = metrics_data.dict(exclude_unset=True, exclude_none=True)
+    
+    # Auto-calculate zones if needed based on source
+    # HR zones
+    if metrics_data.hr_zones_source == "auto" or (metrics_data.hr_zones_source is None and metrics_data.threshold_hr):
+        try:
+            if metrics_data.threshold_hr:
+                hr_zones_data = CalculationService.calculate_zones_string_format(
+                    metric_type="hr",
+                    threshold_hr=metrics_data.threshold_hr,
+                    hr_max=metrics_data.hr_max,
+                    hr_rest=metrics_data.hr_rest
+                )
+                update_data.update(hr_zones_data)
+                
+                # Calculate HRR if we have both values
+                if metrics_data.hr_max and metrics_data.hr_rest:
+                    update_data['hrr'] = metrics_data.hr_max - metrics_data.hr_rest
+        except (ValueError, TypeError):
+            pass  # Skip if insufficient data
+    
+    # Pace zones
+    if metrics_data.pace_zones_source == "auto" or (metrics_data.pace_zones_source is None and metrics_data.threshold_pace):
+        try:
+            pace_zones_data = CalculationService.calculate_zones_string_format(
+                metric_type="pace",
+                threshold_pace=metrics_data.threshold_pace
+            )
+            update_data.update(pace_zones_data)
+        except (ValueError, TypeError):
+            pass  # Skip if insufficient data
+    
+    # Power zones
+    if metrics_data.power_zones_source == "auto" or (metrics_data.power_zones_source is None and metrics_data.ftp):
+        try:
+            power_zones_data = CalculationService.calculate_zones_string_format(
+                metric_type="power",
+                ftp=metrics_data.ftp
+            )
+            update_data.update(power_zones_data)
+            
+            # Calculate wkg if FTP and weight are available
+            if metrics_data.ftp:
+                profile = db.query(UserProfile).filter(
+                    UserProfile.user_id == current_user["user_id"]
+                ).first()
+                if profile and profile.weight:
+                    from app.utils.calculations import calculate_wkg
+                    update_data["wkg"] = calculate_wkg(metrics_data.ftp, profile.weight)
+        except (ValueError, TypeError):
+            pass  # Skip if insufficient data
     
     metrics = PerformanceMetrics(
         user_id=current_user["user_id"],
-        **metrics_data.dict(),
-        zones_json=zones["zones"]
+        **update_data
     )
     
     db.add(metrics)
@@ -154,20 +191,98 @@ async def create_performance_metrics(metrics_data: PerformanceMetricsCreate,
     return metrics
 
 
-@router.post("/calculate-zones", response_model=ZoneCalculationResponse)
-async def calculate_zones(zone_request: ZoneCalculationRequest):
-    """Calculate training zones"""
-    zones = CalculationService.calculate_zones(
-        metric_type=zone_request.metric_type,
-        threshold_value=zone_request.threshold_value,
-        max_value=zone_request.max_value,
-        rest_value=zone_request.rest_value
-    )
+@router.put("/performance", response_model=PerformanceMetricsResponse)
+async def update_performance_metrics(metrics_data: PerformanceMetricsUpdate,
+                                    current_user: dict = Depends(get_current_user),
+                                    db: Session = Depends(get_db)):
+    """Update or create performance metrics (upsert)"""
+    # Find existing metrics - we'll store all metrics in one record per user
+    # Or create a new one if none exists
+    metrics = db.query(PerformanceMetrics).filter(
+        PerformanceMetrics.user_id == current_user["user_id"]
+    ).order_by(PerformanceMetrics.test_date.desc()).first()
     
-    return ZoneCalculationResponse(
-        zones=zones["zones"],
-        calculated_at=zones["calculated_at"]
-    )
+    update_data = metrics_data.dict(exclude_unset=True, exclude_none=True)
+    
+    # Auto-calculate zones if source is "auto" or not set and threshold values provided
+    # HR zones
+    if (metrics_data.hr_zones_source == "auto" or 
+        (metrics_data.hr_zones_source is None and (metrics_data.threshold_hr or (metrics and metrics.threshold_hr)))):
+        try:
+            threshold_hr = metrics_data.threshold_hr or (metrics.threshold_hr if metrics else None)
+            hr_max = metrics_data.hr_max or (metrics.hr_max if metrics else None)
+            hr_rest = metrics_data.hr_rest or (metrics.hr_rest if metrics else None)
+            
+            if threshold_hr:
+                hr_zones_data = CalculationService.calculate_zones_string_format(
+                    metric_type="hr",
+                    threshold_hr=threshold_hr,
+                    hr_max=hr_max,
+                    hr_rest=hr_rest
+                )
+                update_data.update(hr_zones_data)
+                
+                # Calculate HRR if we have both values
+                if (metrics_data.hr_max or (metrics and metrics.hr_max)) and (metrics_data.hr_rest or (metrics and metrics.hr_rest)):
+                    hr_max_val = metrics_data.hr_max or (metrics.hr_max if metrics else None)
+                    hr_rest_val = metrics_data.hr_rest or (metrics.hr_rest if metrics else None)
+                    if hr_max_val and hr_rest_val:
+                        update_data['hrr'] = hr_max_val - hr_rest_val
+        except (ValueError, TypeError, AttributeError):
+            pass  # Skip if insufficient data
+    
+    # Pace zones
+    if (metrics_data.pace_zones_source == "auto" or 
+        (metrics_data.pace_zones_source is None and metrics_data.threshold_pace)):
+        try:
+            pace_zones_data = CalculationService.calculate_zones_string_format(
+                metric_type="pace",
+                threshold_pace=metrics_data.threshold_pace
+            )
+            update_data.update(pace_zones_data)
+        except (ValueError, TypeError):
+            pass  # Skip if insufficient data
+    
+    # Power zones
+    if (metrics_data.power_zones_source == "auto" or 
+        (metrics_data.power_zones_source is None and metrics_data.ftp)):
+        try:
+            power_zones_data = CalculationService.calculate_zones_string_format(
+                metric_type="power",
+                ftp=metrics_data.ftp
+            )
+            update_data.update(power_zones_data)
+            
+            # Calculate wkg if FTP and weight are available
+            if metrics_data.ftp:
+                profile = db.query(UserProfile).filter(
+                    UserProfile.user_id == current_user["user_id"]
+                ).first()
+                if profile and profile.weight:
+                    from app.utils.calculations import calculate_wkg
+                    update_data["wkg"] = calculate_wkg(metrics_data.ftp, profile.weight)
+        except (ValueError, TypeError):
+            pass  # Skip if insufficient data
+    
+    if metrics:
+        # Update existing metrics
+        for field, value in update_data.items():
+            setattr(metrics, field, value)
+        metrics.updated_at = datetime.now(timezone.utc)
+    else:
+        # Create new metrics
+        metrics = PerformanceMetrics(
+            user_id=current_user["user_id"],
+            **update_data
+        )
+        db.add(metrics)
+    
+    db.commit()
+    db.refresh(metrics)
+    
+    return metrics
+
+
 
 
 @router.put("/zone-preference", response_model=ZonePreferenceResponse)
@@ -193,16 +308,18 @@ async def update_zone_preference(request: ZonePreferenceRequest,
     # Get current zones based on preference
     current_zones = None
     if request.preferred_zone_type in ["hr", "pace", "power"]:
-        # Get the latest performance metrics for this zone type
+        # Get the latest performance metrics
         metrics = db.query(PerformanceMetrics).filter(
-            and_(
-                PerformanceMetrics.user_id == current_user["user_id"],
-                PerformanceMetrics.metric_type == request.preferred_zone_type
-            )
+            PerformanceMetrics.user_id == current_user["user_id"]
         ).order_by(PerformanceMetrics.test_date.desc()).first()
         
-        if metrics and metrics.zones_json:
-            current_zones = metrics.zones_json
+        if metrics:
+            if request.preferred_zone_type == "hr" and metrics.hr_zones:
+                current_zones = metrics.hr_zones
+            elif request.preferred_zone_type == "pace" and metrics.pace_zones:
+                current_zones = metrics.pace_zones
+            elif request.preferred_zone_type == "power" and metrics.power_zones:
+                current_zones = metrics.power_zones
     
     return {
         'success': True,

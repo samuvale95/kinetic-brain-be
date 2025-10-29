@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
+import re
 
 
 class UserCreate(BaseModel):
@@ -81,39 +82,123 @@ class UserProfileResponse(BaseModel):
         from_attributes = True
 
 
-class PerformanceMetricsCreate(BaseModel):
-    metric_type: str = Field(..., pattern="^(hr|pace|power)$")
-    threshold_value: float = Field(..., gt=0)
-    max_value: Optional[float] = Field(None, gt=0)
-    rest_value: Optional[float] = Field(None, ge=0)
+class PerformanceMetricsBase(BaseModel):
     test_date: Optional[date] = None
+    
+    # HR Metrics
+    hr_max: Optional[float] = Field(None, gt=0, le=250)
+    hr_rest: Optional[float] = Field(None, ge=0, le=150)
+    threshold_hr: Optional[float] = Field(None, gt=0, le=250)
+    hrr: Optional[float] = Field(None, ge=0)  # Heart Rate Reserve
+    custom_threshold_hr: Optional[float] = Field(None, gt=0, le=250)
+    
+    # Pace Metrics
+    threshold_pace: Optional[str] = Field(None, description="Format: mm:ss or mm.ss (e.g., '4:15' or '4.15')")
+    critical_speed: Optional[float] = Field(None, gt=0)
+    vla: Optional[float] = Field(None, gt=0)
+    
+    @field_validator('threshold_pace')
+    @classmethod
+    def validate_pace_format(cls, v):
+        if v is None:
+            return v
+        # Validate format: mm:ss or mm.ss where seconds are 0-59
+        pattern = r'^\d{1,2}[:.]\d{2}$'
+        if not re.match(pattern, v):
+            raise ValueError('threshold_pace must be in format "mm:ss" or "mm.ss" (e.g., "4:15" or "4.15")')
+        
+        # Extract minutes and seconds
+        if ':' in v:
+            parts = v.split(':')
+        else:
+            parts = v.split('.')
+        
+        try:
+            minutes = int(parts[0])
+            seconds = int(parts[1])
+            if seconds < 0 or seconds >= 60:
+                raise ValueError('Seconds must be between 00-59')
+            if minutes < 0 or minutes > 60:
+                raise ValueError('Minutes must be between 0-60')
+        except (ValueError, IndexError):
+            raise ValueError('Invalid pace format')
+        
+        return v
+    
+    # Power Metrics
+    ftp: Optional[float] = Field(None, gt=0, description="Functional Threshold Power")
+    wkg: Optional[float] = Field(None, gt=0, description="Watts per kilogram")
+    
+    # Advanced Metrics
+    vo2max: Optional[float] = Field(None, gt=0, le=100)
+    
+    # Structured Zones
+    hr_zones: Optional[Dict[str, str]] = Field(None, description="HR zones in format {'z1': '120-135', 'z2': '135-150', ...}")
+    hr_zones_source: Optional[str] = Field(None, pattern="^(auto|manual)$")
+    hr_threshold_used: Optional[float] = Field(None, gt=0)
+    
+    pace_zones: Optional[Dict[str, str]] = Field(None, description="Pace zones in format {'z1': '5:00-4:45', 'z2': '4:45-4:30', ...}")
+    pace_zones_source: Optional[str] = Field(None, pattern="^(auto|manual)$")
+    threshold_pace_used: Optional[str] = Field(None)
+    
+    power_zones: Optional[Dict[str, str]] = Field(None, description="Power zones in format {'z1': '0-165', 'z2': '166-225', ..., 'z7': '451-540'}")
+    power_zones_source: Optional[str] = Field(None, pattern="^(auto|manual)$")
+    ftp_used: Optional[float] = Field(None, gt=0)
+
+
+class PerformanceMetricsCreate(PerformanceMetricsBase):
+    pass
+
+
+class PerformanceMetricsUpdate(PerformanceMetricsBase):
+    """Update schema - same fields as Create but all optional"""
+    pass
 
 
 class PerformanceMetricsResponse(BaseModel):
     id: int
     user_id: int
-    metric_type: str
-    threshold_value: float
-    max_value: Optional[float] = None
-    rest_value: Optional[float] = None
-    zones_json: Optional[Dict[str, Any]] = None
+    
+    # HR Metrics
+    hr_max: Optional[float] = None
+    hr_rest: Optional[float] = None
+    threshold_hr: Optional[float] = None
+    hrr: Optional[float] = None
+    custom_threshold_hr: Optional[float] = None
+    
+    # Pace Metrics
+    threshold_pace: Optional[str] = None
+    critical_speed: Optional[float] = None
+    vla: Optional[float] = None
+    
+    # Power Metrics
+    ftp: Optional[float] = None
+    wkg: Optional[float] = None
+    
+    # Advanced Metrics
+    vo2max: Optional[float] = None
+    
+    # Structured Zones
+    hr_zones: Optional[Dict[str, str]] = None
+    hr_zones_source: Optional[str] = None
+    hr_threshold_used: Optional[float] = None
+    
+    pace_zones: Optional[Dict[str, str]] = None
+    pace_zones_source: Optional[str] = None
+    threshold_pace_used: Optional[str] = None
+    
+    power_zones: Optional[Dict[str, str]] = None
+    power_zones_source: Optional[str] = None
+    ftp_used: Optional[float] = None
+    
     test_date: datetime
     created_at: datetime
+    updated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
 
 
-class ZoneCalculationRequest(BaseModel):
-    metric_type: str = Field(..., pattern="^(hr|pace|power)$")
-    threshold_value: float = Field(..., gt=0)
-    max_value: Optional[float] = Field(None, gt=0)
-    rest_value: Optional[float] = Field(None, ge=0)
-
-
-class ZoneCalculationResponse(BaseModel):
-    zones: Dict[str, Dict[str, float]]
-    calculated_at: datetime
 
 
 # Google OAuth Schemas

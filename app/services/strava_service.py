@@ -531,35 +531,23 @@ class StravaService:
         Returns:
             TrainingMetrics object with calculated values
         """
-        # Get user's performance thresholds
-        hr_metrics = self.db.execute(
+        # Get user's latest performance metrics (new unified structure)
+        latest_metrics = self.db.execute(
             select(PerformanceMetrics)
-            .where(and_(
-                PerformanceMetrics.user_id == user_id,
-                PerformanceMetrics.metric_type == "hr"
-            ))
-            .order_by(desc(PerformanceMetrics.test_date))
-        ).scalar_one_or_none()
-        
-        power_metrics = self.db.execute(
-            select(PerformanceMetrics)
-            .where(and_(
-                PerformanceMetrics.user_id == user_id,
-                PerformanceMetrics.metric_type == "power"
-            ))
+            .where(PerformanceMetrics.user_id == user_id)
             .order_by(desc(PerformanceMetrics.test_date))
         ).scalar_one_or_none()
         
         # Extract zones from PerformanceMetrics if available
         hr_zones = None
-        if hr_metrics and hr_metrics.zones_json:
-            hr_zones = hr_metrics.zones_json
+        if latest_metrics and latest_metrics.hr_zones:
+            hr_zones = latest_metrics.hr_zones
         
         # Get threshold values
-        threshold_hr = hr_metrics.threshold_value if hr_metrics else None
-        threshold_power = power_metrics.threshold_value if power_metrics else None
-        max_hr = hr_metrics.max_value if hr_metrics else None
-        resting_hr = hr_metrics.rest_value if hr_metrics else None
+        threshold_hr = latest_metrics.threshold_hr if latest_metrics else None
+        threshold_power = latest_metrics.ftp if latest_metrics else None
+        max_hr = latest_metrics.hr_max if latest_metrics else None
+        resting_hr = latest_metrics.hr_rest if latest_metrics else None
         
         # If no zones provided, try to calculate them
         # Priority: LTHR > Max HR > skip (will use fallback in calculate_time_in_zones)

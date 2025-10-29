@@ -60,13 +60,42 @@ class PerformanceMetrics(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    metric_type = Column(String(20), nullable=False)  # hr, pace, power
-    threshold_value = Column(Float, nullable=False)
-    max_value = Column(Float)
-    rest_value = Column(Float)
-    zones_json = Column(JSON)  # Z1-Z5 zones with min/max values
+    
+    # HR Metrics
+    hr_max = Column(Float)
+    hr_rest = Column(Float)
+    threshold_hr = Column(Float)
+    hrr = Column(Float)  # Heart Rate Reserve
+    custom_threshold_hr = Column(Float)
+    
+    # Pace Metrics
+    threshold_pace = Column(String(10))  # Format: "mm:ss" or "mm.ss"
+    critical_speed = Column(Float)
+    vla = Column(Float)
+    
+    # Power Metrics
+    ftp = Column(Float)  # Functional Threshold Power
+    wkg = Column(Float)  # Watts per kilogram
+    
+    # Advanced Metrics
+    vo2max = Column(Float)
+    
+    # Structured Zones (new format)
+    hr_zones = Column(JSON)  # {"z1": "120-135", "z2": "135-150", ...}
+    hr_zones_source = Column(String(10))  # "auto" | "manual"
+    hr_threshold_used = Column(Float)
+    
+    pace_zones = Column(JSON)  # {"z1": "5:00-4:45", "z2": "4:45-4:30", ...}
+    pace_zones_source = Column(String(10))  # "auto" | "manual"
+    threshold_pace_used = Column(String(10))
+    
+    power_zones = Column(JSON)  # {"z1": "0-165", "z2": "166-225", ..., "z7": "451-540"}
+    power_zones_source = Column(String(10))  # "auto" | "manual"
+    ftp_used = Column(Float)
+    
     test_date = Column(DateTime(timezone=True), server_default=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     # Relationships
     user = relationship("User", back_populates="performance_metrics")
