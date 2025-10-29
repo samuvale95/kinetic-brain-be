@@ -7,7 +7,7 @@ from .metrics import TrainingMetricsResponse, WeeklySummaryResponse
 from .statistics import (
     OverviewResponse, PerformanceChartResponse, WeeklySummaryResponse,
     ZoneDistributionResponse, ProgressionResponse, TrainingLoadResponse,
-    RecalculateMetricsResponse, ZonePreferenceRequest, ZonePreferenceResponse,
+    ZonePreferenceRequest, ZonePreferenceResponse,
     WorkoutSummary
 )
 
@@ -41,7 +41,6 @@ __all__ = [
     "ZoneDistributionResponse",
     "ProgressionResponse",
     "TrainingLoadResponse",
-    "RecalculateMetricsResponse",
     "ZonePreferenceRequest",
     "ZonePreferenceResponse",
     "WorkoutSummary"

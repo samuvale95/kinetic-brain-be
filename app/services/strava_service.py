@@ -264,6 +264,7 @@ class StravaService:
         
         synced_count = 0
         new_count = 0
+        new_activities = []
         
         for activity_data in recent_activities:
             # Check if activity already exists
@@ -279,14 +280,43 @@ class StravaService:
             # Create new Strava activity
             strava_activity = self._create_strava_activity(strava_account, activity_data)
             self.db.add(strava_activity)
+            new_activities.append(strava_activity)
             new_count += 1
         
+        # Commit activities first so we can calculate metrics
         self.db.commit()
+        
+        # Calculate metrics automatically for new activities
+        metrics_calculated = 0
+        metrics_errors = 0
+        
+        if new_activities:
+            logger.info(f"Calculating metrics for {len(new_activities)} new activities")
+            for strava_activity in new_activities:
+                try:
+                    # Refresh to get the ID from DB
+                    self.db.refresh(strava_activity)
+                    
+                    # Calculate metrics for this activity
+                    training_metrics = self.calculate_activity_metrics(strava_activity, user_id)
+                    self.db.add(training_metrics)
+                    metrics_calculated += 1
+                except Exception as e:
+                    logger.error(f"Error calculating metrics for activity {strava_activity.strava_activity_id}: {e}")
+                    metrics_errors += 1
+                    continue
+            
+            # Commit metrics
+            if metrics_calculated > 0:
+                self.db.commit()
+                logger.info(f"Successfully calculated metrics for {metrics_calculated} activities")
         
         return {
             "total_activities": len(recent_activities),
             "new_activities": new_count,
-            "already_synced": synced_count
+            "already_synced": synced_count,
+            "metrics_calculated": metrics_calculated,
+            "metrics_errors": metrics_errors
         }
     
     def _create_strava_activity(self, strava_account: StravaAccount, 

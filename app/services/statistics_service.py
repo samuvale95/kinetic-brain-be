@@ -208,6 +208,66 @@ class StatisticsService:
             
             week_iter += timedelta(weeks=1)
         
+        # Fill last week (current week) on-the-fly with TODAY's data if missing
+        # This ensures the graph always shows up-to-date values including rest days
+        if weeks_data:
+            last = weeks_data[-1]
+            
+            # Fill CTL/ATL/TSB if missing (calculate up to TODAY)
+            if last.get('ctl') is None or last.get('atl') is None or last.get('tsb') is None:
+                strava_account_ids = self._get_strava_account_ids(user_id)
+                end_date = date.today()
+                start_date = end_date - timedelta(days=41)
+                
+                activities_42d = self.db.execute(
+                    select(StravaActivity)
+                    .where(and_(
+                        StravaActivity.strava_account_id.in_(strava_account_ids),
+                        StravaActivity.start_date >= start_date,
+                        StravaActivity.tss.isnot(None)
+                    ))
+                    .order_by(StravaActivity.start_date)
+                ).scalars().all()
+                
+                # Group TSS by date
+                daily_tss = {}
+                for activity in activities_42d:
+                    activity_date = activity.start_date.date()
+                    daily_tss[activity_date] = daily_tss.get(activity_date, 0) + (activity.tss or 0)
+                
+                # Build complete list of ALL 42 days (most recent first)
+                tss_list = []
+                for i in range(42):
+                    day_date = end_date - timedelta(days=i)
+                    tss_for_day = daily_tss.get(day_date, 0)  # 0 for rest days
+                    tss_list.append(tss_for_day)
+                
+                # Calculate CTL/ATL/TSB for TODAY
+                metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
+                last['ctl'] = metrics['ctl']
+                last['atl'] = metrics['atl']
+                last['tsb'] = metrics['tsb']
+            
+            # Fill weekly_tss/volume_hours for current week if missing
+            if (last.get('weekly_tss') in (None, 0)) or (last.get('volume_hours') in (None, 0)):
+                week_start = date.fromisoformat(last['week_start'])
+                week_end = date.fromisoformat(last['week_end'])
+                
+                strava_account_ids = self._get_strava_account_ids(user_id)
+                activities_week = self.db.execute(
+                    select(StravaActivity)
+                    .where(and_(
+                        StravaActivity.strava_account_id.in_(strava_account_ids),
+                        StravaActivity.start_date >= week_start,
+                        StravaActivity.start_date <= week_end
+                    ))
+                ).scalars().all()
+                
+                weekly_tss = sum(a.tss or 0 for a in activities_week)
+                total_duration = sum(a.moving_time or 0 for a in activities_week)
+                last['weekly_tss'] = weekly_tss
+                last['volume_hours'] = round((total_duration or 0) / 3600.0, 2)
+        
         # Trend analysis
         trend_analysis = {}
         if len(weeks_data) >= 2:
