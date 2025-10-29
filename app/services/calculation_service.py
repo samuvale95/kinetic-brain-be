@@ -6,6 +6,7 @@ from app.utils.calculations import (
     calculate_wkg,
     calculate_training_load,
     convert_zones_to_string_format,
+    convert_zones_string_to_structured,
     parse_pace_string
 )
 from datetime import datetime
@@ -138,3 +139,8 @@ class CalculationService:
             if zone_data["min"] <= value <= zone_data["max"]:
                 return zone_name
         return None
+
+    @staticmethod
+    def convert_zones_to_structured(metric_type: str, zones: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+        """Wrapper to convert stored string-format zones to structured dict for API responses."""
+        return convert_zones_string_to_structured(zones, metric_type)

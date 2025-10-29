@@ -204,6 +204,65 @@ def convert_zones_to_string_format(zones: Dict[str, Dict[str, float]], metric_ty
     return result
 
 
+def _parse_range_to_min_max(range_str: str) -> Dict[str, float]:
+    """
+    Parse a generic numeric range string like "139-153" into a dict with min/max floats.
+    Gracefully handles extra spaces.
+    """
+    parts = [p.strip() for p in range_str.split("-")]
+    if len(parts) != 2:
+        return {"min": 0.0, "max": 0.0}
+    try:
+        return {"min": float(parts[0]), "max": float(parts[1])}
+    except ValueError:
+        return {"min": 0.0, "max": 0.0}
+
+
+def _parse_pace_range_to_min_max(range_str: str) -> Dict[str, float]:
+    """
+    Parse a pace range like "5:00-4:45" into numeric minutes per km min/max.
+    """
+    parts = [p.strip() for p in range_str.split("-")]
+    if len(parts) != 2:
+        return {"min": 0.0, "max": 0.0}
+    try:
+        return {"min": parse_pace_string(parts[0]), "max": parse_pace_string(parts[1])}
+    except Exception:
+        return {"min": 0.0, "max": 0.0}
+
+
+def convert_zones_string_to_structured(zones: Dict[str, str], metric_type: str) -> Dict[str, Dict[str, float | str]]:
+    """
+    Convert zones from string range format (e.g., {"z1": "139-153"}) to structured dict
+    with numeric min/max and a description field.
+    Keys are preserved (e.g., "z1".."z5").
+    """
+    descriptions_hr = {
+        "z1": "Recovery",
+        "z2": "Aerobic Base",
+        "z3": "Aerobic Threshold",
+        "z4": "Lactate Threshold",
+        "z5": "VO2 Max",
+    }
+    descriptions_pace = descriptions_hr
+    descriptions_power = descriptions_hr
+
+    result: Dict[str, Dict[str, float | str]] = {}
+    for key, value in zones.items():
+        key_lower = key.lower()
+        if metric_type == "pace":
+            mm = _parse_pace_range_to_min_max(value)
+            desc = descriptions_pace.get(key_lower)
+        else:
+            mm = _parse_range_to_min_max(value)
+            desc = descriptions_power.get(key_lower) if metric_type == "power" else descriptions_hr.get(key_lower)
+        zone_struct = {"min": mm["min"], "max": mm["max"]}
+        if desc:
+            zone_struct["description"] = desc
+        result[key_lower] = zone_struct
+    return result
+
+
 def parse_pace_string(pace_str: str) -> float:
     """
     Parse pace string format "mm:ss" or "mm.ss" to minutes (float)

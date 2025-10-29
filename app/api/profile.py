@@ -315,11 +315,11 @@ async def update_zone_preference(request: ZonePreferenceRequest,
         
         if metrics:
             if request.preferred_zone_type == "hr" and metrics.hr_zones:
-                current_zones = metrics.hr_zones
+                current_zones = CalculationService.convert_zones_to_structured("hr", metrics.hr_zones)
             elif request.preferred_zone_type == "pace" and metrics.pace_zones:
-                current_zones = metrics.pace_zones
+                current_zones = CalculationService.convert_zones_to_structured("pace", metrics.pace_zones)
             elif request.preferred_zone_type == "power" and metrics.power_zones:
-                current_zones = metrics.power_zones
+                current_zones = CalculationService.convert_zones_to_structured("power", metrics.power_zones)
     
     return {
         'success': True,
