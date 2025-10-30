@@ -36,6 +36,7 @@ async def options_profile_zone_preference():
     return Response(status_code=200)
 
 
+@router.get("", response_model=UserProfileResponse)
 @router.get("/", response_model=UserProfileResponse)
 async def get_profile(current_user: dict = Depends(get_current_user), 
                      db: Session = Depends(get_db)):
@@ -58,6 +59,7 @@ async def get_profile(current_user: dict = Depends(get_current_user),
     return profile
 
 
+@router.post("", response_model=UserProfileResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=UserProfileResponse, status_code=status.HTTP_201_CREATED)
 async def create_profile(profile_data: UserProfileCreate,
                         current_user: dict = Depends(get_current_user),
@@ -86,6 +88,7 @@ async def create_profile(profile_data: UserProfileCreate,
     return profile
 
 
+@router.put("", response_model=UserProfileResponse)
 @router.put("/", response_model=UserProfileResponse)
 async def update_profile(profile_data: UserProfileUpdate,
                         current_user: dict = Depends(get_current_user),
