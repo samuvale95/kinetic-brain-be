@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -7,6 +8,7 @@ from app.schemas.user import UserCreate, UserLogin, UserResponse, GoogleAuthRequ
 from app.services.auth_service import AuthService
 from app.services.google_auth_service import GoogleAuthService
 from app.utils.security import verify_token
+from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 security = HTTPBearer()
@@ -153,7 +155,6 @@ async def google_auth_callback_get(code: str, db: Session = Depends(get_db)):
     
     if not result:
         # Redirect to frontend with error
-        from fastapi.responses import RedirectResponse
         return RedirectResponse(
             url=f"{settings.frontend_callback_uri}?error=authentication_failed",
             status_code=302
@@ -164,9 +165,7 @@ async def google_auth_callback_get(code: str, db: Session = Depends(get_db)):
     user = result["user"]
     
     # Redirect to frontend with tokens as URL parameters
-    from fastapi.responses import RedirectResponse
     from urllib.parse import urlencode
-    from app.config import settings
     
     # Encode tokens for URL
     params = {
