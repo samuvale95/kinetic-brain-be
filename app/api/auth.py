@@ -145,16 +145,17 @@ async def google_auth_callback_get(code: str, db: Session = Depends(get_db)):
     """Handle Google OAuth callback from browser redirect (GET)"""
     google_service = GoogleAuthService(db)
     
+    # Use configured redirect URI (env-configurable) instead of hardcoded localhost
     result = await google_service.authenticate_google_user(
         code=code,
-        redirect_uri="http://localhost:8000/auth/google/callback"
+        redirect_uri=settings.google_redirect_uri
     )
     
     if not result:
         # Redirect to frontend with error
         from fastapi.responses import RedirectResponse
         return RedirectResponse(
-            url="http://localhost:3000/auth/callback?error=authentication_failed",
+            url=f"{settings.frontend_callback_uri}?error=authentication_failed",
             status_code=302
         )
     
@@ -178,7 +179,7 @@ async def google_auth_callback_get(code: str, db: Session = Depends(get_db)):
     }
     
     # Redirect to frontend callback page using config
-    frontend_callback_url = f"http://localhost:8080/auth/callback?{urlencode(params)}"
+    frontend_callback_url = f"{settings.frontend_callback_uri}?{urlencode(params)}"
     return RedirectResponse(url=frontend_callback_url, status_code=302)
 
 
