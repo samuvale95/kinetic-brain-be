@@ -45,33 +45,43 @@ async def options_today_workouts():
 @router.get("/today-workouts")
 async def get_today_workouts(current_user: dict = Depends(get_current_user),
                              db: Session = Depends(get_db)):
-    """Get today's scheduled workouts, excluding inactive plans"""
+    """Get today's scheduled workouts from active plans and standalone workouts"""
     user_id = current_user["user_id"]
     today = date.today()
     
-    # Get workout IDs from inactive plans
-    inactive_plan_workout_ids = db.execute(
-        select(Workout.id)
+    # Get workouts from active plans
+    workouts_from_active_plans = db.execute(
+        select(Workout)
         .join(WorkoutPlan, Workout.plan_id == WorkoutPlan.id)
         .where(
             and_(
+                Workout.user_id == user_id,
                 WorkoutPlan.user_id == user_id,
-                WorkoutPlan.status != "active"
+                WorkoutPlan.status == "active",
+                Workout.scheduled_date == today,
+                Workout.status.in_(["scheduled", "completed"])
             )
         )
     ).scalars().all()
-    inactive_plan_workout_ids = set(inactive_plan_workout_ids)
     
-    workouts = db.query(Workout).filter(
-        and_(
-            Workout.user_id == user_id,
-            Workout.scheduled_date == today,
-            Workout.status.in_(["scheduled", "completed"])
+    # Get standalone workouts (without plan_id)
+    standalone_workouts = db.execute(
+        select(Workout)
+        .where(
+            and_(
+                Workout.user_id == user_id,
+                Workout.plan_id.is_(None),
+                Workout.scheduled_date == today,
+                Workout.status.in_(["scheduled", "completed"])
+            )
         )
-    ).order_by(Workout.scheduled_date, Workout.duration_minutes).all()
+    ).scalars().all()
     
-    # Filter out workouts from inactive plans
-    workouts = [w for w in workouts if w.id not in inactive_plan_workout_ids]
+    # Combine both lists
+    workouts = list(workouts_from_active_plans) + list(standalone_workouts)
+    
+    # Sort by scheduled_date and duration
+    workouts.sort(key=lambda w: (w.scheduled_date or date.min, w.duration_minutes or 0))
     
     # Deduplicate workouts: if multiple workouts have the same scheduled_date and similar type,
     # prefer completed workouts, then keep the one with the most recent creation date

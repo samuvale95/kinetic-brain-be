@@ -18,8 +18,8 @@ class WorkoutService:
     
     # Workout Plans
     def create_workout_plan(self, user_id: int, plan_data: WorkoutPlanCreate) -> WorkoutPlan:
-        """Create a new workout plan with maximum 2 plans per user limit"""
-        # First, deactivate all existing active plans for this user
+        """Create a new workout plan. Only one active plan per user - existing active plans are paused."""
+        # Suspend all existing active plans for this user (only one active plan at a time)
         existing_active_plans = self.db.execute(
             select(WorkoutPlan)
             .where(and_(WorkoutPlan.user_id == user_id, WorkoutPlan.status == "active"))
@@ -27,41 +27,6 @@ class WorkoutService:
         
         for plan in existing_active_plans:
             plan.status = "paused"
-        
-        # Check total number of plans for this user
-        all_user_plans = self.db.execute(
-            select(WorkoutPlan)
-            .where(WorkoutPlan.user_id == user_id)
-            .order_by(WorkoutPlan.created_at.desc())
-        ).scalars().all()
-        
-        # If user has 2 or more plans, delete the oldest ones (keep only the 2 most recent)
-        if len(all_user_plans) >= 2:
-            plans_to_delete = all_user_plans[1:]  # Keep the first (most recent), delete the rest
-            
-            for old_plan in plans_to_delete:
-                # Move workouts to historical status before deleting plan
-                self._archive_workouts_from_plan(old_plan.id)
-                
-                # Delete calendar events for workouts in this plan
-                workout_ids = self.db.execute(
-                    select(Workout.id)
-                    .where(Workout.plan_id == old_plan.id)
-                ).scalars().all()
-                
-                if workout_ids:
-                    self.db.execute(
-                        select(CalendarEvent)
-                        .where(CalendarEvent.workout_id.in_(workout_ids))
-                    ).scalars().all()
-                    
-                    # Delete the calendar events
-                    self.db.query(CalendarEvent).filter(
-                        CalendarEvent.workout_id.in_(workout_ids)
-                    ).delete(synchronize_session=False)
-                
-                # Delete the plan
-                self.db.delete(old_plan)
         
         self.db.commit()
         
@@ -226,6 +191,18 @@ class WorkoutService:
         self.db.add(db_workout)
         self.db.commit()
         self.db.refresh(db_workout)
+        
+        # If workout is standalone (no plan_id) and has a scheduled_date, create a calendar event
+        if db_workout.plan_id is None and db_workout.scheduled_date:
+            self.create_calendar_event(
+                user_id=user_id,
+                workout_id=db_workout.id,
+                title=db_workout.title,
+                event_type="workout",
+                scheduled_date=db_workout.scheduled_date,
+                duration_minutes=db_workout.duration_minutes,
+                is_recurring=False
+            )
         
         return db_workout
     
