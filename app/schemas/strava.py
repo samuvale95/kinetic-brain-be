@@ -64,7 +64,12 @@ class StravaSyncRequest(BaseModel):
 class StravaSyncResponse(BaseModel):
     total_activities: int
     new_activities: int
+    updated_activities: int = 0
     already_synced: int
+    metrics_calculated: int = 0
+    metrics_recalculated: int = 0
+    metrics_errors: int = 0
+    daily_metrics_updated: int = 0
 
 
 class StravaMatchResponse(BaseModel):

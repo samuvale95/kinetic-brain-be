@@ -262,18 +262,33 @@ class StravaService:
         ]
         
         synced_count = 0
+        updated_count = 0
         new_count = 0
         new_activities = []
+        updated_activities = []
         
         for activity_data in recent_activities:
-            # Check if activity already exists
+            # Check if activity already exists using strava_activity_id
             existing_activity = self.db.execute(
                 select(StravaActivity)
                 .where(StravaActivity.strava_activity_id == activity_data["id"])
             ).scalar_one_or_none()
             
             if existing_activity:
-                synced_count += 1
+                # Check if activity belongs to this user's account
+                if existing_activity.strava_account_id != strava_account.id:
+                    # Activity exists but belongs to different account - skip
+                    synced_count += 1
+                    continue
+                
+                # Update existing activity if data might have changed
+                # Strava allows editing activities, so we should refresh the data
+                updated = self._update_strava_activity(existing_activity, activity_data)
+                if updated:
+                    updated_activities.append(existing_activity)
+                    updated_count += 1
+                else:
+                    synced_count += 1
                 continue
             
             # Create new Strava activity
@@ -287,8 +302,10 @@ class StravaService:
         
         # Calculate metrics automatically for new activities
         metrics_calculated = 0
+        metrics_recalculated = 0
         metrics_errors = 0
         
+        # Process new activities
         if new_activities:
             logger.info(f"Calculating metrics for {len(new_activities)} new activities")
             for strava_activity in new_activities:
@@ -304,18 +321,75 @@ class StravaService:
                     logger.error(f"Error calculating metrics for activity {strava_activity.strava_activity_id}: {e}")
                     metrics_errors += 1
                     continue
+        
+        # Recalculate metrics for updated activities (in case TSS changed)
+        if updated_activities:
+            logger.info(f"Recalculating metrics for {len(updated_activities)} updated activities")
+            for strava_activity in updated_activities:
+                try:
+                    # Recalculate metrics
+                    training_metrics = self.calculate_activity_metrics(strava_activity, user_id)
+                    # Update existing training metrics or create new
+                    existing_metrics = self.db.execute(
+                        select(TrainingMetrics)
+                        .where(TrainingMetrics.strava_activity_id == strava_activity.id)
+                    ).scalar_one_or_none()
+                    
+                    if existing_metrics:
+                        # Update existing metrics
+                        for key, value in training_metrics.__dict__.items():
+                            if not key.startswith('_') and key != 'id':
+                                setattr(existing_metrics, key, value)
+                    else:
+                        # Create new metrics
+                        training_metrics.strava_activity_id = strava_activity.id
+                        self.db.add(training_metrics)
+                    
+                    metrics_recalculated += 1
+                except Exception as e:
+                    logger.error(f"Error recalculating metrics for activity {strava_activity.strava_activity_id}: {e}")
+                    metrics_errors += 1
+                    continue
+        
+        # Commit metrics (for both new and updated activities)
+        if metrics_calculated > 0 or metrics_recalculated > 0:
+            self.db.commit()
+            logger.info(f"Successfully calculated metrics for {metrics_calculated} new and {metrics_recalculated} updated activities")
+        
+        # After sync, recalculate daily metrics for all affected dates
+        # This ensures consistency after sync
+        daily_metrics_updated = 0
+        if new_activities or updated_activities:
+            from app.services.daily_metrics_service import DailyMetricsService
+            daily_metrics_service = DailyMetricsService(self.db)
             
-            # Commit metrics
-            if metrics_calculated > 0:
+            # Get all unique dates from new and updated activities
+            affected_dates = set()
+            for activity in new_activities + updated_activities:
+                if activity.start_date:
+                    affected_dates.add(activity.start_date.date())
+            
+            # Update daily metrics for all affected dates
+            for activity_date in sorted(affected_dates):
+                try:
+                    daily_metrics_service.update_daily_metrics(user_id, activity_date)
+                    daily_metrics_updated += 1
+                except Exception as e:
+                    logger.warning(f"Failed to update daily metrics for {activity_date} after sync: {e}")
+            
+            if daily_metrics_updated > 0:
                 self.db.commit()
-                logger.info(f"Successfully calculated metrics for {metrics_calculated} activities")
+                logger.info(f"Updated daily metrics for {daily_metrics_updated} dates")
         
         return {
             "total_activities": len(recent_activities),
             "new_activities": new_count,
+            "updated_activities": updated_count,
             "already_synced": synced_count,
             "metrics_calculated": metrics_calculated,
-            "metrics_errors": metrics_errors
+            "metrics_recalculated": metrics_recalculated,
+            "metrics_errors": metrics_errors,
+            "daily_metrics_updated": daily_metrics_updated
         }
     
     def _create_strava_activity(self, strava_account: StravaAccount, 
@@ -351,6 +425,56 @@ class StravaService:
             kilojoules=activity_data.get("kilojoules"),
             raw_data=activity_data
         )
+    
+    def _update_strava_activity(self, existing_activity: StravaActivity, 
+                               activity_data: Dict[str, Any]) -> bool:
+        """
+        Update existing Strava activity with fresh data from API
+        Returns True if any fields were updated, False otherwise
+        """
+        start_date = datetime.fromisoformat(activity_data["start_date"].replace("Z", "+00:00"))
+        start_date_local = datetime.fromisoformat(activity_data["start_date_local"].replace("Z", "+00:00"))
+        
+        updated = False
+        
+        # Update fields that might change on Strava
+        fields_to_check = {
+            'name': activity_data.get("name"),
+            'type': activity_data.get("type"),
+            'sport_type': activity_data.get("sport_type"),
+            'start_date': start_date,
+            'start_date_local': start_date_local,
+            'timezone': activity_data.get("timezone"),
+            'distance': activity_data.get("distance"),
+            'moving_time': activity_data.get("moving_time"),
+            'elapsed_time': activity_data.get("elapsed_time"),
+            'total_elevation_gain': activity_data.get("total_elevation_gain"),
+            'average_speed': activity_data.get("average_speed"),
+            'max_speed': activity_data.get("max_speed"),
+            'average_heartrate': activity_data.get("average_heartrate"),
+            'max_heartrate': activity_data.get("max_heartrate"),
+            'average_watts': activity_data.get("average_watts"),
+            'max_watts': activity_data.get("max_watts"),
+            'weighted_average_watts': activity_data.get("weighted_average_watts"),
+            'average_cadence': activity_data.get("average_cadence"),
+            'temperature': activity_data.get("temp"),
+            'feels_like': activity_data.get("feels_like"),
+            'calories': activity_data.get("calories"),
+            'kilojoules': activity_data.get("kilojoules"),
+            'raw_data': activity_data
+        }
+        
+        for field, new_value in fields_to_check.items():
+            old_value = getattr(existing_activity, field, None)
+            if old_value != new_value:
+                setattr(existing_activity, field, new_value)
+                updated = True
+        
+        # If activity was updated and has metrics, mark for recalculation
+        if updated and existing_activity.metrics_calculated:
+            existing_activity.metrics_calculated = False
+        
+        return updated
     
     def match_activities_with_workouts(self, user_id: int) -> Dict[str, Any]:
         """Match Strava activities with scheduled workouts"""

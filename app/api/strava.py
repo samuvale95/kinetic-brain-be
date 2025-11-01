@@ -132,6 +132,13 @@ async def get_strava_account(current_user: dict = Depends(get_current_user),
 async def disconnect_strava_account(current_user: dict = Depends(get_current_user),
                                   db: Session = Depends(get_db)):
     """Disconnect Strava account"""
+    from app.models.strava import StravaActivity
+    from sqlalchemy import func
+    from datetime import date
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
     strava_account = db.execute(
         select(StravaAccount)
         .where(StravaAccount.user_id == current_user["user_id"])
@@ -143,15 +150,29 @@ async def disconnect_strava_account(current_user: dict = Depends(get_current_use
             detail="No Strava account connected"
         )
     
-    # Delete all associated activities
-    from app.models.strava import StravaActivity
-    db.execute(
-        select(StravaActivity)
+    user_id = current_user["user_id"]
+    
+    # Get all activity dates before deletion to recalculate daily metrics
+    activity_dates = db.execute(
+        select(func.date(StravaActivity.start_date).distinct())
         .where(StravaActivity.strava_account_id == strava_account.id)
     ).scalars().all()
     
-    # Delete Strava account
+    # Delete Strava account (activities will be deleted by CASCADE)
     db.delete(strava_account)
+    db.commit()
+    
+    # Recalculate daily metrics for all dates that had activities
+    # This will set TSS to 0 for days that had only Strava activities
+    from app.services.daily_metrics_service import DailyMetricsService
+    daily_metrics_service = DailyMetricsService(db)
+    
+    for activity_date in activity_dates:
+        try:
+            daily_metrics_service.update_daily_metrics(user_id, activity_date)
+        except Exception as e:
+            logger.warning(f"Failed to update daily metrics for {activity_date} after disconnect: {e}")
+    
     db.commit()
     
     return {"message": "Strava account disconnected successfully"}
