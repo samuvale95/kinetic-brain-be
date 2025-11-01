@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, func
 from app.models.strava import StravaActivity
 from app.models.workout import Workout, WorkoutSession
-from app.models.weekly_summary import WeeklyPerformanceSummary
+from app.models.daily_metrics import DailyPerformanceMetrics
 from app.models.user import User
 from app.services.metrics_calculation_service import MetricsCalculationService
+from app.services.daily_metrics_service import DailyMetricsService
 
 
 class StatisticsService:
@@ -20,6 +21,7 @@ class StatisticsService:
     def __init__(self, db: Session):
         self.db = db
         self.metrics_service = MetricsCalculationService()
+        self.daily_metrics_service = DailyMetricsService(db)
     
     def get_overview(self, user_id: int) -> Dict[str, Any]:
         """
@@ -47,32 +49,28 @@ class StatisticsService:
             ).scalar() or 0
         total_training_hours = (total_training_hours or 0) / 3600  # Convert to hours
         
-        # Get most recent week summary (not necessarily current week)
-        # This ensures we show metrics even if current week summary doesn't exist yet
+        # Get today's daily metrics (or calculate if missing)
         today = date.today()
+        today_metrics = self.daily_metrics_service.get_current_metrics(user_id)
+        
+        # If no metrics for today, update them
+        if not today_metrics:
+            self.daily_metrics_service.update_daily_metrics(user_id, today)
+            today_metrics = self.daily_metrics_service.get_current_metrics(user_id)
+        
+        # Get current week start for weekly TSS calculation
         week_start = today - timedelta(days=today.weekday())
         
-        # First try to get current week summary
-        current_week_summary = self.db.execute(
-            select(WeeklyPerformanceSummary)
-            .where(and_(
-                WeeklyPerformanceSummary.user_id == user_id,
-                WeeklyPerformanceSummary.week_start_date == week_start
-            ))
-        ).scalar_one_or_none()
-        
-        # Current metrics - ALWAYS calculate TODAY's CTL/ATL/TSB from last 42 days
-        # Don't use weekly summary CTL/ATL as they may be stale
-        # Recalculate on-the-fly for accurate current state
-        # if not current_week_summary or not current_week_summary.ctl:
-        # TODO: For now, always recalculate to ensure fresh values
-        if True:
-            # Calculate current metrics from last 42 days of activities
-            from datetime import timedelta as td
+        # Current metrics - use today's daily metrics
+        if today_metrics:
+            current_ctl = today_metrics.ctl
+            current_atl = today_metrics.atl
+            current_tsb = today_metrics.tsb
+        else:
+            # Fallback: calculate from activities if no daily metrics
             end_date = date.today()
-            start_date = end_date - td(days=41)
+            start_date = end_date - timedelta(days=41)
 
-            # Get activities from last 42 days
             activities = self.db.execute(
                 select(StravaActivity)
                 .where(and_(
@@ -83,32 +81,21 @@ class StatisticsService:
                 .order_by(StravaActivity.start_date)
             ).scalars().all()
 
-
-            # Group TSS by date
             daily_tss = {}
             for activity in activities:
                 activity_date = activity.start_date.date()
                 daily_tss[activity_date] = daily_tss.get(activity_date, 0) + (activity.tss or 0)
 
-            # Build complete list of ALL days in period (most recent first)
             tss_list = []
             for i in range(42):
-                day_date = end_date - td(days=i)
-                tss_for_day = daily_tss.get(day_date, 0)  # 0 for rest days
+                day_date = end_date - timedelta(days=i)
+                tss_for_day = daily_tss.get(day_date, 0)
                 tss_list.append(tss_for_day)
 
-            # Calculate CTL/ATL/TSB for TODAY
             metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
             current_ctl = metrics.get('ctl')
             current_atl = metrics.get('atl')
             current_tsb = metrics.get('tsb')
-            
-            # Debug logging
-            print(f"[STATS] Calculated CTL/ATL/TSB: CTL={current_ctl}, ATL={current_atl}, TSB={current_tsb}")
-        else:
-            current_ctl = current_week_summary.ctl
-            current_atl = current_week_summary.atl
-            current_tsb = current_week_summary.tsb
         
         # TSB status
         tsb_status = "optimal"
@@ -118,17 +105,44 @@ class StatisticsService:
             elif current_tsb < -10:
                 tsb_status = "fatigued"
         
-        # Weekly TSS
-        weekly_tss = current_week_summary.weekly_tss if current_week_summary else 0
+        # Weekly TSS - calculate from activities this week
+        week_end = min(week_start + timedelta(days=6), today)
+        activities_week = self.db.execute(
+            select(StravaActivity)
+            .where(and_(
+                StravaActivity.strava_account_id.in_(strava_account_ids),
+                func.date(StravaActivity.start_date) >= week_start,
+                func.date(StravaActivity.start_date) <= week_end,
+                StravaActivity.tss.isnot(None)
+            ))
+        ).scalars().all()
+        weekly_tss = sum(a.tss or 0 for a in activities_week)
         
         # Current week volume
-        current_week_volume_hours = current_week_summary.volume_hours if current_week_summary else 0
+        current_week_volume_hours = sum((a.moving_time or 0) for a in activities_week) / 3600.0
         
-        # Zone distribution
-        zone_distribution = current_week_summary.zone_distribution if current_week_summary else None
+        # Zone distribution - calculate from this week's activities
+        zone_distribution = None
+        if activities_week:
+            zone_time = {
+                'z1': sum(a.time_in_zone_1 or 0 for a in activities_week),
+                'z2': sum(a.time_in_zone_2 or 0 for a in activities_week),
+                'z3': sum(a.time_in_zone_3 or 0 for a in activities_week),
+                'z4': sum(a.time_in_zone_4 or 0 for a in activities_week),
+                'z5': sum(a.time_in_zone_5 or 0 for a in activities_week)
+            }
+            total_zone_time = sum(zone_time.values())
+            if total_zone_time > 0:
+                zone_distribution = {
+                    'z1': round((zone_time['z1'] / total_zone_time) * 100, 1),
+                    'z2': round((zone_time['z2'] / total_zone_time) * 100, 1),
+                    'z3': round((zone_time['z3'] / total_zone_time) * 100, 1),
+                    'z4': round((zone_time['z4'] / total_zone_time) * 100, 1),
+                    'z5': round((zone_time['z5'] / total_zone_time) * 100, 1)
+                }
         
-        # Completion rate
-        completion_rate = current_week_summary.completion_rate if current_week_summary else None
+        # Completion rate - would need workout plans to calculate
+        completion_rate = None
         
         return {
             'total_workouts': total_workouts,
@@ -147,126 +161,83 @@ class StatisticsService:
         """
         Get performance chart data (CTL/ATL/TSB trends)
         
+        Uses daily metrics and aggregates to weekly for backward compatibility
+        
         Args:
             user_id: User ID
             weeks: Number of weeks to retrieve (default 12)
         
         Returns:
             Dictionary with weekly data points and trend analysis
-            Includes all weeks up to current week, padding missing weeks with zeros
+            Aggregated from daily metrics
         """
         today = date.today()
-        current_week_start = today - timedelta(days=today.weekday())
-        start_date = current_week_start - timedelta(weeks=weeks-1)  # Include current week in count
+        start_date = today - timedelta(weeks=weeks)
         
-        # Get weekly summaries
-        summaries = self.db.execute(
-            select(WeeklyPerformanceSummary)
-            .where(and_(
-                WeeklyPerformanceSummary.user_id == user_id,
-                WeeklyPerformanceSummary.week_start_date >= start_date,
-                WeeklyPerformanceSummary.week_start_date <= current_week_start
-            ))
-            .order_by(WeeklyPerformanceSummary.week_start_date.asc())
-        ).scalars().all()
+        # Get daily metrics for the period
+        daily_metrics = self.daily_metrics_service.get_daily_metrics(user_id, start_date, today)
         
-        # Create a map of existing summaries by week_start_date
-        summary_map = {s.week_start_date: s for s in summaries}
-        
-        # Build complete weeks list, padding missing weeks with zeros
+        # Group daily metrics by week
         weeks_data = []
-        week_iter = start_date
-        while week_iter <= current_week_start:
-            week_end = week_iter + timedelta(days=6)
+        weekly_data = {}  # key: week_start_date
+        
+        for day_metric in daily_metrics:
+            week_start = day_metric.metric_date - timedelta(days=day_metric.metric_date.weekday())
             
-            if week_iter in summary_map:
-                summary = summary_map[week_iter]
+            if week_start not in weekly_data:
+                weekly_data[week_start] = {
+                    'week_start': week_start,
+                    'week_end': week_start + timedelta(days=6),
+                    'days': [],
+                    'daily_tss_list': []
+                }
+            
+            weekly_data[week_start]['days'].append(day_metric)
+            weekly_data[week_start]['daily_tss_list'].append(day_metric.daily_tss)
+        
+        # Build weeks list with last day's CTL/ATL/TSB for each week
+        for week_start in sorted(weekly_data.keys()):
+            week_info = weekly_data[week_start]
+            days = week_info['days']
+            
+            if days:
+                # Use last day of week for CTL/ATL/TSB (most representative)
+                last_day = days[-1]
+                
                 weeks_data.append({
-                    'week_start': summary.week_start_date.isoformat(),
-                    'week_end': summary.week_end_date.isoformat(),
-                    'ctl': summary.ctl,
-                    'atl': summary.atl,
-                    'tsb': summary.tsb,
-                    'weekly_tss': summary.weekly_tss or 0,
-                    'volume_hours': summary.volume_hours or 0,
-                    'workouts_completed': summary.workouts_completed or 0,
-                    'avg_rpe': summary.avg_rpe
-                })
-            else:
-                # Pad missing week with zeros/nulls
-                weeks_data.append({
-                    'week_start': week_iter.isoformat(),
-                    'week_end': week_end.isoformat(),
-                    'ctl': None,
-                    'atl': None,
-                    'tsb': None,
-                    'weekly_tss': 0,
-                    'volume_hours': 0,
-                    'workouts_completed': 0,
+                    'week_start': week_info['week_start'].isoformat(),
+                    'week_end': week_info['week_end'].isoformat(),
+                    'ctl': last_day.ctl,
+                    'atl': last_day.atl,
+                    'tsb': last_day.tsb,
+                    'weekly_tss': sum(d.daily_tss for d in days),
+                    'volume_hours': 0,  # Would need to calculate from activities
+                    'workouts_completed': sum(d.activities_count for d in days),
                     'avg_rpe': None
                 })
-            
-            week_iter += timedelta(weeks=1)
         
-        # Fill last week (current week) on-the-fly with TODAY's data if missing
-        # This ensures the graph always shows up-to-date values including rest days
+        # Ensure we have data up to today - add today's metrics if not in last week
         if weeks_data:
-            last = weeks_data[-1]
-            
-            # Fill CTL/ATL/TSB if missing (calculate up to TODAY)
-            if last.get('ctl') is None or last.get('atl') is None or last.get('tsb') is None:
-                strava_account_ids = self._get_strava_account_ids(user_id)
-                end_date = date.today()
-                start_date = end_date - timedelta(days=41)
+            last_week_start = date.fromisoformat(weeks_data[-1]['week_start'])
+            if today > last_week_start + timedelta(days=6):
+                # Today is in a new week, add it
+                today_metric = self.daily_metrics_service.get_current_metrics(user_id)
+                if not today_metric:
+                    self.daily_metrics_service.update_daily_metrics(user_id, today)
+                    today_metric = self.daily_metrics_service.get_current_metrics(user_id)
                 
-                activities_42d = self.db.execute(
-                    select(StravaActivity)
-                    .where(and_(
-                        StravaActivity.strava_account_id.in_(strava_account_ids),
-                        StravaActivity.start_date >= start_date,
-                        StravaActivity.tss.isnot(None)
-                    ))
-                    .order_by(StravaActivity.start_date)
-                ).scalars().all()
-                
-                # Group TSS by date
-                daily_tss = {}
-                for activity in activities_42d:
-                    activity_date = activity.start_date.date()
-                    daily_tss[activity_date] = daily_tss.get(activity_date, 0) + (activity.tss or 0)
-                
-                # Build complete list of ALL 42 days (most recent first)
-                tss_list = []
-                for i in range(42):
-                    day_date = end_date - timedelta(days=i)
-                    tss_for_day = daily_tss.get(day_date, 0)  # 0 for rest days
-                    tss_list.append(tss_for_day)
-                
-                # Calculate CTL/ATL/TSB for TODAY
-                metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
-                last['ctl'] = metrics['ctl']
-                last['atl'] = metrics['atl']
-                last['tsb'] = metrics['tsb']
-            
-            # Fill weekly_tss/volume_hours for current week if missing
-            if (last.get('weekly_tss') in (None, 0)) or (last.get('volume_hours') in (None, 0)):
-                week_start = date.fromisoformat(last['week_start'])
-                week_end = date.fromisoformat(last['week_end'])
-                
-                strava_account_ids = self._get_strava_account_ids(user_id)
-                activities_week = self.db.execute(
-                    select(StravaActivity)
-                    .where(and_(
-                        StravaActivity.strava_account_id.in_(strava_account_ids),
-                        StravaActivity.start_date >= week_start,
-                        StravaActivity.start_date <= week_end
-                    ))
-                ).scalars().all()
-                
-                weekly_tss = sum(a.tss or 0 for a in activities_week)
-                total_duration = sum(a.moving_time or 0 for a in activities_week)
-                last['weekly_tss'] = weekly_tss
-                last['volume_hours'] = round((total_duration or 0) / 3600.0, 2)
+                if today_metric:
+                    weeks_data.append({
+                        'week_start': (today - timedelta(days=today.weekday())).isoformat(),
+                        'week_end': (today - timedelta(days=today.weekday()) + timedelta(days=6)).isoformat(),
+                        'ctl': today_metric.ctl,
+                        'atl': today_metric.atl,
+                        'tsb': today_metric.tsb,
+                        'weekly_tss': today_metric.daily_tss,
+                        'volume_hours': 0,
+                        'workouts_completed': today_metric.activities_count,
+                        'avg_rpe': None
+                    })
         
         # Trend analysis
         trend_analysis = {}
@@ -295,64 +266,6 @@ class StatisticsService:
         return {
             'weeks': weeks_data,
             'trend_analysis': trend_analysis
-        }
-    
-    def get_weekly_summary(self, user_id: int, week_start_date: Optional[date] = None) -> Dict[str, Any]:
-        """
-        Get detailed weekly summary
-        
-        Args:
-            user_id: User ID
-            week_start_date: Start date of the week (default: current week)
-        
-        Returns:
-            Detailed weekly data including all workouts
-        """
-        if week_start_date is None:
-            today = date.today()
-            week_start_date = today - timedelta(days=today.weekday())
-        
-        week_end_date = week_start_date + timedelta(days=6)
-        
-        # Get weekly summary
-        summary = self.db.execute(
-            select(WeeklyPerformanceSummary)
-            .where(and_(
-                WeeklyPerformanceSummary.user_id == user_id,
-                WeeklyPerformanceSummary.week_start_date == week_start_date
-            ))
-        ).scalar_one_or_none()
-        
-        if not summary:
-            return {
-                'week_start': week_start_date.isoformat(),
-                'week_end': week_end_date.isoformat(),
-                'total_tss': 0,
-                'total_volume_hours': 0,
-                'avg_rpe': None,
-                'completion_rate': None,
-                'ctl': None,
-                'atl': None,
-                'tsb': None,
-                'workouts': [],
-                'zone_distribution': None
-            }
-        
-        # Get workouts for this week
-        workouts = self._get_week_workouts(user_id, week_start_date, week_end_date)
-        
-        return {
-            'week_start': summary.week_start_date.isoformat(),
-            'week_end': summary.week_end_date.isoformat(),
-            'total_tss': summary.weekly_tss or 0,
-            'total_volume_hours': summary.volume_hours or 0,
-            'avg_rpe': summary.avg_rpe,
-            'completion_rate': summary.completion_rate,
-            'ctl': summary.ctl,
-            'atl': summary.atl,
-            'tsb': summary.tsb,
-            'workouts': workouts,
-            'zone_distribution': summary.zone_distribution
         }
     
     def get_zone_distribution(self, user_id: int, period: str = "month", 

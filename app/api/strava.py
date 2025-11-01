@@ -443,40 +443,42 @@ async def debug_create_summaries(db: Session = Depends(get_db)):
 
 
 # Debug endpoint to show current CTL/ATL/TSB values
-@router.get("/debug/weekly-summaries")
-async def debug_weekly_summaries(current_user: dict = Depends(get_current_user),
+@router.get("/debug/daily-metrics")
+async def debug_daily_metrics(current_user: dict = Depends(get_current_user),
                                  db: Session = Depends(get_db)):
     """Debug endpoint to see CTL/ATL/TSB values in database"""
-    from app.models.weekly_summary import WeeklyPerformanceSummary
+    from app.models.daily_metrics import DailyPerformanceMetrics
+    from app.services.daily_metrics_service import DailyMetricsService
     from sqlalchemy import select, and_, desc
     from datetime import date, timedelta
     
     end_date = date.today()
-    start_date = end_date - timedelta(weeks=12)
+    start_date = end_date - timedelta(days=84)
     
-    summaries = db.execute(
-        select(WeeklyPerformanceSummary)
-        .where(and_(
-            WeeklyPerformanceSummary.user_id == current_user["user_id"],
-            WeeklyPerformanceSummary.week_start_date >= start_date
-        ))
-        .order_by(WeeklyPerformanceSummary.week_start_date.desc())
-        .limit(5)
-    ).scalars().all()
+    daily_metrics_service = DailyMetricsService(db)
+    metrics = daily_metrics_service.get_daily_metrics(
+        current_user["user_id"],
+        start_date,
+        end_date
+    )
+    
+    # Get last 30 days
+    recent_metrics = sorted(metrics, key=lambda m: m.metric_date, reverse=True)[:30]
     
     result = []
-    for summary in summaries:
+    for metric in recent_metrics:
         result.append({
-            "week_start": summary.week_start_date.isoformat(),
-            "ctl": summary.ctl,
-            "atl": summary.atl,
-            "tsb": summary.tsb,
-            "weekly_tss": summary.weekly_tss
+            "date": metric.metric_date.isoformat(),
+            "ctl": metric.ctl,
+            "atl": metric.atl,
+            "tsb": metric.tsb,
+            "daily_tss": metric.daily_tss,
+            "activities_count": metric.activities_count
         })
     
     return {
-        "count": len(summaries),
-        "summaries": result
+        "count": len(recent_metrics),
+        "metrics": result
     }
 
 @router.get("/debug/hr-streams/{activity_id}")

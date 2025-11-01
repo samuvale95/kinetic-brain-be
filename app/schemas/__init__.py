@@ -3,9 +3,9 @@ from .workout import WorkoutPlanCreate, WorkoutPlanUpdate, WorkoutPlanResponse, 
 from .calendar import CalendarEventCreate, CalendarEventUpdate, CalendarEventResponse
 from .auth import Token, TokenData
 from .ai import AIRequest, AIResponse, ProgressiveWorkoutPlanRequest, WeeklyPlanRequest, WeeklyPlanResponse, PerformanceAnalysisData, AdaptivePlanRequest
-from .metrics import TrainingMetricsResponse, WeeklySummaryResponse
+from .metrics import TrainingMetricsResponse
 from .statistics import (
-    OverviewResponse, PerformanceChartResponse, WeeklySummaryResponse,
+    OverviewResponse, PerformanceChartResponse,
     ZoneDistributionResponse, ProgressionResponse, TrainingLoadResponse,
     ZonePreferenceRequest, ZonePreferenceResponse,
     WorkoutSummary
@@ -35,7 +35,6 @@ __all__ = [
     "AIRequest",
     "AIResponse",
     "TrainingMetricsResponse",
-    "WeeklySummaryResponse",
     "OverviewResponse",
     "PerformanceChartResponse",
     "ZoneDistributionResponse",

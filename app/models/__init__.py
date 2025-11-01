@@ -3,7 +3,7 @@ from .workout import WorkoutPlan, Workout, WorkoutSession
 from .calendar import CalendarEvent
 from .strava import StravaAccount, StravaActivity, StravaWebhook
 from .training_metrics import TrainingMetrics
-from .weekly_summary import WeeklyPerformanceSummary
+from .daily_metrics import DailyPerformanceMetrics
 
 __all__ = [
     "User",
@@ -18,5 +18,5 @@ __all__ = [
     "StravaActivity",
     "StravaWebhook",
     "TrainingMetrics",
-    "WeeklyPerformanceSummary"
+    "DailyPerformanceMetrics"
 ]

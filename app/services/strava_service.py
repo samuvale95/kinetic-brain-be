@@ -8,7 +8,6 @@ from app.models.strava import StravaAccount, StravaActivity, StravaWebhook
 from app.models.workout import Workout, WorkoutStatus
 from app.models.user import User, UserProfile, PerformanceMetrics
 from app.models.training_metrics import TrainingMetrics
-from app.models.weekly_summary import WeeklyPerformanceSummary
 from app.services.metrics_calculation_service import MetricsCalculationService
 from app.config import settings
 import logging
@@ -688,6 +687,15 @@ class StravaService:
         strava_activity.metrics_calculated = True
         strava_activity.zone_distribution = training_metrics.zone_distribution
         
+        # Update daily metrics for this activity's date
+        if strava_activity.start_date:
+            activity_date = strava_activity.start_date.date()
+            daily_metrics_service = DailyMetricsService(self.db)
+            try:
+                daily_metrics_service.update_daily_metrics(user_id, activity_date)
+            except Exception as e:
+                logger.warning(f"Failed to update daily metrics for {activity_date}: {e}")
+        
         return training_metrics
     
     def recalculate_all_metrics(self, user_id: int) -> Dict[str, Any]:
@@ -812,10 +820,33 @@ class StravaService:
         initial_metrics = self._calculate_initial_fitness_metrics(user_id)
         print(f"[RECALC] Initial metrics: {initial_metrics}")
         
-        # Create weekly summaries
-        print(f"[RECALC] Creating/updating weekly summaries...")
-        weekly_summaries_created = self._create_weekly_summaries(user_id)
-        print(f"[RECALC] Weekly summaries created/updated: {weekly_summaries_created}")
+        # Create/update daily metrics for all activities
+        print(f"[RECALC] Creating/updating daily metrics...")
+        daily_metrics_service = DailyMetricsService(self.db)
+        
+        # Get all unique dates from activities
+        unique_dates = set()
+        all_activities = self.db.execute(
+            select(StravaActivity)
+            .where(
+                and_(
+                    StravaActivity.strava_account_id.in_(strava_account_ids),
+                    StravaActivity.tss.isnot(None)
+                )
+            )
+        ).scalars().all()
+        
+        for activity in all_activities:
+            activity_date = activity.start_date.date()
+            unique_dates.add(activity_date)
+        
+        # Update daily metrics for each date
+        daily_metrics_updated = 0
+        for activity_date in sorted(unique_dates):
+            daily_metrics_service.update_daily_metrics(user_id, activity_date)
+            daily_metrics_updated += 1
+        
+        print(f"[RECALC] Daily metrics updated: {daily_metrics_updated}")
         
         end_time = datetime.now()
         processing_time = (end_time - start_time).total_seconds()
@@ -825,7 +856,7 @@ class StravaService:
             'success': True,
             'activities_processed': activities_processed,
             'metrics_calculated': metrics_calculated,
-            'weekly_summaries_created': weekly_summaries_created,
+            'daily_metrics_updated': daily_metrics_updated,
             'initial_ctl': initial_metrics.get('ctl'),
             'initial_atl': initial_metrics.get('atl'),
             'initial_tsb': initial_metrics.get('tsb'),
@@ -880,299 +911,5 @@ class StravaService:
         
         return metrics
     
-    def _create_weekly_summaries(self, user_id: int) -> int:
-        """
-        Create weekly summaries for historical data
-        
-        This creates weekly summaries for all weeks with activities in the last 12 weeks
-        """
-        from app.models.weekly_summary import WeeklyPerformanceSummary
-        
-        end_date = date.today()
-        # We need to look back at least 12 weeks to calculate metrics, but we want ALL activities
-        # to properly calculate CTL/ATL/TSB for all weeks up to today
-        baseline_start_date = end_date - timedelta(weeks=20)  # Default backfill horizon
-        
-        # Get all activities in the period
-        strava_account_ids = self.db.execute(
-            select(StravaAccount.id)
-            .where(StravaAccount.user_id == user_id)
-        ).scalars().all()
-        
-        print(f"DEBUG: Found {len(strava_account_ids)} strava accounts for user {user_id}")
-        
-        if not strava_account_ids:
-            return 0
-        
-        # Incremental recalculation window determination
-        # 1) Find last summarized week
-        last_summary_week = self.db.execute(
-            select(func.max(WeeklyPerformanceSummary.week_start_date))
-            .where(WeeklyPerformanceSummary.user_id == user_id)
-        ).scalar()
-
-        # 2) Find last activity date (UTC)
-        last_activity_dt = self.db.execute(
-            select(func.max(StravaActivity.start_date))
-            .where(StravaActivity.strava_account_id.in_(strava_account_ids))
-        ).scalar()
-
-        today = date.today()
-        current_week_start = today - timedelta(days=today.weekday())
-
-        # If nothing new since the last summary week, skip early
-        if last_summary_week and last_activity_dt and last_activity_dt.date() < last_summary_week:
-            print(f"DEBUG: No new activities since last summarized week {last_summary_week}. Skipping recalculation.")
-            return 0
-
-        # Decide recompute start week: go back a few weeks to ensure continuity of EMA
-        # We use a 6-week bleed-in to stabilize CTL/ATL for updated weeks
-        if last_summary_week:
-            recompute_start_week = max(
-                last_summary_week - timedelta(weeks=6),
-                current_week_start - timedelta(weeks=12)
-            )
-        else:
-            # No summaries yet: start from baseline horizon
-            recompute_start_week = (baseline_start_date - timedelta(days=baseline_start_date.weekday()))
-
-        # Activities need an extra 42-day lead-in before the first week to recompute
-        activities_start_dt = recompute_start_week - timedelta(days=42)
-
-        # Get activities only for the recompute window (plus 42-day bleed-in)
-        activities = self.db.execute(
-            select(StravaActivity)
-            .where(and_(
-                StravaActivity.strava_account_id.in_(strava_account_ids),
-                StravaActivity.start_date >= activities_start_dt
-            ))
-            .order_by(StravaActivity.start_date)
-        ).scalars().all()
-        
-        # Group activities by week
-        weekly_data = {}
-        earliest_activity_date = None
-        for activity in activities:
-            activity_date = activity.start_date.date()
-            week_start = activity_date - timedelta(days=activity_date.weekday())
-            
-            if week_start not in weekly_data:
-                weekly_data[week_start] = {
-                    'activities': [],
-                    'total_tss': 0,
-                    'total_trimp': 0,
-                    'total_duration': 0,
-                    'total_distance': 0
-                }
-            
-            weekly_data[week_start]['activities'].append(activity)
-            # Use TSS from activity if available, otherwise calculate from duration
-            activity_tss = activity.tss or 0
-            if activity_tss == 0 and activity.moving_time:
-                # Rough estimate: 1 hour at Z2 = ~50 TSS
-                activity_tss = (activity.moving_time / 3600) * 50
-            
-            weekly_data[week_start]['total_tss'] += activity_tss
-            weekly_data[week_start]['total_trimp'] += activity.trimp or 0
-            weekly_data[week_start]['total_duration'] += activity.moving_time or 0
-            weekly_data[week_start]['total_distance'] += activity.distance or 0
-            
-            if earliest_activity_date is None or activity_date < earliest_activity_date:
-                earliest_activity_date = activity_date
-        
-        # Determine the range of weeks to create summaries for
-        # Start from the recompute_start_week (or earliest activity if earlier), end with current week
-        
-        # If no activities, we still want to create summaries for recent weeks
-        if earliest_activity_date is None:
-            earliest_activity_date = today - timedelta(weeks=20)
-        
-        earliest_week_start = earliest_activity_date - timedelta(days=earliest_activity_date.weekday())
-        if earliest_week_start > recompute_start_week:
-            earliest_week_start = recompute_start_week
-        
-        # Ensure we create summaries for at least the last 12 weeks up to today
-        # This ensures we have recent data even if the last activity was a while ago
-        target_date = today - timedelta(weeks=12)
-        min_week_start = target_date - timedelta(days=target_date.weekday())
-        if earliest_week_start > min_week_start:
-            earliest_week_start = min_week_start
-        
-        print(f"DEBUG: Creating summaries from {earliest_week_start} to {current_week_start}")
-        
-        # Create summaries for ALL weeks from earliest to current, even if they have no activities
-        summaries_created = 0
-        week_start_iter = earliest_week_start
-        while week_start_iter <= current_week_start:
-            # Get data for this week (might be empty)
-            data = weekly_data.get(week_start_iter, {
-                'activities': [],
-                'total_tss': 0,
-                'total_trimp': 0,
-                'total_duration': 0,
-                'total_distance': 0
-            })
-            
-            week_end = week_start_iter + timedelta(days=6)
-            
-            # Check if summary already exists
-            existing = self.db.execute(
-                select(WeeklyPerformanceSummary)
-                .where(and_(
-                    WeeklyPerformanceSummary.user_id == user_id,
-                    WeeklyPerformanceSummary.week_start_date == week_start_iter
-                ))
-            ).scalar_one_or_none()
-            
-            # Calculate aggregate metrics
-            total_duration_seconds = data.get('total_duration', 0) or 0
-            total_minutes = total_duration_seconds / 60
-            volume_hours = total_minutes / 60 if total_minutes else 0
-            total_distance_meters = data.get('total_distance', 0) or 0
-            volume_km = total_distance_meters / 1000
-            
-            # Update existing or create new
-            if existing:
-                # Update existing summary
-                existing.weekly_tss = data['total_tss']
-                existing.workouts_completed = len(data['activities'])
-                existing.volume_hours = round(volume_hours, 2)
-                existing.volume_kilometers = volume_km
-                # Advance to next week to avoid infinite loop
-                week_start_iter += timedelta(weeks=1)
-                continue
-            
-            # Get average HR if available
-            activities_with_hr = [a for a in data['activities'] if a.average_heartrate]
-            avg_hr = sum(a.average_heartrate for a in activities_with_hr) / len(activities_with_hr) if activities_with_hr else None
-            
-            # Get max HR
-            max_hr = max((a.max_heartrate for a in data['activities'] if a.max_heartrate), default=None)
-            
-            # Calculate zone distribution
-            zone_time = {
-                'z1': sum(a.time_in_zone_1 or 0 for a in data['activities']),
-                'z2': sum(a.time_in_zone_2 or 0 for a in data['activities']),
-                'z3': sum(a.time_in_zone_3 or 0 for a in data['activities']),
-                'z4': sum(a.time_in_zone_4 or 0 for a in data['activities']),
-                'z5': sum(a.time_in_zone_5 or 0 for a in data['activities'])
-            }
-            
-            total_zone_time = sum(zone_time.values())
-            if total_zone_time > 0:
-                zone_distribution = {
-                    'z1': round((zone_time['z1'] / total_zone_time) * 100, 1),
-                    'z2': round((zone_time['z2'] / total_zone_time) * 100, 1),
-                    'z3': round((zone_time['z3'] / total_zone_time) * 100, 1),
-                    'z4': round((zone_time['z4'] / total_zone_time) * 100, 1),
-                    'z5': round((zone_time['z5'] / total_zone_time) * 100, 1)
-                }
-            else:
-                zone_distribution = None
-            
-            # Create weekly summary
-            weekly_summary = WeeklyPerformanceSummary(
-                user_id=user_id,
-                week_start_date=week_start_iter,
-                week_end_date=week_end,
-                weekly_tss=data['total_tss'],
-                weekly_trimp=data['total_trimp'],
-                volume_hours=round(volume_hours, 2),
-                volume_kilometers=round(volume_km, 2),
-                workouts_completed=len(data['activities']),
-                avg_hr=avg_hr,
-                max_hr=max_hr,
-                zone_distribution=zone_distribution
-            )
-            
-            self.db.add(weekly_summary)
-            summaries_created += 1
-            
-            # Move to next week
-            week_start_iter += timedelta(weeks=1)
-        
-        # Commit summaries first
-        self.db.commit()
-        
-        # Now update CTL/ATL/TSB for summaries in the recompute window using direct SQL UPDATE
-        all_summaries = self.db.execute(
-            select(WeeklyPerformanceSummary)
-            .where(and_(
-                WeeklyPerformanceSummary.user_id == user_id,
-                WeeklyPerformanceSummary.week_start_date >= earliest_week_start,
-                WeeklyPerformanceSummary.week_start_date <= current_week_start
-            ))
-            .order_by(WeeklyPerformanceSummary.week_start_date.asc())
-        ).scalars().all()
-        
-        print(f"DEBUG: Found {len(all_summaries)} summaries to update with CTL/ATL/TSB")
-        
-        if len(all_summaries) == 0:
-            print("DEBUG: No summaries found to update! Something is wrong.")
-            self.db.commit()
-            return summaries_created
-        
-        from sqlalchemy import update
-        
-        updates_made = 0
-        for summary in all_summaries:
-            week_start = summary.week_start_date
-            
-            # Calculate CTL/ATL/TSB
-            tss_list = []
-            activities_found_count = 0
-            for i in range(41, -1, -1):
-                check_date = week_start - timedelta(days=42-i)
-                # Debug first and last dates being checked
-                if i == 41 or i == 0:
-                    print(f"  Checking date {check_date} (i={i}, days_back={42-i})")
-                # Check if activities exist for this day by testing with broader range first
-                all_activities_this_day = self.db.execute(
-                    select(StravaActivity)
-                    .where(and_(
-                        StravaActivity.strava_account_id.in_(strava_account_ids),
-                        StravaActivity.start_date >= check_date,
-                        StravaActivity.start_date < check_date + timedelta(days=1)
-                    ))
-                ).scalars().all()
-                
-                if len(all_activities_this_day) > 0:
-                    print(f"  Day {i} ({check_date}): Found {len(all_activities_this_day)} activities with broader query")
-                
-                # Use the broader query results (all_activities_this_day) instead of the narrow ±12h query
-                day_tss = sum(a.tss or 0 for a in all_activities_this_day)
-                
-                if len(all_activities_this_day) > 0:
-                    activities_found_count += 1
-                    if i >= 38:  # Debug only for first few days
-                        print(f"  Day {i}: found {len(all_activities_this_day)} activities on {check_date}, first tss={all_activities_this_day[0].tss if all_activities_this_day else 'N/A'}")
-                tss_list.append(day_tss)
-            
-            print(f"DEBUG Week {week_start}: found activities on {activities_found_count}/42 days")
-            
-            print(f"DEBUG Week {week_start}: tss_list length={len(tss_list)}, sum={sum(tss_list):.1f}, first_10=[{', '.join([str(round(t, 1)) for t in tss_list[:10]])}]")
-            
-            metrics = self.metrics_service.calculate_ctl_atl_tsb(tss_list)
-            print(f"DEBUG Week {week_start}: metrics calculated = {metrics}")
-            
-            # Direct SQL UPDATE
-            self.db.execute(
-                update(WeeklyPerformanceSummary)
-                .where(WeeklyPerformanceSummary.id == summary.id)
-                .values(ctl=metrics['ctl'], atl=metrics['atl'], tsb=metrics['tsb'])
-            )
-            print(f"DEBUG Week {week_start}: UPDATE executed with values ctl={metrics['ctl']}, atl={metrics['atl']}, tsb={metrics['tsb']}")
-            updates_made += 1
-        
-        self.db.commit()
-        print(f"DEBUG: Created {summaries_created} and updated CTL/ATL/TSB for {updates_made} summaries")
-        
-        # Log summary of what was created
-        if updates_made > 0:
-            first_summary = all_summaries[0]
-            last_summary = all_summaries[-1]
-            print(f"DEBUG SUMMARY: Created summaries from {first_summary.week_start_date} to {last_summary.week_start_date} ({updates_made} weeks)")
-            print(f"DEBUG SUMMARY: Latest week CTL={last_summary.ctl}, ATL={last_summary.atl}, TSB={last_summary.tsb}")
-        
-        return summaries_created
+    # _create_weekly_summaries method removed - now using daily metrics instead
 

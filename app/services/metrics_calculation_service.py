@@ -305,6 +305,49 @@ class MetricsCalculationService:
             'tsb': round(tsb, 2)
         }
     
+    def calculate_daily_metrics_incremental(
+        self, 
+        daily_tss: float,
+        prev_ctl: Optional[float] = None,
+        prev_atl: Optional[float] = None
+    ) -> Dict[str, float]:
+        """
+        Calculate CTL/ATL/TSB incrementally from previous day
+        
+        Formula incrementale:
+        CTL_today = CTL_yesterday + (TSS_today - CTL_yesterday) × λ_ctl
+        ATL_today = ATL_yesterday + (TSS_today - ATL_yesterday) × λ_atl
+        TSB_today = CTL_today - ATL_today
+        
+        Args:
+            daily_tss: TSS for this day
+            prev_ctl: Previous day CTL (if None, starts from 0)
+            prev_atl: Previous day ATL (if None, starts from 0)
+        
+        Returns:
+            Dictionary with 'ctl', 'atl', 'tsb', 'prev_ctl', 'prev_atl'
+        """
+        # Initialize with previous values or 0
+        prev_ctl = prev_ctl if prev_ctl is not None else 0.0
+        prev_atl = prev_atl if prev_atl is not None else 0.0
+        
+        # Costanti di smoothing esponenziale
+        ctl_lambda = 1.0 - math.exp(-1.0 / (42.0 / 7.0))  # ~0.153
+        atl_lambda = 1.0 - math.exp(-1.0 / (7.0 / 7.0))   # ~0.632
+        
+        # Calcolo incrementale
+        ctl = prev_ctl + (daily_tss - prev_ctl) * ctl_lambda
+        atl = prev_atl + (daily_tss - prev_atl) * atl_lambda
+        tsb = ctl - atl
+        
+        return {
+            'ctl': round(ctl, 2),
+            'atl': round(atl, 2),
+            'tsb': round(tsb, 2),
+            'prev_ctl': prev_ctl,
+            'prev_atl': prev_atl
+        }
+    
     def get_tsb_status(self, tsb: float) -> str:
         """
         Determine TSB status based on value

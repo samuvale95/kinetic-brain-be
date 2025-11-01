@@ -64,22 +64,6 @@ class WorkoutSummary(BaseModel):
     status: str
 
 
-class WeeklySummaryResponse(BaseModel):
-    """Response for /statistics/weekly-summary"""
-    
-    week_start: str
-    week_end: str
-    total_tss: float = 0
-    total_volume_hours: float = 0
-    avg_rpe: Optional[float] = None
-    completion_rate: Optional[float] = None
-    ctl: Optional[float] = None
-    atl: Optional[float] = None
-    tsb: Optional[float] = None
-    workouts: List[WorkoutSummary] = Field(default_factory=list)
-    zone_distribution: Optional[Dict[str, float]] = None
-
-
 class ZoneDistributionResponse(BaseModel):
     """Response for /statistics/zone-distribution"""
     
@@ -136,7 +120,7 @@ class RecalculateMetricsResponse(BaseModel):
     success: bool
     activities_processed: int
     metrics_calculated: Dict[str, int]
-    weekly_summaries_created: int
+    daily_metrics_updated: int
     initial_ctl: Optional[float] = None
     initial_atl: Optional[float] = None
     initial_tsb: Optional[float] = None

@@ -26,35 +26,5 @@ class TrainingMetricsResponse(BaseModel):
         from_attributes = True
 
 
-class WeeklySummaryResponse(BaseModel):
-    """Schema for weekly performance summary response"""
-    
-    id: int
-    user_id: int
-    week_start_date: str
-    week_end_date: str
-    
-    weekly_tss: float = 0
-    weekly_trimp: float = 0
-    volume_hours: float = 0
-    volume_kilometers: float = 0
-    
-    ctl: Optional[float] = None
-    atl: Optional[float] = None
-    tsb: Optional[float] = None
-    
-    workouts_completed: int = 0
-    workouts_planned: int = 0
-    completion_rate: Optional[float] = None
-    avg_rpe: Optional[float] = None
-    
-    zone_distribution: Optional[Dict[str, Any]] = None
-    
-    avg_hr: Optional[float] = None
-    max_hr: Optional[float] = None
-    avg_pace: Optional[float] = None
-    total_elevation_gain: Optional[float] = None
-    
-    class Config:
-        from_attributes = True
+# WeeklySummaryResponse removed - now using daily metrics
 

@@ -2,14 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from typing import Optional
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from app.database import get_db
 from app.api.auth import get_current_user
 from app.services.statistics_service import StatisticsService
 from app.schemas.statistics import (
-    OverviewResponse, PerformanceChartResponse, WeeklySummaryResponse,
+    OverviewResponse, PerformanceChartResponse,
     ZoneDistributionResponse
 )
+from app.services.daily_metrics_service import DailyMetricsService
 
 router = APIRouter(prefix="/statistics", tags=["statistics"])
 
@@ -26,8 +27,8 @@ async def options_performance_chart():
     return Response(status_code=200)
 
 
-@router.options("/weekly-summary")
-async def options_weekly_summary():
+@router.options("/daily-metrics")
+async def options_daily_metrics():
     """Handle OPTIONS request for CORS preflight"""
     return Response(status_code=200)
 
@@ -66,28 +67,65 @@ async def get_performance_chart(weeks: int = Query(12, ge=1, le=52),
     return chart_data
 
 
-@router.get("/weekly-summary")
-async def get_weekly_summary(week_start_date: Optional[str] = Query(None, description="Week start date (YYYY-MM-DD)"),
-                            current_user: dict = Depends(get_current_user),
-                            db: Session = Depends(get_db)):
-    """Get detailed weekly summary"""
-    statistics_service = StatisticsService(db)
+@router.get("/daily-metrics")
+async def get_daily_metrics(
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD), default: 84 days ago"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD), default: today"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get daily performance metrics (CTL/ATL/TSB) for a date range"""
+    daily_metrics_service = DailyMetricsService(db)
+    user_id = current_user["user_id"]
     
-    parsed_date = None
-    if week_start_date:
+    # Parse dates or use defaults
+    today = date.today()
+    if end_date:
         try:
-            parsed_date = datetime.strptime(week_start_date, "%Y-%m-%d").date()
+            end = datetime.strptime(end_date, "%Y-%m-%d").date()
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid date format. Use YYYY-MM-DD"
+                detail="Invalid end_date format. Use YYYY-MM-DD"
             )
+    else:
+        end = today
     
-    summary = statistics_service.get_weekly_summary(
-        current_user["user_id"],
-        week_start_date=parsed_date
-    )
-    return summary
+    if start_date:
+        try:
+            start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid start_date format. Use YYYY-MM-DD"
+            )
+    else:
+        # Default: 84 days ago (12 weeks)
+        start = today - timedelta(days=84)
+    
+    if start > end:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date must be before or equal to end_date"
+        )
+    
+    metrics = daily_metrics_service.get_daily_metrics(user_id, start, end)
+    
+    return {
+        'start_date': start.isoformat(),
+        'end_date': end.isoformat(),
+        'metrics': [
+            {
+                'date': m.metric_date.isoformat(),
+                'daily_tss': m.daily_tss,
+                'ctl': m.ctl,
+                'atl': m.atl,
+                'tsb': m.tsb,
+                'activities_count': m.activities_count
+            }
+            for m in metrics
+        ]
+    }
 
 
 @router.get("/zone-distribution", response_model=ZoneDistributionResponse)
