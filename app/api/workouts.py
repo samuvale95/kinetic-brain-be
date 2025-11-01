@@ -408,8 +408,11 @@ async def generate_progressive_workout_plan(
         plan_data=plan_create
     )
     
+    # Convert SQLAlchemy model to Pydantic schema
+    plan_response = WorkoutPlanResponse.model_validate(plan)
+    
     return {
-        "plan": plan,
+        "plan": plan_response.model_dump(),
         "first_week": first_week_plan,
         "target_date": request.target_date,
         "total_weeks": first_week_plan.get("weeks_remaining", 12)

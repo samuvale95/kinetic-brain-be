@@ -146,6 +146,113 @@ export const useAuth = () => {
 };
 ```
 
+## Test Mock Allenamenti Progressivi
+
+Lo script `test_mock.py` verifica che il sistema di mock degli allenamenti progressivi funzioni correttamente senza chiamare l'AI.
+
+### Prerequisiti
+
+1. **Imposta MOCK_LLM=true** nel file `.env`:
+   ```bash
+   MOCK_LLM=true
+   ```
+
+2. **Avvia il server**:
+   ```bash
+   # Opzione 1: Con variabile d'ambiente
+   export MOCK_LLM=true
+   python run.py
+   
+   # Opzione 2: Inline
+   MOCK_LLM=true python run.py
+   ```
+
+3. **Ottieni un token di autenticazione**:
+   ```bash
+   # Login tramite API
+   curl -X POST "http://localhost:8000/auth/login" \
+     -H "Content-Type: application/json" \
+     -d '{"email": "tuo-email@example.com", "password": "tua-password"}'
+   ```
+
+### Utilizzo
+
+1. **Modifica il token nello script**:
+   ```python
+   # In examples/test_mock.py
+   TOKEN = "YOUR_TOKEN_HERE"  # Sostituisci con il tuo token
+   ```
+
+2. **Esegui lo script**:
+   ```bash
+   python examples/test_mock.py
+   ```
+
+### Cosa Verifica lo Script
+
+Lo script esegue 3 test principali:
+
+1. **TEST 1: Creazione Piano Progressivo**
+   - Crea un piano completo (triathlon)
+   - Verifica che la prima settimana sia generata correttamente
+   - Controlla struttura dati e numero di workouts
+
+2. **TEST 2: Generazione Settimane 1-8**
+   - Genera tutte le 8 settimane del piano
+   - Verifica che il focus cambi correttamente:
+     - Settimane 1-2: "Base Building"
+     - Settimane 3-4: "Brick Training"
+     - Settimane 5-6: "Speed Work"
+     - Settimane 7-8: "Taper" / "Race Week"
+   - Controlla che ogni settimana abbia 4 workouts
+
+3. **TEST 3: Verifica Adattamenti**
+   - Testa con performance buone (dovrebbe aumentare intensità)
+   - Testa con performance problematiche (dovrebbe mantenere/diminuire)
+   - Verifica che gli adattamenti siano coerenti con i dati
+
+### Output Atteso
+
+```
+============================================================
+  TEST MOCK ALLENAMENTI PROGRESSIVI
+============================================================
+
+🧪 TEST 1: Creazione piano progressivo
+   ✅ Piano creato: Triathlon - Ironman 70.3
+   ✅ Prima settimana generata
+   ℹ️   Focus: Base Building
+   ℹ️   Workouts: 4
+   ℹ️   Settimane rimanenti: 7
+
+🧪 TEST 2: Generazione settimane 1-8
+   ✅ Settimana 1: Base Building (4 workouts, Adaptation: 0%)
+   ✅ Settimana 2: Base Building (4 workouts, Adaptation: +5%)
+   ✅ Settimana 3: Brick Training (4 workouts, Adaptation: +5%)
+   ...
+
+🎉 TUTTI I TEST SONO PASSATI!
+```
+
+### Troubleshooting
+
+**Errore: "Server non raggiungibile"**
+- Verifica che il server sia avviato su `http://localhost:8000`
+- Controlla che non ci siano errori nei log del server
+
+**Errore: "401 Unauthorized"**
+- Verifica che il token sia valido e non scaduto
+- Ottieni un nuovo token con `/auth/login`
+
+**Il mock non funziona (chiama ancora l'AI)**
+- Verifica che `MOCK_LLM=true` sia nel file `.env`
+- Riavvia il server dopo aver modificato il `.env`
+- Controlla i log del server per confermare che il mock mode sia attivo
+
+**Settimane con focus errati**
+- Il mock usa date fisse: start_date = 2025-10-25
+- Verifica che le date nel test corrispondano a questa configurazione
+
 ## Testing
 
 ### Test con curl
