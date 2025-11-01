@@ -115,6 +115,60 @@ class WorkoutService:
         self.db.commit()
         return workouts
     
+    def create_workouts_from_progressive_week(self, user_id: int, plan_id: int, week_data: Dict[str, Any]) -> List[Workout]:
+        """Create individual workouts from progressive plan week data"""
+        workouts = []
+        
+        if "workouts" not in week_data:
+            return workouts
+        
+        # Get the plan to get start date
+        plan = self.get_workout_plan(plan_id, user_id)
+        if not plan:
+            return workouts
+        
+        # Always use plan start_date to calculate week start date
+        # This ensures workouts are aligned with the plan dates
+        week_number = week_data.get("week", 1)
+        week_start = plan.start_date + timedelta(weeks=week_number - 1)
+        
+        week_workouts = week_data.get("workouts", [])
+        week_focus = week_data.get("focus", "Base Building")
+        
+        for workout_data in week_workouts:
+            # Calculate scheduled date
+            day_mapping = {
+                "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
+                "Friday": 4, "Saturday": 5, "Sunday": 6
+            }
+            day_offset = day_mapping.get(workout_data.get("day", "Monday"), 0)
+            scheduled_date = week_start + timedelta(days=day_offset)
+            
+            # Create workout
+            workout = Workout(
+                plan_id=plan_id,
+                user_id=user_id,
+                title=workout_data.get("type", "Workout"),
+                type=workout_data.get("type", "endurance"),
+                day_number=len(workouts) + 1,
+                scheduled_date=scheduled_date,
+                duration_minutes=workout_data.get("duration_minutes", 60),
+                intensity=workout_data.get("intensity", "moderate"),
+                zone=workout_data.get("intensity", "Z2"),
+                structure_json={
+                    "description": workout_data.get("description", ""),
+                    "rpe_target": workout_data.get("rpe_target", 6),
+                    "focus": week_focus
+                },
+                status=WorkoutStatus.SCHEDULED
+            )
+            
+            self.db.add(workout)
+            workouts.append(workout)
+        
+        self.db.commit()
+        return workouts
+    
     def create_calendar_events_from_workouts(self, user_id: int, workouts: List[Workout]) -> List[CalendarEvent]:
         """Create calendar events from workouts"""
         events = []

@@ -408,6 +408,19 @@ async def generate_progressive_workout_plan(
         plan_data=plan_create
     )
     
+    # Create workouts from first week plan
+    workouts = workout_service.create_workouts_from_progressive_week(
+        user_id=current_user["user_id"],
+        plan_id=plan.id,
+        week_data=first_week_plan
+    )
+    
+    # Create calendar events from workouts
+    calendar_events = workout_service.create_calendar_events_from_workouts(
+        user_id=current_user["user_id"],
+        workouts=workouts
+    )
+    
     # Convert SQLAlchemy model to Pydantic schema
     plan_response = WorkoutPlanResponse.model_validate(plan)
     
@@ -415,7 +428,9 @@ async def generate_progressive_workout_plan(
         "plan": plan_response.model_dump(),
         "first_week": first_week_plan,
         "target_date": request.target_date,
-        "total_weeks": first_week_plan.get("weeks_remaining", 12)
+        "total_weeks": first_week_plan.get("weeks_remaining", 12),
+        "workouts_created": len(workouts),
+        "calendar_events_created": len(calendar_events)
     }
 
 
