@@ -72,6 +72,139 @@ async def create_workout_plan(plan_data: WorkoutPlanCreate,
     return plan
 
 
+# Progressive Workout Plans - Specific routes must come before dynamic routes
+@router.post("/plans/generate-progressive", response_model=dict)
+async def generate_progressive_workout_plan(
+    request: ProgressiveWorkoutPlanRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Genera piano di allenamento progressivo con data target"""
+    progressive_service = ProgressiveWorkoutPlanService(db)
+    
+    # Genera prima settimana del piano progressivo
+    first_week_plan = progressive_service.generate_weekly_plan(
+        user_id=current_user["user_id"],
+        week_number=1,
+        target_date=request.target_date,
+        current_fitness_level=request.user_profile
+    )
+    
+    # Crea piano base nel database
+    workout_service = WorkoutService(db)
+    plan_create = WorkoutPlanCreate(
+        title=f"{request.sport_type.title()} - {request.goal}",
+        description=f"Piano progressivo per {request.goal} - Target: {request.target_date}",
+        start_date=datetime.strptime(request.start_date, "%Y-%m-%d").date(),
+        end_date=datetime.strptime(request.target_date, "%Y-%m-%d").date(),
+        goal=request.goal,
+        sport_type=request.sport_type,
+        level=request.level
+    )
+    
+    plan = workout_service.create_workout_plan(
+        user_id=current_user["user_id"],
+        plan_data=plan_create
+    )
+    
+    # Create workouts from first week plan
+    workouts = workout_service.create_workouts_from_progressive_week(
+        user_id=current_user["user_id"],
+        plan_id=plan.id,
+        week_data=first_week_plan
+    )
+    
+    # Create calendar events from workouts
+    calendar_events = workout_service.create_calendar_events_from_workouts(
+        user_id=current_user["user_id"],
+        workouts=workouts
+    )
+    
+    # Convert SQLAlchemy model to Pydantic schema
+    plan_response = WorkoutPlanResponse.model_validate(plan)
+    
+    return {
+        "plan": plan_response.model_dump(),
+        "first_week": first_week_plan,
+        "target_date": request.target_date,
+        "total_weeks": first_week_plan.get("weeks_remaining", 12),
+        "workouts_created": len(workouts),
+        "calendar_events_created": len(calendar_events)
+    }
+
+
+@router.post("/plans/generate-weekly", response_model=WeeklyPlanResponse)
+async def generate_weekly_plan(
+    request: WeeklyPlanRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Genera piano per una settimana specifica"""
+    progressive_service = ProgressiveWorkoutPlanService(db)
+    
+    weekly_plan = progressive_service.generate_weekly_plan(
+        user_id=current_user["user_id"],
+        week_number=request.week_number,
+        target_date=request.target_date,
+        previous_week_data=request.previous_week_data,
+        current_fitness_level=request.current_fitness_level
+    )
+    
+    return WeeklyPlanResponse(**weekly_plan)
+
+
+@router.post("/plans/adapt-next-week", response_model=WeeklyPlanResponse)
+async def adapt_next_week_plan(
+    request: AdaptivePlanRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Adatta automaticamente la prossima settimana basandosi sulle performance"""
+    progressive_service = ProgressiveWorkoutPlanService(db)
+    
+    next_week_plan = progressive_service.adapt_next_week_plan(
+        user_id=current_user["user_id"],
+        target_date=request.target_date
+    )
+    
+    return WeeklyPlanResponse(**next_week_plan)
+
+
+@router.get("/plans/current-week", response_model=dict)
+async def get_current_week_data(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Ottiene dati della settimana corrente"""
+    progressive_service = ProgressiveWorkoutPlanService(db)
+    
+    current_week = progressive_service.get_current_week_data(current_user["user_id"])
+    fitness_level = progressive_service.get_current_fitness_level(current_user["user_id"])
+    
+    return {
+        "current_week": current_week,
+        "fitness_level": fitness_level
+    }
+
+
+@router.get("/plans/performance-analysis", response_model=PerformanceAnalysisData)
+async def get_performance_analysis(
+    weeks_back: int = Query(4, ge=1, le=12),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Ottiene analisi delle performance dell'utente"""
+    progressive_service = ProgressiveWorkoutPlanService(db)
+    
+    user_history = progressive_service._get_user_workout_history(
+        current_user["user_id"], 
+        weeks_back=weeks_back
+    )
+    performance_trends = progressive_service._analyze_performance_trends(user_history)
+    
+    return PerformanceAnalysisData(**performance_trends)
+
+
 @router.get("/plans/{plan_id}")
 async def get_workout_plan(plan_id: int,
                           current_user: dict = Depends(get_current_user),
@@ -373,137 +506,6 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
         return {"ai_data": plan_data, "is_progressive": False}
 
 
-# Progressive Workout Plans
-@router.post("/plans/generate-progressive", response_model=dict)
-async def generate_progressive_workout_plan(
-    request: ProgressiveWorkoutPlanRequest,
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Genera piano di allenamento progressivo con data target"""
-    progressive_service = ProgressiveWorkoutPlanService(db)
-    
-    # Genera prima settimana del piano progressivo
-    first_week_plan = progressive_service.generate_weekly_plan(
-        user_id=current_user["user_id"],
-        week_number=1,
-        target_date=request.target_date,
-        current_fitness_level=request.user_profile
-    )
-    
-    # Crea piano base nel database
-    workout_service = WorkoutService(db)
-    plan_create = WorkoutPlanCreate(
-        title=f"{request.sport_type.title()} - {request.goal}",
-        description=f"Piano progressivo per {request.goal} - Target: {request.target_date}",
-        start_date=datetime.strptime(request.start_date, "%Y-%m-%d").date(),
-        end_date=datetime.strptime(request.target_date, "%Y-%m-%d").date(),
-        goal=request.goal,
-        sport_type=request.sport_type,
-        level=request.level
-    )
-    
-    plan = workout_service.create_workout_plan(
-        user_id=current_user["user_id"],
-        plan_data=plan_create
-    )
-    
-    # Create workouts from first week plan
-    workouts = workout_service.create_workouts_from_progressive_week(
-        user_id=current_user["user_id"],
-        plan_id=plan.id,
-        week_data=first_week_plan
-    )
-    
-    # Create calendar events from workouts
-    calendar_events = workout_service.create_calendar_events_from_workouts(
-        user_id=current_user["user_id"],
-        workouts=workouts
-    )
-    
-    # Convert SQLAlchemy model to Pydantic schema
-    plan_response = WorkoutPlanResponse.model_validate(plan)
-    
-    return {
-        "plan": plan_response.model_dump(),
-        "first_week": first_week_plan,
-        "target_date": request.target_date,
-        "total_weeks": first_week_plan.get("weeks_remaining", 12),
-        "workouts_created": len(workouts),
-        "calendar_events_created": len(calendar_events)
-    }
-
-
-@router.post("/plans/generate-weekly", response_model=WeeklyPlanResponse)
-async def generate_weekly_plan(
-    request: WeeklyPlanRequest,
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Genera piano per una settimana specifica"""
-    progressive_service = ProgressiveWorkoutPlanService(db)
-    
-    weekly_plan = progressive_service.generate_weekly_plan(
-        user_id=current_user["user_id"],
-        week_number=request.week_number,
-        target_date=request.target_date,
-        previous_week_data=request.previous_week_data,
-        current_fitness_level=request.current_fitness_level
-    )
-    
-    return WeeklyPlanResponse(**weekly_plan)
-
-
-@router.post("/plans/adapt-next-week", response_model=WeeklyPlanResponse)
-async def adapt_next_week_plan(
-    request: AdaptivePlanRequest,
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Adatta automaticamente la prossima settimana basandosi sulle performance"""
-    progressive_service = ProgressiveWorkoutPlanService(db)
-    
-    next_week_plan = progressive_service.adapt_next_week_plan(
-        user_id=current_user["user_id"],
-        target_date=request.target_date
-    )
-    
-    return WeeklyPlanResponse(**next_week_plan)
-
-
-@router.get("/plans/current-week", response_model=dict)
-async def get_current_week_data(
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Ottiene dati della settimana corrente"""
-    progressive_service = ProgressiveWorkoutPlanService(db)
-    
-    current_week = progressive_service.get_current_week_data(current_user["user_id"])
-    fitness_level = progressive_service.get_current_fitness_level(current_user["user_id"])
-    
-    return {
-        "current_week": current_week,
-        "fitness_level": fitness_level
-    }
-
-
-@router.get("/plans/performance-analysis", response_model=PerformanceAnalysisData)
-async def get_performance_analysis(
-    weeks_back: int = Query(4, ge=1, le=12),
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Ottiene analisi delle performance dell'utente"""
-    progressive_service = ProgressiveWorkoutPlanService(db)
-    
-    user_history = progressive_service._get_user_workout_history(
-        current_user["user_id"], 
-        weeks_back=weeks_back
-    )
-    performance_trends = progressive_service._analyze_performance_trends(user_history)
-    
-    return PerformanceAnalysisData(**performance_trends)
 
 
 # Workout Sessions - MUST be defined BEFORE /{workout_id} route
