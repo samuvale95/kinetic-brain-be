@@ -205,6 +205,135 @@ async def get_performance_analysis(
     return PerformanceAnalysisData(**performance_trends)
 
 
+@router.post("/plans/generate-ai", response_model=dict)
+async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
+                                  current_user: dict = Depends(get_current_user),
+                                  db: Session = Depends(get_db)):
+    """Generate workout plan using AI - supports both traditional and progressive plans"""
+    
+    # Check if this is a progressive plan
+    if ai_request.is_progressive and ai_request.target_date and ai_request.start_date:
+        # Generate progressive workout plan
+        from app.services.progressive_workout_service import ProgressiveWorkoutPlanService
+        
+        progressive_service = ProgressiveWorkoutPlanService(db)
+        
+        # Generate first week of progressive plan
+        first_week_plan = progressive_service.generate_weekly_plan(
+            user_id=current_user["user_id"],
+            week_number=1,
+            target_date=ai_request.target_date,
+            current_fitness_level=ai_request.user_profile
+        )
+        
+        # Create base plan in database
+        workout_service = WorkoutService(db)
+        plan_create = WorkoutPlanCreate(
+            title=f"{ai_request.sport_type.title()} - {ai_request.goal}",
+            description=f"Piano progressivo per {ai_request.goal} - Target: {ai_request.target_date}",
+            start_date=datetime.strptime(ai_request.start_date, "%Y-%m-%d").date(),
+            end_date=datetime.strptime(ai_request.target_date, "%Y-%m-%d").date(),
+            goal=ai_request.goal,
+            sport_type=ai_request.sport_type,
+            level=ai_request.level
+        )
+        
+        plan = workout_service.create_workout_plan(
+            user_id=current_user["user_id"],
+            plan_data=plan_create
+        )
+        
+        # Convert SQLAlchemy object to dict for serialization
+        plan_dict = {
+            "id": plan.id,
+            "user_id": plan.user_id,
+            "title": plan.title,
+            "description": plan.description,
+            "start_date": plan.start_date.isoformat() if plan.start_date else None,
+            "end_date": plan.end_date.isoformat() if plan.end_date else None,
+            "total_weeks": plan.total_weeks,
+            "goal": plan.goal,
+            "sport_type": plan.sport_type,
+            "level": plan.level,
+            "status": plan.status,
+            "created_at": plan.created_at.isoformat() if plan.created_at else None,
+            "updated_at": plan.updated_at.isoformat() if plan.updated_at else None
+        }
+        
+        return {
+            "plan": plan_dict,
+            "first_week": first_week_plan,
+            "target_date": ai_request.target_date,
+            "total_weeks": first_week_plan.get("weeks_remaining", 12),
+            "is_progressive": True
+        }
+    
+    else:
+        # Generate traditional workout plan using AI
+        ai_service = AIService()
+        plan_data = ai_service.generate_workout_plan(ai_request)
+        
+        # Optionally save the generated plan
+        if plan_data:
+            workout_service = WorkoutService(db)
+            # Convert AI response to WorkoutPlanCreate format
+            plan_create = WorkoutPlanCreate(
+                title=plan_data.get("title", "AI Generated Plan"),
+                description=plan_data.get("description", ""),
+                start_date=datetime.now().date() if not ai_request.start_date else datetime.strptime(ai_request.start_date, "%Y-%m-%d").date(),
+                end_date=datetime.now().date() if not ai_request.target_date else datetime.strptime(ai_request.target_date, "%Y-%m-%d").date(),
+                goal=ai_request.goal,
+                sport_type=ai_request.sport_type,
+                level=ai_request.level
+            )
+            
+            # Create the plan in database
+            plan = workout_service.create_workout_plan(
+                user_id=current_user["user_id"],
+                plan_data=plan_create
+            )
+            
+            # Create individual workouts from AI plan data
+            workouts = workout_service.create_workouts_from_ai_plan(
+                user_id=current_user["user_id"],
+                plan_id=plan.id,
+                ai_plan_data=plan_data
+            )
+            
+            # Create calendar events from workouts
+            calendar_events = workout_service.create_calendar_events_from_workouts(
+                user_id=current_user["user_id"],
+                workouts=workouts
+            )
+            
+            # Convert SQLAlchemy object to dict for serialization
+            plan_dict = {
+                "id": plan.id,
+                "user_id": plan.user_id,
+                "title": plan.title,
+                "description": plan.description,
+                "start_date": plan.start_date.isoformat() if plan.start_date else None,
+                "end_date": plan.end_date.isoformat() if plan.end_date else None,
+                "total_weeks": plan.total_weeks,
+                "goal": plan.goal,
+                "sport_type": plan.sport_type,
+                "level": plan.level,
+                "status": plan.status,
+                "created_at": plan.created_at.isoformat() if plan.created_at else None,
+                "updated_at": plan.updated_at.isoformat() if plan.updated_at else None
+            }
+            
+            return {
+                "plan": plan_dict, 
+                "ai_data": plan_data, 
+                "is_progressive": False,
+                "workouts_created": len(workouts),
+                "calendar_events_created": len(calendar_events)
+            }
+        
+        return {"ai_data": plan_data, "is_progressive": False}
+
+
 @router.get("/plans/{plan_id}")
 async def get_workout_plan(plan_id: int,
                           current_user: dict = Depends(get_current_user),
@@ -375,137 +504,6 @@ async def delete_workout_plan(plan_id: int,
         )
     
     return {"message": "Workout plan deleted successfully"}
-
-
-@router.post("/plans/generate-ai", response_model=dict)
-async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
-                                  current_user: dict = Depends(get_current_user),
-                                  db: Session = Depends(get_db)):
-    """Generate workout plan using AI - supports both traditional and progressive plans"""
-    
-    # Check if this is a progressive plan
-    if ai_request.is_progressive and ai_request.target_date and ai_request.start_date:
-        # Generate progressive workout plan
-        from app.services.progressive_workout_service import ProgressiveWorkoutPlanService
-        
-        progressive_service = ProgressiveWorkoutPlanService(db)
-        
-        # Generate first week of progressive plan
-        first_week_plan = progressive_service.generate_weekly_plan(
-            user_id=current_user["user_id"],
-            week_number=1,
-            target_date=ai_request.target_date,
-            current_fitness_level=ai_request.user_profile
-        )
-        
-        # Create base plan in database
-        workout_service = WorkoutService(db)
-        plan_create = WorkoutPlanCreate(
-            title=f"{ai_request.sport_type.title()} - {ai_request.goal}",
-            description=f"Piano progressivo per {ai_request.goal} - Target: {ai_request.target_date}",
-            start_date=datetime.strptime(ai_request.start_date, "%Y-%m-%d").date(),
-            end_date=datetime.strptime(ai_request.target_date, "%Y-%m-%d").date(),
-            goal=ai_request.goal,
-            sport_type=ai_request.sport_type,
-            level=ai_request.level
-        )
-        
-        plan = workout_service.create_workout_plan(
-            user_id=current_user["user_id"],
-            plan_data=plan_create
-        )
-        
-        # Convert SQLAlchemy object to dict for serialization
-        plan_dict = {
-            "id": plan.id,
-            "user_id": plan.user_id,
-            "title": plan.title,
-            "description": plan.description,
-            "start_date": plan.start_date.isoformat() if plan.start_date else None,
-            "end_date": plan.end_date.isoformat() if plan.end_date else None,
-            "total_weeks": plan.total_weeks,
-            "goal": plan.goal,
-            "sport_type": plan.sport_type,
-            "level": plan.level,
-            "status": plan.status,
-            "created_at": plan.created_at.isoformat() if plan.created_at else None,
-            "updated_at": plan.updated_at.isoformat() if plan.updated_at else None
-        }
-        
-        return {
-            "plan": plan_dict,
-            "first_week": first_week_plan,
-            "target_date": ai_request.target_date,
-            "total_weeks": first_week_plan.get("weeks_remaining", 12),
-            "is_progressive": True
-        }
-    
-    else:
-        # Generate traditional workout plan using AI
-        ai_service = AIService()
-        plan_data = ai_service.generate_workout_plan(ai_request)
-        
-        # Optionally save the generated plan
-        if plan_data:
-            workout_service = WorkoutService(db)
-            # Convert AI response to WorkoutPlanCreate format
-            plan_create = WorkoutPlanCreate(
-                title=plan_data.get("title", "AI Generated Plan"),
-                description=plan_data.get("description", ""),
-                start_date=datetime.now().date() if not ai_request.start_date else datetime.strptime(ai_request.start_date, "%Y-%m-%d").date(),
-                end_date=datetime.now().date() if not ai_request.target_date else datetime.strptime(ai_request.target_date, "%Y-%m-%d").date(),
-                goal=ai_request.goal,
-                sport_type=ai_request.sport_type,
-                level=ai_request.level
-            )
-            
-            # Create the plan in database
-            plan = workout_service.create_workout_plan(
-                user_id=current_user["user_id"],
-                plan_data=plan_create
-            )
-            
-            # Create individual workouts from AI plan data
-            workouts = workout_service.create_workouts_from_ai_plan(
-                user_id=current_user["user_id"],
-                plan_id=plan.id,
-                ai_plan_data=plan_data
-            )
-            
-            # Create calendar events from workouts
-            calendar_events = workout_service.create_calendar_events_from_workouts(
-                user_id=current_user["user_id"],
-                workouts=workouts
-            )
-            
-            # Convert SQLAlchemy object to dict for serialization
-            plan_dict = {
-                "id": plan.id,
-                "user_id": plan.user_id,
-                "title": plan.title,
-                "description": plan.description,
-                "start_date": plan.start_date.isoformat() if plan.start_date else None,
-                "end_date": plan.end_date.isoformat() if plan.end_date else None,
-                "total_weeks": plan.total_weeks,
-                "goal": plan.goal,
-                "sport_type": plan.sport_type,
-                "level": plan.level,
-                "status": plan.status,
-                "created_at": plan.created_at.isoformat() if plan.created_at else None,
-                "updated_at": plan.updated_at.isoformat() if plan.updated_at else None
-            }
-            
-            return {
-                "plan": plan_dict, 
-                "ai_data": plan_data, 
-                "is_progressive": False,
-                "workouts_created": len(workouts),
-                "calendar_events_created": len(calendar_events)
-            }
-        
-        return {"ai_data": plan_data, "is_progressive": False}
-
-
 
 
 # Workout Sessions - MUST be defined BEFORE /{workout_id} route
