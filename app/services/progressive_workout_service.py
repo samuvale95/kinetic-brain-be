@@ -200,17 +200,23 @@ class ProgressiveWorkoutPlanService:
         """Analizza le performance per adattare il piano"""
         if not user_history:
             return {
-                "completion_rate": 100,
+                "completion_rate": 100.0,
                 "intensity_trend": "stable",
                 "fatigue_level": "low",
-                "consistency_score": 80,
-                "avg_intensity": 5.0
+                "consistency_score": 80.0,
+                "avg_rpe": 5.0,
+                "recovery_indicators": {
+                    "avg_sleep_quality": 7.0,
+                    "fatigue_score": 3.0,
+                    "recovery_time": "normal"
+                },
+                "performance_improvement": 0.0
             }
         
         # Calcola completion rate
         total_planned = sum(week.get('planned_workouts', 0) for week in user_history)
         total_completed = sum(week.get('completed_workouts', 0) for week in user_history)
-        completion_rate = (total_completed / total_planned * 100) if total_planned > 0 else 100
+        completion_rate = (total_completed / total_planned * 100.0) if total_planned > 0 else 100.0
         
         # Analizza trend intensità
         recent_rpe = [week.get('avg_rpe', 0) for week in user_history[-2:] if week.get('avg_rpe', 0) > 0]
@@ -232,15 +238,57 @@ class ProgressiveWorkoutPlanService:
         
         # Calcola consistency score
         completion_rates = [week.get('completion_rate', 100) for week in user_history]
-        consistency_score = sum(completion_rates) / len(completion_rates) if completion_rates else 80
+        consistency_score = sum(completion_rates) / len(completion_rates) if completion_rates else 80.0
+        
+        # Calcola recovery indicators
+        # Basato su RPE medio e completion rate
+        if avg_rpe > 7.5:
+            recovery_time = "extended"
+            fatigue_score = 7.0
+            sleep_quality = 5.0
+        elif avg_rpe > 6.0:
+            recovery_time = "normal"
+            fatigue_score = 5.0
+            sleep_quality = 6.5
+        else:
+            recovery_time = "normal"
+            fatigue_score = 3.0
+            sleep_quality = 7.5
+        
+        recovery_indicators = {
+            "avg_sleep_quality": sleep_quality,
+            "fatigue_score": fatigue_score,
+            "recovery_time": recovery_time
+        }
+        
+        # Calcola performance improvement
+        # Basato su trend di completion rate e RPE
+        if len(user_history) >= 2:
+            recent_completion = completion_rates[-1] if completion_rates else 100
+            previous_completion = completion_rates[-2] if len(completion_rates) >= 2 else 100
+            completion_improvement = recent_completion - previous_completion
+            
+            # Calcola improvement basato su RPE e completion
+            if len(recent_rpe) >= 2:
+                rpe_change = recent_rpe[-1] - recent_rpe[-2]
+                # Miglioramento se completion aumenta o RPE diminuisce (meno fatica per stesso sforzo)
+                performance_improvement = (completion_improvement / 10) - (rpe_change * 2)
+            else:
+                performance_improvement = completion_improvement / 10
+        else:
+            performance_improvement = 0.0
+        
+        # Normalizza improvement tra -50 e 50
+        performance_improvement = max(-50.0, min(50.0, performance_improvement))
         
         return {
             "completion_rate": completion_rate,
             "intensity_trend": intensity_trend,
             "fatigue_level": fatigue_level,
             "consistency_score": consistency_score,
-            "avg_intensity": avg_rpe,
-            "last_week_avg_rpe": recent_rpe[-1] if recent_rpe else 6.0
+            "avg_rpe": avg_rpe,
+            "recovery_indicators": recovery_indicators,
+            "performance_improvement": performance_improvement
         }
     
     def _build_progressive_prompt(self, week_number: int, weeks_remaining: int, target_date: str,

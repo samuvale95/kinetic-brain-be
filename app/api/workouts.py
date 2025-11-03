@@ -56,7 +56,13 @@ async def get_workout_plans(skip: int = Query(0, ge=0),
         skip=skip,
         limit=limit
     )
-    return plans
+    # Add is_progressive field to each plan
+    result = []
+    for plan in plans:
+        plan_dict = WorkoutPlanResponse.model_validate(plan).model_dump()
+        plan_dict["is_progressive"] = workout_service._is_progressive_plan(plan)
+        result.append(plan_dict)
+    return result
 
 
 @router.post("/plans", response_model=WorkoutPlanResponse, status_code=status.HTTP_201_CREATED)
@@ -69,7 +75,10 @@ async def create_workout_plan(plan_data: WorkoutPlanCreate,
         user_id=current_user["user_id"],
         plan_data=plan_data
     )
-    return plan
+    # Add is_progressive field
+    plan_dict = WorkoutPlanResponse.model_validate(plan).model_dump()
+    plan_dict["is_progressive"] = workout_service._is_progressive_plan(plan)
+    return plan_dict
 
 
 # Progressive Workout Plans - Specific routes must come before dynamic routes
@@ -243,6 +252,19 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
             plan_data=plan_create
         )
         
+        # Create workouts from first week plan
+        workouts = workout_service.create_workouts_from_progressive_week(
+            user_id=current_user["user_id"],
+            plan_id=plan.id,
+            week_data=first_week_plan
+        )
+        
+        # Create calendar events from workouts
+        calendar_events = workout_service.create_calendar_events_from_workouts(
+            user_id=current_user["user_id"],
+            workouts=workouts
+        )
+        
         # Convert SQLAlchemy object to dict for serialization
         plan_dict = {
             "id": plan.id,
@@ -265,7 +287,9 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
             "first_week": first_week_plan,
             "target_date": ai_request.target_date,
             "total_weeks": first_week_plan.get("weeks_remaining", 12),
-            "is_progressive": True
+            "is_progressive": True,
+            "workouts_created": len(workouts),
+            "calendar_events_created": len(calendar_events)
         }
     
     else:
@@ -379,7 +403,10 @@ async def update_workout_plan(plan_id: int,
             detail="Workout plan not found"
         )
     
-    return plan
+    # Add is_progressive field
+    plan_dict = WorkoutPlanResponse.model_validate(plan).model_dump()
+    plan_dict["is_progressive"] = workout_service._is_progressive_plan(plan)
+    return plan_dict
 
 
 @router.post("/plans/{plan_id}/archive")

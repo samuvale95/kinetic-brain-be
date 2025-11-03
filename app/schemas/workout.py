@@ -45,6 +45,7 @@ class WorkoutPlanResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: Optional[datetime] = None
+    is_progressive: Optional[bool] = None  # Calculated field
     
     class Config:
         from_attributes = True

@@ -194,6 +194,14 @@ class WorkoutService:
         self.db.commit()
         return events
     
+    def _is_progressive_plan(self, plan: WorkoutPlan) -> bool:
+        """Determine if a plan is progressive based on description"""
+        if not plan.description:
+            return False
+        # Check if description contains "progressivo" or "progressive"
+        description_lower = plan.description.lower()
+        return "progressivo" in description_lower or "progressive" in description_lower
+    
     def get_workout_plans(self, user_id: int, skip: int = 0, limit: int = 100) -> List[WorkoutPlan]:
         """Get user's workout plans"""
         return self.db.execute(
@@ -549,6 +557,9 @@ class WorkoutService:
         scheduled_workouts = len([w for w in workouts if w.status == WorkoutStatus.SCHEDULED])
         workouts_with_strava = len([w for w in workouts if w.id in strava_by_workout])
         
+        # Determine if plan is progressive
+        is_progressive = self._is_progressive_plan(plan)
+        
         # Build plan details
         plan_details = {
             "id": plan.id,
@@ -562,6 +573,7 @@ class WorkoutService:
             "sport_type": plan.sport_type,
             "level": plan.level,
             "status": plan.status,
+            "is_progressive": is_progressive,
             "created_at": plan.created_at.isoformat() if plan.created_at else None,
             "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
             "workouts": detailed_workouts,
