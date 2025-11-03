@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
-from sqlalchemy import func, select, and_
+from sqlalchemy import func, select, and_, desc
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.database import get_db
 from app.schemas.workout import (
     WorkoutPlanCreate, WorkoutPlanUpdate, WorkoutPlanResponse,
@@ -170,13 +170,108 @@ async def adapt_next_week_plan(
 ):
     """Adatta automaticamente la prossima settimana basandosi sulle performance"""
     progressive_service = ProgressiveWorkoutPlanService(db)
+    workout_service = WorkoutService(db)
     
+    # Get the active plan for the user
+    active_plan = db.execute(
+        select(WorkoutPlan)
+        .where(and_(
+            WorkoutPlan.user_id == current_user["user_id"],
+            WorkoutPlan.status == "active"
+        ))
+        .order_by(desc(WorkoutPlan.created_at))
+    ).scalar_one_or_none()
+    
+    if not active_plan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active workout plan found"
+        )
+    
+    # Generate next week plan
     next_week_plan = progressive_service.adapt_next_week_plan(
         user_id=current_user["user_id"],
         target_date=request.target_date
     )
     
+    # Save workouts from next week plan to database
+    workouts = workout_service.create_workouts_from_progressive_week(
+        user_id=current_user["user_id"],
+        plan_id=active_plan.id,
+        week_data=next_week_plan
+    )
+    
+    # Create calendar events from workouts
+    calendar_events = workout_service.create_calendar_events_from_workouts(
+        user_id=current_user["user_id"],
+        workouts=workouts
+    )
+    
+    # Workouts and calendar events are now saved in the database
+    # Return the plan response (without the extra metadata to match schema)
     return WeeklyPlanResponse(**next_week_plan)
+
+
+@router.get("/plans/can-generate-next-week", response_model=dict)
+async def can_generate_next_week(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Verifica se è possibile generare la prossima settimana"""
+    progressive_service = ProgressiveWorkoutPlanService(db)
+    
+    # Get current week data
+    current_week_data = progressive_service.get_current_week_data(current_user["user_id"])
+    
+    # Get active plan
+    active_plan = db.execute(
+        select(WorkoutPlan)
+        .where(and_(
+            WorkoutPlan.user_id == current_user["user_id"],
+            WorkoutPlan.status == "active"
+        ))
+        .order_by(desc(WorkoutPlan.created_at))
+    ).scalar_one_or_none()
+    
+    if not active_plan:
+        return {
+            "can_generate": False,
+            "reason": "No active plan found",
+            "current_week": 1,
+            "next_week": 2,
+            "next_week_already_generated": False
+        }
+    
+    current_week = current_week_data.get("week_number", 1)
+    next_week = current_week + 1
+    
+    # Check if next week already has workouts
+    plan_start = active_plan.start_date
+    next_week_start = plan_start + timedelta(weeks=next_week - 1)
+    next_week_end = next_week_start + timedelta(days=6)
+    
+    existing_workouts = db.execute(
+        select(Workout)
+        .where(and_(
+            Workout.user_id == current_user["user_id"],
+            Workout.plan_id == active_plan.id,
+            Workout.scheduled_date >= next_week_start,
+            Workout.scheduled_date <= next_week_end
+        ))
+    ).scalars().all()
+    
+    next_week_already_generated = len(existing_workouts) > 0
+    
+    return {
+        "can_generate": not next_week_already_generated,
+        "reason": "Next week already generated" if next_week_already_generated else "Next week not yet generated",
+        "current_week": current_week,
+        "next_week": next_week,
+        "next_week_already_generated": next_week_already_generated,
+        "next_week_workouts_count": len(existing_workouts),
+        "next_week_start_date": next_week_start.isoformat(),
+        "next_week_end_date": next_week_end.isoformat()
+    }
 
 
 @router.get("/plans/current-week", response_model=dict)

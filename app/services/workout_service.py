@@ -550,6 +550,39 @@ class WorkoutService:
             
             detailed_workouts.append(workout_detail)
         
+        # Group workouts by week
+        workouts_by_week = {}
+        for workout_detail in detailed_workouts:
+            if workout_detail["scheduled_date"]:
+                scheduled_date = datetime.strptime(workout_detail["scheduled_date"], "%Y-%m-%d").date()
+                days_since_start = (scheduled_date - plan.start_date).days
+                week_number = (days_since_start // 7) + 1
+                
+                if week_number not in workouts_by_week:
+                    week_start = plan.start_date + timedelta(weeks=week_number - 1)
+                    week_end = week_start + timedelta(days=6)
+                    workouts_by_week[week_number] = {
+                        "week_number": week_number,
+                        "week_start_date": week_start.isoformat(),
+                        "week_end_date": week_end.isoformat(),
+                        "workouts": []
+                    }
+                
+                workouts_by_week[week_number]["workouts"].append(workout_detail)
+            else:
+                # Workouts without scheduled_date go to week 0
+                if 0 not in workouts_by_week:
+                    workouts_by_week[0] = {
+                        "week_number": 0,
+                        "week_start_date": None,
+                        "week_end_date": None,
+                        "workouts": []
+                    }
+                workouts_by_week[0]["workouts"].append(workout_detail)
+        
+        # Convert to list sorted by week number
+        workouts_organized = [workouts_by_week[week] for week in sorted(workouts_by_week.keys())]
+        
         # Calculate statistics
         total_workouts = len(workouts)
         completed_workouts = len([w for w in workouts if w.status == WorkoutStatus.COMPLETED])
@@ -576,7 +609,8 @@ class WorkoutService:
             "is_progressive": is_progressive,
             "created_at": plan.created_at.isoformat() if plan.created_at else None,
             "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
-            "workouts": detailed_workouts,
+            "workouts": detailed_workouts,  # Array piatto - tutti i workouts
+            "workouts_by_week": workouts_organized,  # Array raggruppato per settimana
             "total_workouts": total_workouts,
             "completed_workouts": completed_workouts,
             "skipped_workouts": skipped_workouts,
