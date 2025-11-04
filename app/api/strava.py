@@ -160,7 +160,16 @@ async def disconnect_strava_account(current_user: dict = Depends(get_current_use
     )
     activity_dates = [row[0] for row in activity_dates_result.fetchall()]
     
-    # Delete Strava account (activities will be deleted by CASCADE)
+    # Set strava_account_id to NULL for all activities to preserve historical data
+    # Activities will remain in the database but won't be linked to the account
+    from sqlalchemy import update
+    db.execute(
+        update(StravaActivity)
+        .where(StravaActivity.strava_account_id == strava_account.id)
+        .values(strava_account_id=None)
+    )
+    
+    # Delete Strava account (activities are preserved with strava_account_id = NULL)
     db.delete(strava_account)
     db.commit()
     

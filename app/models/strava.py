@@ -35,7 +35,7 @@ class StravaActivity(Base):
     __tablename__ = "strava_activities"
     
     id = Column(Integer, primary_key=True, index=True)
-    strava_account_id = Column(Integer, ForeignKey("strava_accounts.id"), nullable=False)
+    strava_account_id = Column(Integer, ForeignKey("strava_accounts.id"), nullable=True)  # Nullable to preserve activities when account is disconnected
     strava_activity_id = Column(BigInteger, unique=True, nullable=False)  # Strava activity ID
     workout_id = Column(Integer, ForeignKey("workouts.id"), nullable=True)  # Matched workout
     

@@ -277,9 +277,15 @@ class StravaService:
             if existing_activity:
                 # Check if activity belongs to this user's account
                 if existing_activity.strava_account_id != strava_account.id:
-                    # Activity exists but belongs to different account - skip
-                    synced_count += 1
-                    continue
+                    # If activity has NULL strava_account_id, it means account was disconnected
+                    # Reconnect it to the current account
+                    if existing_activity.strava_account_id is None:
+                        existing_activity.strava_account_id = strava_account.id
+                        logger.info(f"Reconnected activity {existing_activity.strava_activity_id} to account {strava_account.id}")
+                    else:
+                        # Activity exists but belongs to different account - skip
+                        synced_count += 1
+                        continue
                 
                 # Update existing activity if data might have changed
                 # Strava allows editing activities, so we should refresh the data
