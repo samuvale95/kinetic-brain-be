@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from typing import List, Optional
 from datetime import datetime
 from app.database import get_db
@@ -14,7 +14,6 @@ from app.schemas.strava import (
 from app.services.strava_service import StravaService
 from app.api.auth import get_current_user
 from app.models.strava import StravaAccount
-from sqlalchemy import select
 
 router = APIRouter(prefix="/strava", tags=["strava"])
 
@@ -153,10 +152,13 @@ async def disconnect_strava_account(current_user: dict = Depends(get_current_use
     user_id = current_user["user_id"]
     
     # Get all activity dates before deletion to recalculate daily metrics
-    activity_dates = db.execute(
-        select(func.date(StravaActivity.start_date).distinct())
+    from app.models.strava import StravaActivity
+    activity_dates_result = db.execute(
+        select(func.date(StravaActivity.start_date).label('activity_date'))
         .where(StravaActivity.strava_account_id == strava_account.id)
-    ).scalars().all()
+        .distinct()
+    )
+    activity_dates = [row[0] for row in activity_dates_result.fetchall()]
     
     # Delete Strava account (activities will be deleted by CASCADE)
     db.delete(strava_account)
