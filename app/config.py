@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # Mock LLM for testing
     mock_llm: bool = False
     
+    # Mock progressive plan - always allow next week generation (for testing)
+    mock_progressive_always_allow_generation: bool = False
+    
     # Strava OAuth
     strava_client_id: str = ""
     strava_client_secret: str = ""

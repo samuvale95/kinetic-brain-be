@@ -218,6 +218,8 @@ async def can_generate_next_week(
     db: Session = Depends(get_db)
 ):
     """Verifica se è possibile generare la prossima settimana"""
+    from app.config import settings
+    
     progressive_service = ProgressiveWorkoutPlanService(db)
     
     # Get current week data
@@ -243,10 +245,54 @@ async def can_generate_next_week(
         }
     
     current_week = current_week_data.get("week_number", 1)
+    plan_start = active_plan.start_date
+    
+    # In mock mode, find the first week that hasn't been generated yet
+    if settings.mock_progressive_always_allow_generation:
+        # Check all weeks from current_week + 1 to total_weeks
+        for week_to_check in range(current_week + 1, active_plan.total_weeks + 1):
+            week_start = plan_start + timedelta(weeks=week_to_check - 1)
+            week_end = week_start + timedelta(days=6)
+            
+            existing_workouts = db.execute(
+                select(Workout)
+                .where(and_(
+                    Workout.user_id == current_user["user_id"],
+                    Workout.plan_id == active_plan.id,
+                    Workout.scheduled_date >= week_start,
+                    Workout.scheduled_date <= week_end
+                ))
+            ).scalars().all()
+            
+            # Found a week that hasn't been generated yet
+            if len(existing_workouts) == 0:
+                return {
+                    "can_generate": True,
+                    "reason": "Mock mode - next ungenerated week found",
+                    "current_week": current_week,
+                    "next_week": week_to_check,
+                    "next_week_already_generated": False,
+                    "next_week_workouts_count": 0,
+                    "next_week_start_date": week_start.isoformat(),
+                    "next_week_end_date": week_end.isoformat()
+                }
+        
+        # All weeks have been generated
+        return {
+            "can_generate": False,
+            "reason": "All weeks already generated",
+            "current_week": current_week,
+            "next_week": current_week + 1,
+            "next_week_already_generated": True,
+            "next_week_workouts_count": 0,
+            "next_week_start_date": None,
+            "next_week_end_date": None
+        }
+    
+    # Normal mode: check only the immediate next week
     next_week = current_week + 1
     
     # Check if next week already has workouts
-    plan_start = active_plan.start_date
     next_week_start = plan_start + timedelta(weeks=next_week - 1)
     next_week_end = next_week_start + timedelta(days=6)
     
