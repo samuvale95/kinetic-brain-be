@@ -10,6 +10,7 @@ from app.schemas.workout import (
     WorkoutCreate, WorkoutUpdate,
     WorkoutSessionCreate
 )
+from loguru import logger
 
 
 class WorkoutService:
@@ -19,16 +20,22 @@ class WorkoutService:
     # Workout Plans
     def create_workout_plan(self, user_id: int, plan_data: WorkoutPlanCreate) -> WorkoutPlan:
         """Create a new workout plan. Only one active plan per user - existing active plans are paused."""
+        logger.info(f"[WORKOUT_SERVICE] Creating workout plan - user_id: {user_id}, title: {plan_data.title}")
+        logger.debug(f"[WORKOUT_SERVICE] Plan data: title={plan_data.title}, sport_type={plan_data.sport_type}, level={plan_data.level}, start_date={plan_data.start_date}, end_date={plan_data.end_date}")
+        
         # Suspend all existing active plans for this user (only one active plan at a time)
         existing_active_plans = self.db.execute(
             select(WorkoutPlan)
             .where(and_(WorkoutPlan.user_id == user_id, WorkoutPlan.status == "active"))
         ).scalars().all()
         
-        for plan in existing_active_plans:
-            plan.status = "paused"
-        
-        self.db.commit()
+        if existing_active_plans:
+            logger.info(f"[WORKOUT_SERVICE] Pausing {len(existing_active_plans)} existing active plans for user {user_id}")
+            for plan in existing_active_plans:
+                plan.status = "paused"
+            self.db.commit()
+        else:
+            logger.debug(f"[WORKOUT_SERVICE] No existing active plans to pause")
         
         # Create new plan
         db_plan = WorkoutPlan(
@@ -39,11 +46,13 @@ class WorkoutService:
         # Calculate total weeks
         delta = plan_data.end_date - plan_data.start_date
         db_plan.total_weeks = delta.days // 7
+        logger.debug(f"[WORKOUT_SERVICE] Calculated total_weeks: {db_plan.total_weeks}")
         
         self.db.add(db_plan)
         self.db.commit()
         self.db.refresh(db_plan)
         
+        logger.info(f"[WORKOUT_SERVICE] Workout plan created successfully - plan_id: {db_plan.id}, total_weeks: {db_plan.total_weeks}")
         return db_plan
     
     def _archive_workouts_from_plan(self, plan_id: int):
@@ -62,21 +71,31 @@ class WorkoutService:
     
     def create_workouts_from_ai_plan(self, user_id: int, plan_id: int, ai_plan_data: Dict[str, Any]) -> List[Workout]:
         """Create individual workouts from AI plan data"""
+        logger.info(f"[WORKOUT_SERVICE] Creating workouts from AI plan - user_id: {user_id}, plan_id: {plan_id}")
+        logger.debug(f"[WORKOUT_SERVICE] AI plan data keys: {list(ai_plan_data.keys())}")
+        
         workouts = []
         
         if "weeks" not in ai_plan_data:
+            logger.warning(f"[WORKOUT_SERVICE] AI plan data missing 'weeks' key, returning empty workouts list")
             return workouts
         
         # Get the plan to get start date
         plan = self.get_workout_plan(plan_id, user_id)
         if not plan:
+            logger.error(f"[WORKOUT_SERVICE] Plan {plan_id} not found for user {user_id}")
             return workouts
         
+        logger.debug(f"[WORKOUT_SERVICE] Plan found - start_date: {plan.start_date}, total_weeks: {plan.total_weeks}")
         current_date = plan.start_date
+        
+        total_weeks = len(ai_plan_data["weeks"])
+        logger.info(f"[WORKOUT_SERVICE] Processing {total_weeks} weeks from AI plan")
         
         for week_data in ai_plan_data["weeks"]:
             week_number = week_data.get("week", 1)
             week_workouts = week_data.get("workouts", [])
+            logger.debug(f"[WORKOUT_SERVICE] Processing week {week_number} with {len(week_workouts)} workouts")
             
             for workout_data in week_workouts:
                 # Calculate scheduled date
@@ -113,27 +132,35 @@ class WorkoutService:
             current_date += timedelta(days=7)
         
         self.db.commit()
+        logger.info(f"[WORKOUT_SERVICE] Created {len(workouts)} workouts from AI plan successfully")
         return workouts
     
     def create_workouts_from_progressive_week(self, user_id: int, plan_id: int, week_data: Dict[str, Any]) -> List[Workout]:
         """Create individual workouts from progressive plan week data"""
+        logger.info(f"[WORKOUT_SERVICE] Creating workouts from progressive week - user_id: {user_id}, plan_id: {plan_id}")
+        logger.debug(f"[WORKOUT_SERVICE] Week data keys: {list(week_data.keys())}")
+        
         workouts = []
         
         if "workouts" not in week_data:
+            logger.warning(f"[WORKOUT_SERVICE] Week data missing 'workouts' key, returning empty workouts list")
             return workouts
         
         # Get the plan to get start date
         plan = self.get_workout_plan(plan_id, user_id)
         if not plan:
+            logger.error(f"[WORKOUT_SERVICE] Plan {plan_id} not found for user {user_id}")
             return workouts
         
         # Always use plan start_date to calculate week start date
         # This ensures workouts are aligned with the plan dates
         week_number = week_data.get("week", 1)
         week_start = plan.start_date + timedelta(weeks=week_number - 1)
+        logger.debug(f"[WORKOUT_SERVICE] Week {week_number} start date: {week_start}")
         
         week_workouts = week_data.get("workouts", [])
         week_focus = week_data.get("focus", "Base Building")
+        logger.info(f"[WORKOUT_SERVICE] Processing {len(week_workouts)} workouts for week {week_number} (focus: {week_focus})")
         
         for workout_data in week_workouts:
             # Calculate scheduled date
@@ -167,6 +194,7 @@ class WorkoutService:
             workouts.append(workout)
         
         self.db.commit()
+        logger.info(f"[WORKOUT_SERVICE] Created {len(workouts)} workouts from progressive week successfully")
         return workouts
     
     def create_calendar_events_from_workouts(self, user_id: int, workouts: List[Workout]) -> List[CalendarEvent]:

@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     app_name: str = "Kinetic Brain API"
     app_version: str = "1.0.0"
     debug: bool = False
+    log_level: str = "INFO"
     
     # File uploads
     max_file_size: int = 5 * 1024 * 1024  # 5MB

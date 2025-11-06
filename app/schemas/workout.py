@@ -138,8 +138,9 @@ class AIWorkoutPlanRequest(BaseModel):
     sport_type: str = Field(..., min_length=1, max_length=50)
     level: str = Field(..., pattern="^(beginner|intermediate|advanced)$")
     goal: str = Field(..., min_length=1, max_length=200)
-    weekly_hours: float = Field(..., gt=0, le=168)
+    weekly_hours: Optional[float] = Field(None, gt=0, le=168, description="Ore settimanali disponibili (indicativo)")
     user_profile: Optional[Dict[str, Any]] = None
+    preferences: Optional[Dict[str, Any]] = None
     
     # Parametri per piani tradizionali
     duration_weeks: Optional[int] = Field(None, ge=1, le=52)

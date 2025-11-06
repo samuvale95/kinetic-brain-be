@@ -20,6 +20,8 @@ from app.services.workout_service import WorkoutService
 from app.services.ai_service import AIService
 from app.services.progressive_workout_service import ProgressiveWorkoutPlanService
 from app.api.auth import get_current_user
+from loguru import logger
+import json
 
 router = APIRouter(prefix="/workouts", tags=["workouts"])
 
@@ -89,6 +91,21 @@ async def generate_progressive_workout_plan(
     db: Session = Depends(get_db)
 ):
     """Genera piano di allenamento progressivo con data target"""
+    user_id = current_user["user_id"]
+    logger.info(f"[API] POST /workouts/plans/generate-progressive - user_id: {user_id}")
+    
+    request_summary = {
+        "sport_type": request.sport_type,
+        "level": request.level,
+        "goal": request.goal,
+        "target_date": request.target_date,
+        "start_date": request.start_date,
+        "weekly_hours": request.weekly_hours,
+        "has_user_profile": request.user_profile is not None,
+        "has_preferences": request.preferences is not None
+    }
+    logger.debug(f"[API] Request body: {json.dumps(request_summary, indent=2, default=str)}")
+    
     progressive_service = ProgressiveWorkoutPlanService(db)
     
     # Genera prima settimana del piano progressivo
@@ -132,7 +149,7 @@ async def generate_progressive_workout_plan(
     # Convert SQLAlchemy model to Pydantic schema
     plan_response = WorkoutPlanResponse.model_validate(plan)
     
-    return {
+    result = {
         "plan": plan_response.model_dump(),
         "first_week": first_week_plan,
         "target_date": request.target_date,
@@ -140,6 +157,10 @@ async def generate_progressive_workout_plan(
         "workouts_created": len(workouts),
         "calendar_events_created": len(calendar_events)
     }
+    
+    logger.info(f"[API] Progressive plan generated successfully - plan_id: {plan.id}, workouts: {len(workouts)}, events: {len(calendar_events)}")
+    logger.debug(f"[API] Response summary: plan_id={plan.id}, total_weeks={result.get('total_weeks')}, workouts_created={len(workouts)}")
+    return result
 
 
 @router.post("/plans/generate-weekly", response_model=WeeklyPlanResponse)
@@ -149,6 +170,10 @@ async def generate_weekly_plan(
     db: Session = Depends(get_db)
 ):
     """Genera piano per una settimana specifica"""
+    user_id = current_user["user_id"]
+    logger.info(f"[API] POST /workouts/plans/generate-weekly - user_id: {user_id}, week_number: {request.week_number}")
+    logger.debug(f"[API] Request: week_number={request.week_number}, target_date={request.target_date}, has_previous_week={request.previous_week_data is not None}, has_fitness_level={request.current_fitness_level is not None}")
+    
     progressive_service = ProgressiveWorkoutPlanService(db)
     
     weekly_plan = progressive_service.generate_weekly_plan(
@@ -159,6 +184,7 @@ async def generate_weekly_plan(
         current_fitness_level=request.current_fitness_level
     )
     
+    logger.info(f"[API] Weekly plan generated successfully - week: {weekly_plan.get('week')}, workouts: {len(weekly_plan.get('workouts', []))}")
     return WeeklyPlanResponse(**weekly_plan)
 
 
@@ -169,6 +195,10 @@ async def adapt_next_week_plan(
     db: Session = Depends(get_db)
 ):
     """Adatta automaticamente la prossima settimana basandosi sulle performance"""
+    user_id = current_user["user_id"]
+    logger.info(f"[API] POST /workouts/plans/adapt-next-week - user_id: {user_id}")
+    logger.debug(f"[API] Request: target_date={request.target_date}, force_regeneration={request.force_regeneration}, specific_focus={request.specific_focus}")
+    
     progressive_service = ProgressiveWorkoutPlanService(db)
     workout_service = WorkoutService(db)
     
@@ -208,6 +238,7 @@ async def adapt_next_week_plan(
     )
     
     # Workouts and calendar events are now saved in the database
+    logger.info(f"[API] Next week plan adapted successfully - week: {next_week_plan.get('week')}, workouts_created: {len(workouts)}, events_created: {len(calendar_events)}")
     # Return the plan response (without the extra metadata to match schema)
     return WeeklyPlanResponse(**next_week_plan)
 
@@ -360,9 +391,27 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
                                   current_user: dict = Depends(get_current_user),
                                   db: Session = Depends(get_db)):
     """Generate workout plan using AI - supports both traditional and progressive plans"""
+    user_id = current_user["user_id"]
+    logger.info(f"[API] POST /workouts/plans/generate-ai - user_id: {user_id}")
+    
+    # Log request details (sanitize sensitive data)
+    request_summary = {
+        "sport_type": ai_request.sport_type,
+        "level": ai_request.level,
+        "goal": ai_request.goal,
+        "weekly_hours": ai_request.weekly_hours,
+        "duration_weeks": ai_request.duration_weeks,
+        "is_progressive": ai_request.is_progressive,
+        "target_date": ai_request.target_date,
+        "start_date": ai_request.start_date,
+        "has_user_profile": ai_request.user_profile is not None,
+        "has_preferences": ai_request.preferences is not None
+    }
+    logger.debug(f"[API] Request body: {json.dumps(request_summary, indent=2, default=str)}")
     
     # Check if this is a progressive plan
     if ai_request.is_progressive and ai_request.target_date and ai_request.start_date:
+        logger.info(f"[API] Generating PROGRESSIVE workout plan")
         # Generate progressive workout plan
         from app.services.progressive_workout_service import ProgressiveWorkoutPlanService
         
@@ -423,7 +472,7 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
             "updated_at": plan.updated_at.isoformat() if plan.updated_at else None
         }
         
-        return {
+        result = {
             "plan": plan_dict,
             "first_week": first_week_plan,
             "target_date": ai_request.target_date,
@@ -432,11 +481,37 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
             "workouts_created": len(workouts),
             "calendar_events_created": len(calendar_events)
         }
+        logger.info(f"[API] Progressive plan generated successfully - plan_id: {plan_dict.get('id')}, workouts: {len(workouts)}, events: {len(calendar_events)}")
+        logger.debug(f"[API] Response summary: plan_id={plan_dict.get('id')}, total_weeks={result.get('total_weeks')}, is_progressive={result.get('is_progressive')}")
+        return result
     
     else:
         # Generate traditional workout plan using AI
+        logger.info(f"[API] Generating TRADITIONAL workout plan")
+        
+        # Convert AIWorkoutPlanRequest to WorkoutPlanGenerationRequest
+        from app.schemas.ai import WorkoutPlanGenerationRequest
+        
+        if not ai_request.duration_weeks:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="duration_weeks is required for traditional workout plans"
+            )
+        
+        workout_plan_request = WorkoutPlanGenerationRequest(
+            sport_type=ai_request.sport_type,
+            level=ai_request.level,
+            goal=ai_request.goal,
+            duration_weeks=ai_request.duration_weeks,
+            weekly_hours=ai_request.weekly_hours,
+            user_profile=ai_request.user_profile,
+            preferences=ai_request.preferences
+        )
+        
+        logger.debug(f"[API] Converted to WorkoutPlanGenerationRequest - has_preferences={workout_plan_request.preferences is not None}")
+        
         ai_service = AIService()
-        plan_data = ai_service.generate_workout_plan(ai_request)
+        plan_data = ai_service.generate_workout_plan(workout_plan_request)
         
         # Optionally save the generated plan
         if plan_data:
@@ -488,14 +563,18 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
                 "updated_at": plan.updated_at.isoformat() if plan.updated_at else None
             }
             
-            return {
+            result = {
                 "plan": plan_dict, 
                 "ai_data": plan_data, 
                 "is_progressive": False,
                 "workouts_created": len(workouts),
                 "calendar_events_created": len(calendar_events)
             }
+            logger.info(f"[API] Traditional plan generated successfully - plan_id: {plan_dict.get('id')}, workouts: {len(workouts)}, events: {len(calendar_events)}")
+            logger.debug(f"[API] Response summary: plan_id={plan_dict.get('id')}, workouts_created={len(workouts)}, is_progressive={result.get('is_progressive')}")
+            return result
         
+        logger.warning(f"[API] Plan data is empty, returning only AI data")
         return {"ai_data": plan_data, "is_progressive": False}
 
 

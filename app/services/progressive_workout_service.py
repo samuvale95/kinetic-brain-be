@@ -9,6 +9,7 @@ from app.config import settings
 import json
 import math
 import os
+from loguru import logger
 
 
 class ProgressiveWorkoutPlanService:
@@ -24,19 +25,24 @@ class ProgressiveWorkoutPlanService:
                            previous_week_data: Optional[Dict[str, Any]] = None,
                            current_fitness_level: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Genera piano per una settimana specifica basato sui dati precedenti"""
+        logger.info(f"[PROGRESSIVE] Generating weekly plan - user_id: {user_id}, week_number: {week_number}, target_date: {target_date}")
+        logger.debug(f"[PROGRESSIVE] Input params: user_id={user_id}, week_number={week_number}, target_date={target_date}, has_previous_week={previous_week_data is not None}, has_fitness_level={current_fitness_level is not None}")
         
-        if self.mock_mode:
-            return self._generate_mock_weekly_plan(week_number, target_date, previous_week_data, current_fitness_level)
-        
-        # 1. Raccoglie dati storici dell'utente
+        # 1. Raccoglie dati storici dell'utente (same for mock and real)
+        logger.debug(f"[PROGRESSIVE] Collecting user workout history (weeks_back=4)")
         user_history = self._get_user_workout_history(user_id, weeks_back=4)
+        logger.debug(f"[PROGRESSIVE] Collected {len(user_history)} weeks of history")
+        
         performance_trends = self._analyze_performance_trends(user_history)
+        logger.debug(f"[PROGRESSIVE] Performance trends: completion_rate={performance_trends.get('completion_rate', 0):.1f}%, fatigue_level={performance_trends.get('fatigue_level', 'N/A')}")
         
         # 2. Calcola date della settimana
         target_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
         weeks_remaining = self._calculate_weeks_remaining(target_dt, week_number)
+        logger.debug(f"[PROGRESSIVE] Weeks remaining to target: {weeks_remaining}")
         
-        # 3. Costruisce prompt contestualizzato
+        # 3. Costruisce prompt contestualizzato (same for mock and real)
+        logger.debug(f"[PROGRESSIVE] Building progressive prompt")
         prompt = self._build_progressive_prompt(
             week_number=week_number,
             weeks_remaining=weeks_remaining,
@@ -46,20 +52,56 @@ class ProgressiveWorkoutPlanService:
             performance_trends=performance_trends,
             current_fitness=current_fitness_level
         )
+        logger.debug(f"[PROGRESSIVE] Prompt built - length: {len(prompt)} characters")
         
-        # 4. Genera piano con AI
+        # 4. Create AIRequest (same for mock and real)
         ai_request = AIRequest(
             prompt=prompt,
             max_tokens=2000,
             temperature=0.7
         )
+        
+        # Log full data that would be sent to LLM
+        mock_data_summary = {
+            "week_number": week_number,
+            "target_date": target_date,
+            "weeks_remaining": weeks_remaining,
+            "previous_week_data": previous_week_data,
+            "current_fitness_level": current_fitness_level,
+            "user_history_count": len(user_history),
+            "performance_trends": performance_trends,
+            "prompt_length": len(prompt),
+            "prompt_preview": prompt[:500] + "..." if len(prompt) > 500 else prompt
+        }
+        logger.info(f"[PROGRESSIVE] Full data that would be sent to LLM: {json.dumps(mock_data_summary, indent=2, default=str)}")
+        
+        if self.mock_mode:
+            logger.info(f"[PROGRESSIVE] Using MOCK mode for weekly plan generation")
+            logger.info(f"[PROGRESSIVE][MOCK] Building same prompt and data as real LLM to validate data flow")
+            logger.debug(f"[PROGRESSIVE][MOCK] Full prompt that would be sent to LLM: {prompt[:1000]}...")
+            logger.debug(f"[PROGRESSIVE][MOCK] AIRequest - prompt_length: {len(ai_request.prompt)}, max_tokens: {ai_request.max_tokens}, temperature: {ai_request.temperature}")
+            
+            result = self._generate_mock_weekly_plan(
+                week_number, target_date, previous_week_data, current_fitness_level,
+                prompt, ai_request, user_history, performance_trends, weeks_remaining
+            )
+            logger.info(f"[PROGRESSIVE][MOCK] Mock weekly plan generated successfully - week: {result.get('week', 'N/A')}, workouts_count: {len(result.get('workouts', []))}")
+            return result
+        
+        logger.info(f"[PROGRESSIVE] Calling AI service for weekly plan generation")
         response = self.ai_service.generate_response(ai_request)
         
         # 5. Parsing e strutturazione della risposta
         try:
             plan_data = json.loads(response.response)
-        except json.JSONDecodeError:
+            logger.info(f"[PROGRESSIVE] Successfully parsed AI response as JSON")
+            logger.debug(f"[PROGRESSIVE] Plan data keys: {list(plan_data.keys())}")
+            if 'workouts' in plan_data:
+                logger.info(f"[PROGRESSIVE] Plan contains {len(plan_data.get('workouts', []))} workouts")
+        except json.JSONDecodeError as e:
+            logger.warning(f"[PROGRESSIVE] Failed to parse AI response as JSON, using fallback: {str(e)}")
             plan_data = self._parse_text_response(response.response, week_number, target_date)
+            logger.info(f"[PROGRESSIVE] Using fallback text response parser")
         
         # 6. Aggiunge metadati
         plan_data.update({
@@ -68,6 +110,7 @@ class ProgressiveWorkoutPlanService:
             "week_end_date": self._get_week_end_date(target_dt, week_number)
         })
         
+        logger.info(f"[PROGRESSIVE] Weekly plan generated successfully - week: {plan_data.get('week', 'N/A')}, focus: {plan_data.get('focus', 'N/A')}")
         return plan_data
     
     def adapt_next_week_plan(self, user_id: int, target_date: str) -> Dict[str, Any]:
@@ -299,6 +342,8 @@ class ProgressiveWorkoutPlanService:
         prompt = f"""
         Generate WEEK {week_number} of a progressive training plan.
         
+        AUTONOMY NOTE: You have full autonomy to determine the optimal number of workouts per week and session durations based on training science. Any user preferences regarding available days or minimum session duration are INDICATIVE ONLY, not constraints. Optimize the plan for best training outcomes.
+        
         TARGET DATE: {target_date}
         WEEKS REMAINING: {weeks_remaining}
         
@@ -313,6 +358,77 @@ class ProgressiveWorkoutPlanService:
         
         CURRENT FITNESS LEVEL:
         {json.dumps(current_fitness, indent=2) if current_fitness else "No fitness data available"}
+        
+        """
+        
+        # Gestione PERFORMANCE METRICS se presenti nel current_fitness
+        if current_fitness:
+            has_performance_metrics = any(key in current_fitness for key in [
+                'hr_max', 'hr_rest', 'threshold_hr', 'hrr', 'custom_threshold_hr',
+                'threshold_pace', 'critical_speed', 'vla',
+                'ftp', 'wkg',
+                'vo2max',
+                'hr_zones', 'pace_zones', 'power_zones',
+                'hr_zones_source', 'pace_zones_source', 'power_zones_source'
+            ])
+            
+            if has_performance_metrics:
+                prompt += "\n\n=== PERFORMANCE METRICS ==="
+                prompt += "\nUSE EXACT ZONE VALUES PROVIDED - do not estimate or approximate."
+                
+                # HR Metrics (compact)
+                if current_fitness.get('hr_zones') or current_fitness.get('threshold_hr') or current_fitness.get('hr_max'):
+                    hr_info = []
+                    if current_fitness.get('hr_max'):
+                        hr_info.append(f"HR Max: {current_fitness.get('hr_max')} bpm")
+                    if current_fitness.get('hr_rest'):
+                        hr_info.append(f"HR Rest: {current_fitness.get('hr_rest')} bpm")
+                    if current_fitness.get('threshold_hr'):
+                        hr_info.append(f"Threshold: {current_fitness.get('threshold_hr')} bpm")
+                    if current_fitness.get('hr_zones'):
+                        zones = current_fitness.get('hr_zones')
+                        if isinstance(zones, dict):
+                            hr_info.append(f"Zones: {', '.join([f'{k.upper()}={v}' for k, v in zones.items()])}")
+                    prompt += f"\nHR: {', '.join(hr_info)}"
+                
+                # Pace Metrics (compact)
+                if current_fitness.get('pace_zones') or current_fitness.get('threshold_pace'):
+                    pace_info = []
+                    if current_fitness.get('threshold_pace'):
+                        pace_info.append(f"Threshold: {current_fitness.get('threshold_pace')} min/km")
+                    if current_fitness.get('critical_speed'):
+                        pace_info.append(f"Critical Speed: {current_fitness.get('critical_speed')} km/h")
+                    if current_fitness.get('pace_zones'):
+                        zones = current_fitness.get('pace_zones')
+                        if isinstance(zones, dict):
+                            pace_info.append(f"Zones: {', '.join([f'{k.upper()}={v}' for k, v in zones.items()])}")
+                    prompt += f"\nPace: {', '.join(pace_info)}"
+                
+                # Power Metrics (compact)
+                if current_fitness.get('power_zones') or current_fitness.get('ftp'):
+                    power_info = []
+                    if current_fitness.get('ftp'):
+                        power_info.append(f"FTP: {current_fitness.get('ftp')}W")
+                    if current_fitness.get('wkg'):
+                        power_info.append(f"W/kg: {current_fitness.get('wkg')}")
+                    if current_fitness.get('power_zones'):
+                        zones = current_fitness.get('power_zones')
+                        if isinstance(zones, dict):
+                            power_info.append(f"Zones: {', '.join([f'{k.upper()}={v}W' for k, v in zones.items()])}")
+                    prompt += f"\nPower: {', '.join(power_info)}"
+                
+                # Advanced Metrics
+                if current_fitness.get('vo2max'):
+                    prompt += f"\nVO2max: {current_fitness.get('vo2max')} ml/kg/min"
+                
+                # Preferred zone type
+                preferred_zone_type = current_fitness.get('preferred_zone_type', 'hr')
+                prompt += f"\nPreferred zone type: {preferred_zone_type.upper()} (prioritize this in prescriptions)"
+                
+                prompt += "\n\nCRITICAL: Use exact zone values from above. For Z4 use threshold values, for Z5 use 105-120% of threshold."
+                prompt += "\nAdapt intensities week-by-week based on performance trends, but always within the user's zone definitions."
+        
+        prompt += """
         
         ADAPTATION RULES:
         1. If previous week was too easy (RPE < 6), increase intensity by 5-10%
@@ -449,8 +565,25 @@ class ProgressiveWorkoutPlanService:
     
     def _generate_mock_weekly_plan(self, week_number: int, target_date: str, 
                                  previous_week_data: Optional[Dict[str, Any]] = None,
-                                 current_fitness_level: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Generate mock weekly plan for triathlon progressive training"""
+                                 current_fitness_level: Optional[Dict[str, Any]] = None,
+                                 prompt: str = None,
+                                 ai_request: AIRequest = None,
+                                 user_history: List[Dict[str, Any]] = None,
+                                 performance_trends: Dict[str, Any] = None,
+                                 weeks_remaining: int = None) -> Dict[str, Any]:
+        """Generate mock weekly plan for triathlon progressive training - uses same data as real LLM"""
+        logger.info(f"[PROGRESSIVE][MOCK] Generating mock weekly plan")
+        logger.debug(f"[PROGRESSIVE][MOCK] Received prompt length: {len(prompt) if prompt else 0}")
+        logger.debug(f"[PROGRESSIVE][MOCK] AIRequest details: prompt_length={len(ai_request.prompt) if ai_request else 0}, max_tokens={ai_request.max_tokens if ai_request else None}")
+        logger.debug(f"[PROGRESSIVE][MOCK] User history: {len(user_history) if user_history else 0} weeks")
+        logger.debug(f"[PROGRESSIVE][MOCK] Performance trends: {json.dumps(performance_trends, indent=2, default=str) if performance_trends else None}")
+        logger.debug(f"[PROGRESSIVE][MOCK] Previous week data: {json.dumps(previous_week_data, indent=2, default=str) if previous_week_data else None}")
+        logger.debug(f"[PROGRESSIVE][MOCK] Current fitness level: {json.dumps(current_fitness_level, indent=2, default=str) if current_fitness_level else None}")
+        logger.debug(f"[PROGRESSIVE][MOCK] Weeks remaining: {weeks_remaining}")
+        
+        # Log full prompt that would be sent to LLM
+        if prompt:
+            logger.info(f"[PROGRESSIVE][MOCK] Full prompt that would be sent to LLM: {prompt}")
         
         # Calculate week dates
         start_date = datetime(2025, 10, 25)
@@ -459,12 +592,15 @@ class ProgressiveWorkoutPlanService:
         
         # Get focus based on week
         focus = self._get_mock_triathlon_focus(week_number)
+        logger.debug(f"[PROGRESSIVE][MOCK] Week focus: {focus}")
         
         # Generate workouts for the week
         workouts = self._generate_mock_triathlon_workouts(week_number)
+        logger.debug(f"[PROGRESSIVE][MOCK] Generated {len(workouts)} workouts")
         
         # Calculate adaptations based on previous week
         adaptations = self._calculate_mock_adaptations(week_number, previous_week_data)
+        logger.debug(f"[PROGRESSIVE][MOCK] Adaptations: {json.dumps(adaptations, indent=2, default=str)}")
         
         return {
             "week": week_number,

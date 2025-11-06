@@ -22,6 +22,23 @@ class StravaService:
         self.auth_url = "https://www.strava.com/oauth"
         self.metrics_service = MetricsCalculationService()
     
+    def _parse_json_field(self, field_value) -> Optional[Dict[str, Any]]:
+        """
+        Safely parse a JSON field that might be a string or already a dict.
+        Returns None if field is None or empty, a dict if successful.
+        """
+        if field_value is None:
+            return None
+        if isinstance(field_value, dict):
+            return field_value
+        if isinstance(field_value, str):
+            try:
+                return json.loads(field_value)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Failed to parse JSON field: {str(field_value)[:50]}")
+                return None
+        return None
+    
     def get_auth_url(self, user_id: int) -> str:
         """Generate Strava OAuth authorization URL"""
         params = {
@@ -115,7 +132,8 @@ class StravaService:
         return strava_account.access_token
     
     def fetch_athlete_activities(self, strava_account: StravaAccount, 
-                                per_page: int = 200, page: int = 1) -> List[Dict[str, Any]]:
+                                per_page: int = 200, page: int = 1,
+                                timeout: int = 30) -> List[Dict[str, Any]]:
         """Fetch athlete activities from Strava"""
         access_token = self.get_valid_access_token(strava_account)
         if not access_token:
@@ -127,16 +145,24 @@ class StravaService:
             "page": page
         }
         
-        response = requests.get(f"{self.base_url}/athlete/activities", 
-                              headers=headers, params=params)
-        
-        if response.status_code != 200:
-            raise Exception(f"Failed to fetch activities: {response.text}")
-        
-        return response.json()
+        try:
+            response = requests.get(f"{self.base_url}/athlete/activities", 
+                                  headers=headers, params=params, timeout=timeout)
+            
+            if response.status_code != 200:
+                raise Exception(f"Failed to fetch activities: {response.text}")
+            
+            return response.json()
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout fetching athlete activities (page {page})")
+            raise Exception(f"Timeout fetching activities from Strava API")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request error fetching activities: {e}")
+            raise Exception(f"Failed to fetch activities: {str(e)}")
     
     def fetch_activity_details(self, strava_account: StravaAccount, 
-                             activity_id: int) -> Dict[str, Any]:
+                             activity_id: int,
+                             timeout: int = 10) -> Dict[str, Any]:
         """Fetch detailed activity data from Strava"""
         access_token = self.get_valid_access_token(strava_account)
         if not access_token:
@@ -144,13 +170,20 @@ class StravaService:
         
         headers = {"Authorization": f"Bearer {access_token}"}
         
-        response = requests.get(f"{self.base_url}/activities/{activity_id}", 
-                              headers=headers)
-        
-        if response.status_code != 200:
-            raise Exception(f"Failed to fetch activity details: {response.text}")
-        
-        return response.json()
+        try:
+            response = requests.get(f"{self.base_url}/activities/{activity_id}", 
+                                  headers=headers, timeout=timeout)
+            
+            if response.status_code != 200:
+                raise Exception(f"Failed to fetch activity details: {response.text}")
+            
+            return response.json()
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout fetching activity details for activity {activity_id}")
+            raise Exception(f"Timeout fetching activity details from Strava API")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request error fetching activity details: {e}")
+            raise Exception(f"Failed to fetch activity details: {str(e)}")
     
     def _calculate_lthr_zones(self, lthr: float) -> Dict[str, Dict[str, float]]:
         """
@@ -204,7 +237,8 @@ class StravaService:
     
     def fetch_activity_streams(self, strava_account: StravaAccount, 
                               activity_id: int, 
-                              stream_types: List[str] = None) -> Dict[str, Any]:
+                              stream_types: List[str] = None,
+                              timeout: int = 5) -> Dict[str, Any]:
         """
         Fetch activity streams (detailed data) from Strava
         
@@ -212,6 +246,7 @@ class StravaService:
             strava_account: Strava account
             activity_id: Activity ID
             stream_types: List of stream types to fetch (e.g., ['heartrate', 'time', 'distance'])
+            timeout: Request timeout in seconds (default: 5)
         
         Returns:
             Dictionary with stream data
@@ -231,16 +266,25 @@ class StravaService:
             "key_by_type": "true"
         }
         
-        response = requests.get(f"{self.base_url}/activities/{activity_id}/streams", 
-                              headers=headers, params=params)
-        
-        if response.status_code != 200:
-            raise Exception(f"Failed to fetch activity streams: {response.text}")
-        
-        return response.json()
+        try:
+            response = requests.get(f"{self.base_url}/activities/{activity_id}/streams", 
+                                  headers=headers, params=params, timeout=timeout)
+            
+            if response.status_code != 200:
+                raise Exception(f"Failed to fetch activity streams: {response.text}")
+            
+            return response.json()
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout fetching streams for activity {activity_id}")
+            raise Exception(f"Timeout fetching activity streams for activity {activity_id}")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Request error fetching streams for activity {activity_id}: {e}")
+            raise Exception(f"Failed to fetch activity streams: {str(e)}")
     
     def sync_user_activities(self, user_id: int, days_back: int = 30) -> Dict[str, Any]:
         """Sync user's Strava activities"""
+        logger.info(f"[SYNC] Starting sync for user {user_id}, days_back={days_back}")
+        
         # Get user's Strava account
         strava_account = self.db.execute(
             select(StravaAccount)
@@ -248,10 +292,15 @@ class StravaService:
         ).scalar_one_or_none()
         
         if not strava_account:
+            logger.error(f"[SYNC] No Strava account found for user {user_id}")
             raise Exception("No Strava account found for user")
         
+        logger.info(f"[SYNC] Found Strava account {strava_account.id} for user {user_id}")
+        
         # Fetch activities
+        logger.info(f"[SYNC] Fetching activities from Strava API...")
         activities = self.fetch_athlete_activities(strava_account)
+        logger.info(f"[SYNC] Fetched {len(activities)} total activities from Strava")
         
         # Filter activities by date
         from datetime import timezone
@@ -260,6 +309,7 @@ class StravaService:
             activity for activity in activities 
             if datetime.fromisoformat(activity["start_date"].replace("Z", "+00:00")) >= cutoff_date
         ]
+        logger.info(f"[SYNC] Filtered to {len(recent_activities)} activities in last {days_back} days")
         
         synced_count = 0
         updated_count = 0
@@ -267,12 +317,16 @@ class StravaService:
         new_activities = []
         updated_activities = []
         
-        for activity_data in recent_activities:
+        logger.info(f"[SYNC] Processing {len(recent_activities)} activities...")
+        for idx, activity_data in enumerate(recent_activities, 1):
             # Check if activity already exists using strava_activity_id
             existing_activity = self.db.execute(
                 select(StravaActivity)
                 .where(StravaActivity.strava_activity_id == activity_data["id"])
             ).scalar_one_or_none()
+            
+            if idx % 50 == 0:
+                logger.info(f"[SYNC] Processed {idx}/{len(recent_activities)} activities (new: {new_count}, updated: {updated_count}, synced: {synced_count})")
             
             if existing_activity:
                 # Check if activity belongs to this user's account
@@ -304,35 +358,46 @@ class StravaService:
             new_count += 1
         
         # Commit activities first so we can calculate metrics
+        logger.info(f"[SYNC] Committing {new_count} new and {updated_count} updated activities to database...")
         self.db.commit()
+        logger.info(f"[SYNC] Activities committed successfully")
         
         # Calculate metrics automatically for new activities
         metrics_calculated = 0
         metrics_recalculated = 0
         metrics_errors = 0
+        logger.info(f"[SYNC] Starting metrics calculation phase...")
         
         # Process new activities
         if new_activities:
-            logger.info(f"Calculating metrics for {len(new_activities)} new activities")
-            for strava_activity in new_activities:
+            logger.info(f"[SYNC][METRICS] Calculating metrics for {len(new_activities)} new activities")
+            for idx, strava_activity in enumerate(new_activities, 1):
                 try:
                     # Refresh to get the ID from DB
                     self.db.refresh(strava_activity)
+                    logger.debug(f"[SYNC][METRICS] Processing activity {idx}/{len(new_activities)}: {strava_activity.strava_activity_id} - {strava_activity.name}")
                     
                     # Calculate metrics for this activity
                     training_metrics = self.calculate_activity_metrics(strava_activity, user_id)
                     self.db.add(training_metrics)
                     metrics_calculated += 1
+                    
+                    # Log progress every 10 activities to show the process is working
+                    if idx % 10 == 0:
+                        logger.info(f"[SYNC][METRICS] Processed {idx}/{len(new_activities)} new activities (calculated: {metrics_calculated}, errors: {metrics_errors})")
                 except Exception as e:
-                    logger.error(f"Error calculating metrics for activity {strava_activity.strava_activity_id}: {e}")
+                    logger.error(f"[SYNC][METRICS] Error calculating metrics for activity {strava_activity.strava_activity_id}: {e}")
                     metrics_errors += 1
                     continue
+            logger.info(f"[SYNC][METRICS] Completed processing {len(new_activities)} new activities (calculated: {metrics_calculated}, errors: {metrics_errors})")
         
         # Recalculate metrics for updated activities (in case TSS changed)
         if updated_activities:
-            logger.info(f"Recalculating metrics for {len(updated_activities)} updated activities")
-            for strava_activity in updated_activities:
+            logger.info(f"[SYNC][METRICS] Recalculating metrics for {len(updated_activities)} updated activities")
+            for idx, strava_activity in enumerate(updated_activities, 1):
                 try:
+                    logger.debug(f"[SYNC][METRICS] Recalculating activity {idx}/{len(updated_activities)}: {strava_activity.strava_activity_id} - {strava_activity.name}")
+                    
                     # Recalculate metrics
                     training_metrics = self.calculate_activity_metrics(strava_activity, user_id)
                     # Update existing training metrics or create new
@@ -346,26 +411,37 @@ class StravaService:
                         for key, value in training_metrics.__dict__.items():
                             if not key.startswith('_') and key != 'id':
                                 setattr(existing_metrics, key, value)
+                        logger.debug(f"[SYNC][METRICS] Updated existing metrics for activity {strava_activity.id}")
                     else:
                         # Create new metrics
                         training_metrics.strava_activity_id = strava_activity.id
                         self.db.add(training_metrics)
+                        logger.debug(f"[SYNC][METRICS] Created new metrics for activity {strava_activity.id}")
                     
                     metrics_recalculated += 1
+                    
+                    # Log progress every 10 activities to show the process is working
+                    if idx % 10 == 0:
+                        logger.info(f"[SYNC][METRICS] Processed {idx}/{len(updated_activities)} updated activities (recalculated: {metrics_recalculated}, errors: {metrics_errors})")
                 except Exception as e:
-                    logger.error(f"Error recalculating metrics for activity {strava_activity.strava_activity_id}: {e}")
+                    logger.error(f"[SYNC][METRICS] Error recalculating metrics for activity {strava_activity.strava_activity_id}: {e}")
                     metrics_errors += 1
                     continue
+            logger.info(f"[SYNC][METRICS] Completed processing {len(updated_activities)} updated activities (recalculated: {metrics_recalculated}, errors: {metrics_errors})")
         
         # Commit metrics (for both new and updated activities)
         if metrics_calculated > 0 or metrics_recalculated > 0:
+            logger.info(f"[SYNC][METRICS] Committing {metrics_calculated + metrics_recalculated} metrics to database...")
             self.db.commit()
-            logger.info(f"Successfully calculated metrics for {metrics_calculated} new and {metrics_recalculated} updated activities")
+            logger.info(f"[SYNC][METRICS] Successfully committed metrics ({metrics_calculated} new, {metrics_recalculated} updated)")
+        else:
+            logger.info(f"[SYNC][METRICS] No metrics to commit")
         
         # After sync, recalculate daily metrics for all affected dates
         # This ensures consistency after sync
         daily_metrics_updated = 0
         if new_activities or updated_activities:
+            logger.info(f"[SYNC][DAILY] Starting daily metrics update...")
             from app.services.daily_metrics_service import DailyMetricsService
             daily_metrics_service = DailyMetricsService(self.db)
             
@@ -375,19 +451,27 @@ class StravaService:
                 if activity.start_date:
                     affected_dates.add(activity.start_date.date())
             
+            logger.info(f"[SYNC][DAILY] Updating daily metrics for {len(affected_dates)} affected dates")
+            
             # Update daily metrics for all affected dates
-            for activity_date in sorted(affected_dates):
+            for idx, activity_date in enumerate(sorted(affected_dates), 1):
                 try:
+                    logger.debug(f"[SYNC][DAILY] Updating daily metrics for date {activity_date} ({idx}/{len(affected_dates)})")
                     daily_metrics_service.update_daily_metrics(user_id, activity_date)
                     daily_metrics_updated += 1
                 except Exception as e:
-                    logger.warning(f"Failed to update daily metrics for {activity_date} after sync: {e}")
+                    logger.warning(f"[SYNC][DAILY] Failed to update daily metrics for {activity_date} after sync: {e}")
             
             if daily_metrics_updated > 0:
+                logger.info(f"[SYNC][DAILY] Committing daily metrics updates...")
                 self.db.commit()
-                logger.info(f"Updated daily metrics for {daily_metrics_updated} dates")
+                logger.info(f"[SYNC][DAILY] Updated daily metrics for {daily_metrics_updated} dates")
+            else:
+                logger.warning(f"[SYNC][DAILY] No daily metrics were updated")
+        else:
+            logger.info(f"[SYNC][DAILY] No activities to update daily metrics for")
         
-        return {
+        result = {
             "total_activities": len(recent_activities),
             "new_activities": new_count,
             "updated_activities": updated_count,
@@ -397,6 +481,9 @@ class StravaService:
             "metrics_errors": metrics_errors,
             "daily_metrics_updated": daily_metrics_updated
         }
+        
+        logger.info(f"[SYNC] Sync completed successfully: {result}")
+        return result
     
     def _create_strava_activity(self, strava_account: StravaAccount, 
                                activity_data: Dict[str, Any]) -> StravaActivity:
@@ -679,17 +766,21 @@ class StravaService:
         
         return result
     
-    def calculate_activity_metrics(self, strava_activity: StravaActivity, user_id: int) -> TrainingMetrics:
+    def calculate_activity_metrics(self, strava_activity: StravaActivity, user_id: int, 
+                                   fetch_streams: bool = True) -> TrainingMetrics:
         """
         Calculate training metrics for a Strava activity
         
         Args:
             strava_activity: Strava activity to calculate metrics for
             user_id: User ID to get threshold values from
+            fetch_streams: Whether to fetch detailed HR streams (default: True, set False for bulk operations)
         
         Returns:
             TrainingMetrics object with calculated values
         """
+        logger.debug(f"[METRICS] Calculating metrics for activity {strava_activity.strava_activity_id} (fetch_streams={fetch_streams})")
+        
         # Get user's latest performance metrics (new unified structure)
         latest_metrics = self.db.execute(
             select(PerformanceMetrics)
@@ -697,10 +788,18 @@ class StravaService:
             .order_by(desc(PerformanceMetrics.test_date))
         ).scalar_one_or_none()
         
+        if not latest_metrics:
+            logger.debug(f"[METRICS] No performance metrics found for user {user_id}, using defaults")
+        
         # Extract zones from PerformanceMetrics if available
+        # Safely parse hr_zones in case it's stored as a JSON string
         hr_zones = None
         if latest_metrics and latest_metrics.hr_zones:
-            hr_zones = latest_metrics.hr_zones
+            hr_zones = self._parse_json_field(latest_metrics.hr_zones)
+            if hr_zones:
+                logger.debug(f"[METRICS] Using HR zones from performance metrics")
+            else:
+                logger.debug(f"[METRICS] Failed to parse HR zones from performance metrics")
         
         # Get threshold values
         threshold_hr = latest_metrics.threshold_hr if latest_metrics else None
@@ -713,9 +812,13 @@ class StravaService:
         if hr_zones is None and threshold_hr:
             # Use LTHR-based zones (Joe Friel's formula)
             hr_zones = self._calculate_lthr_zones(threshold_hr)
+            logger.debug(f"[METRICS] Calculated LTHR-based zones (threshold_hr={threshold_hr})")
         elif hr_zones is None and max_hr:
             # Fallback to max HR-based zones if LTHR not available
             hr_zones = self._calculate_maxhr_zones(max_hr)
+            logger.debug(f"[METRICS] Calculated Max HR-based zones (max_hr={max_hr})")
+        elif hr_zones is None:
+            logger.debug(f"[METRICS] No HR zones available, will use fallback in calculate_time_in_zones")
         
         # Calculate duration
         duration_seconds = strava_activity.moving_time or strava_activity.elapsed_time or 0
@@ -761,27 +864,45 @@ class StravaService:
         hr_data = None
         
         # Try to fetch detailed HR data from Strava streams
-        try:
-            streams = self.fetch_activity_streams(
-                strava_account=strava_activity.strava_account,
-                activity_id=strava_activity.strava_activity_id,
-                stream_types=['heartrate', 'time']
-            )
-            
-            if 'heartrate' in streams and streams['heartrate'].get('data'):
-                hr_data = streams['heartrate']['data']
-                logger.info(f"Fetched {len(hr_data)} HR data points for activity {strava_activity.id}")
-        except Exception as e:
-            logger.warning(f"Failed to fetch HR streams for activity {strava_activity.id}: {e}")
+        # Skip during bulk recalculation to avoid blocking (can be slow with many activities)
+        hr_data = None
+        if fetch_streams and strava_activity.strava_account:
+            logger.debug(f"[METRICS] Fetching HR streams for activity {strava_activity.strava_activity_id}...")
+            try:
+                streams = self.fetch_activity_streams(
+                    strava_account=strava_activity.strava_account,
+                    activity_id=strava_activity.strava_activity_id,
+                    stream_types=['heartrate', 'time'],
+                    timeout=3  # Short timeout to avoid blocking
+                )
+                
+                if 'heartrate' in streams and streams['heartrate'].get('data'):
+                    hr_data = streams['heartrate']['data']
+                    logger.debug(f"[METRICS] Fetched {len(hr_data)} HR data points for activity {strava_activity.id}")
+                else:
+                    logger.debug(f"[METRICS] No HR data in streams response for activity {strava_activity.id}")
+            except Exception as e:
+                # Log but don't fail - we can still calculate zones with average HR
+                logger.debug(f"[METRICS] Failed to fetch HR streams for activity {strava_activity.id}: {e}")
+                hr_data = None
+        elif not fetch_streams:
+            logger.debug(f"[METRICS] Skipping HR streams fetch (fetch_streams=False) for activity {strava_activity.id}")
+        elif not strava_activity.strava_account:
+            logger.debug(f"[METRICS] Skipping HR streams fetch (no strava_account) for activity {strava_activity.id}")
         
         # Calculate zones with real HR data or fallback to average HR
         if strava_activity.average_heartrate:
+            logger.debug(f"[METRICS] Calculating time in zones (avg_hr={strava_activity.average_heartrate}, duration={duration_seconds}s)")
             time_in_zones = self.metrics_service.calculate_time_in_zones(
                 hr_data=hr_data,
                 zones=hr_zones,
                 duration_seconds=duration_seconds,
                 avg_hr=strava_activity.average_heartrate
             )
+            logger.debug(f"[METRICS] Time in zones calculated: {time_in_zones}")
+        else:
+            logger.debug(f"[METRICS] No average HR available, skipping zone calculation")
+            time_in_zones = {'z1': 0, 'z2': 0, 'z3': 0, 'z4': 0, 'z5': 0}
         
         # Create TrainingMetrics record
         training_metrics = TrainingMetrics(
@@ -820,12 +941,15 @@ class StravaService:
         # Update daily metrics for this activity's date
         if strava_activity.start_date:
             activity_date = strava_activity.start_date.date()
+            from app.services.daily_metrics_service import DailyMetricsService
             daily_metrics_service = DailyMetricsService(self.db)
             try:
+                logger.debug(f"[METRICS] Updating daily metrics for date {activity_date}")
                 daily_metrics_service.update_daily_metrics(user_id, activity_date)
             except Exception as e:
-                logger.warning(f"Failed to update daily metrics for {activity_date}: {e}")
+                logger.warning(f"[METRICS] Failed to update daily metrics for {activity_date}: {e}")
         
+        logger.debug(f"[METRICS] Completed metrics calculation for activity {strava_activity.strava_activity_id} (TSS={tss}, TRIMP={trimp}, IF={intensity_factor})")
         return training_metrics
     
     def recalculate_all_metrics(self, user_id: int) -> Dict[str, Any]:
@@ -841,7 +965,7 @@ class StravaService:
             Dictionary with recalculation results
         """
         start_time = datetime.now()
-        print(f"[RECALC] Start recalculation for user {user_id} at {start_time.isoformat()}")
+        logger.info(f"[RECALC] Starting recalculation for user {user_id} at {start_time.isoformat()}")
         
         # Get user's Strava account
         strava_account = self.db.execute(
@@ -850,9 +974,13 @@ class StravaService:
         ).scalar_one_or_none()
         
         if not strava_account:
+            logger.error(f"[RECALC] No Strava account found for user {user_id}")
             raise Exception("No Strava account found for user")
         
+        logger.info(f"[RECALC] Found Strava account {strava_account.id} for user {user_id}")
+        
         # Quick check: Get last activity ID that has metrics
+        logger.debug(f"[RECALC] Checking which activities need metrics...")
         last_activity_with_metrics = self.db.execute(
             select(StravaActivity.id)
             .join(TrainingMetrics, StravaActivity.id == TrainingMetrics.strava_activity_id)
@@ -867,15 +995,18 @@ class StravaService:
             .where(StravaActivity.strava_account_id == strava_account.id)
         ).scalar()
         
+        logger.debug(f"[RECALC] Last activity with metrics: {last_activity_with_metrics}, Last activity overall: {last_activity_id}")
+        
         # If all activities already have metrics, skip entire recalculation
         if last_activity_id and last_activity_with_metrics and last_activity_id == last_activity_with_metrics:
-            print(f"[RECALC] All activities already have metrics calculated. Skipping activities processing.")
+            logger.info(f"[RECALC] All activities already have metrics calculated. Skipping activities processing.")
             activities = []  # Skip processing activities
             activities_count = 0
         else:
             # Get activities that need metrics (don't have metrics yet OR are newer than last calculated)
             if last_activity_with_metrics:
                 # Only get activities that don't have metrics yet
+                logger.info(f"[RECALC] Fetching activities without metrics (last calculated: {last_activity_with_metrics})...")
                 activities = self.db.execute(
                     select(StravaActivity)
                     .outerjoin(TrainingMetrics, StravaActivity.id == TrainingMetrics.strava_activity_id)
@@ -886,16 +1017,28 @@ class StravaService:
                     .order_by(StravaActivity.start_date)
                 ).scalars().all()
                 activities_count = len(activities)
+                logger.info(f"[RECALC] Found {activities_count} activities without metrics")
             else:
                 # First time: get all activities
+                logger.info(f"[RECALC] First time recalculation - fetching all activities...")
                 activities = self.db.execute(
                     select(StravaActivity)
                     .where(StravaActivity.strava_account_id == strava_account.id)
                     .order_by(StravaActivity.start_date)
                 ).scalars().all()
                 activities_count = len(activities)
+                logger.info(f"[RECALC] Found {activities_count} total activities to process")
         
-        print(f"[RECALC] Activities needing metrics: {activities_count}")
+        logger.info(f"[RECALC] Activities needing metrics: {activities_count}")
+        
+        if activities_count == 0:
+            logger.info(f"[RECALC] No activities to process. Recalculation complete.")
+            return {
+                "activities_processed": 0,
+                "metrics_calculated": 0,
+                "errors": 0,
+                "duration_seconds": (datetime.now() - start_time).total_seconds()
+            }
         
         metrics_calculated = {
             'tss_calculated': 0,
@@ -906,13 +1049,16 @@ class StravaService:
         
         activities_processed = 0
         metrics_to_update = []
+        errors_count = 0
         
-        print(f"[RECALC] Processing {len(activities)} activities...")
+        logger.info(f"[RECALC] Processing {len(activities)} activities (fetch_streams=False for performance)...")
         
         for idx, activity in enumerate(activities, start=1):
             # Calculate new metrics (we already filtered to only activities without metrics)
+            # Disable streams fetch during bulk recalculation to avoid blocking
             try:
-                metrics = self.calculate_activity_metrics(activity, user_id)
+                logger.debug(f"[RECALC] Processing activity {idx}/{len(activities)}: {activity.strava_activity_id} - {activity.name}")
+                metrics = self.calculate_activity_metrics(activity, user_id, fetch_streams=False)
                 
                 # Add to list for bulk insert (all activities here need metrics)
                 metrics_to_update.append(metrics)
@@ -922,7 +1068,7 @@ class StravaService:
                     zones_sum = (metrics.time_in_zone_1 or 0) + (metrics.time_in_zone_2 or 0) + \
                                 (metrics.time_in_zone_3 or 0) + (metrics.time_in_zone_4 or 0) + (metrics.time_in_zone_5 or 0)
                     if zones_sum == 0:
-                        print(f"[RECALC][ZONES] Activity {activity.id} '{activity.name}' has HR={activity.average_heartrate} but zones are 0")
+                        logger.warning(f"[RECALC][ZONES] Activity {activity.id} '{activity.name}' has HR={activity.average_heartrate} but zones are 0")
                 
                 metrics_calculated['tss_calculated'] += 1 if metrics.tss else 0
                 metrics_calculated['trimp_calculated'] += 1 if metrics.trimp else 0
@@ -931,27 +1077,31 @@ class StravaService:
                 
                 activities_processed += 1
                 if idx % 25 == 0:
-                    print(f"[RECALC] Processed {idx}/{len(activities)} activities... (tss_calc={metrics_calculated['tss_calculated']})")
+                    logger.info(f"[RECALC] Processed {idx}/{len(activities)} activities (tss={metrics_calculated['tss_calculated']}, trimp={metrics_calculated['trimp_calculated']}, if={metrics_calculated['if_calculated']}, zones={metrics_calculated['zones_calculated']})")
             except Exception as e:
-                logger.error(f"Error calculating metrics for activity {activity.id}: {e}")
-                print(f"[RECALC][ERROR] Activity {activity.id} failed: {e}")
+                logger.error(f"[RECALC] Error calculating metrics for activity {activity.id}: {e}")
+                errors_count += 1
                 continue
+        
+        logger.info(f"[RECALC] Finished processing activities: {activities_processed} processed, {errors_count} errors")
         
         # Bulk add new metrics only
         if metrics_to_update:
+            logger.info(f"[RECALC] Bulk inserting {len(metrics_to_update)} metrics...")
             self.db.add_all(metrics_to_update)
-        print(f"[RECALC] Committing metrics updates (bulk_inserts={len(metrics_to_update)})")
+        logger.info(f"[RECALC] Committing metrics updates (bulk_inserts={len(metrics_to_update)})")
         # Commit all changes
         self.db.commit()
-        print(f"[RECALC] Metrics commit complete")
+        logger.info(f"[RECALC] Metrics commit complete")
         
         # Calculate initial CTL/ATL/TSB
-        print(f"[RECALC] Calculating initial CTL/ATL/TSB (42-day window)")
+        logger.info(f"[RECALC] Calculating initial CTL/ATL/TSB (42-day window)...")
         initial_metrics = self._calculate_initial_fitness_metrics(user_id)
-        print(f"[RECALC] Initial metrics: {initial_metrics}")
+        logger.info(f"[RECALC] Initial metrics calculated: {initial_metrics}")
         
         # Create/update daily metrics for all activities
-        print(f"[RECALC] Creating/updating daily metrics...")
+        logger.info(f"[RECALC] Creating/updating daily metrics...")
+        from app.services.daily_metrics_service import DailyMetricsService
         daily_metrics_service = DailyMetricsService(self.db)
         
         # Get all unique dates from activities
@@ -971,18 +1121,25 @@ class StravaService:
             unique_dates.add(activity_date)
         
         # Update daily metrics for each date
+        logger.info(f"[RECALC] Updating daily metrics for {len(unique_dates)} unique dates...")
         daily_metrics_updated = 0
-        for activity_date in sorted(unique_dates):
-            daily_metrics_service.update_daily_metrics(user_id, activity_date)
-            daily_metrics_updated += 1
+        for idx, activity_date in enumerate(sorted(unique_dates), 1):
+            try:
+                logger.debug(f"[RECALC] Updating daily metrics for date {activity_date} ({idx}/{len(unique_dates)})")
+                daily_metrics_service.update_daily_metrics(user_id, activity_date)
+                daily_metrics_updated += 1
+            except Exception as e:
+                logger.warning(f"[RECALC] Failed to update daily metrics for {activity_date}: {e}")
         
-        print(f"[RECALC] Daily metrics updated: {daily_metrics_updated}")
+        if daily_metrics_updated > 0:
+            self.db.commit()
+        
+        logger.info(f"[RECALC] Daily metrics updated: {daily_metrics_updated}/{len(unique_dates)}")
         
         end_time = datetime.now()
         processing_time = (end_time - start_time).total_seconds()
-        print(f"[RECALC] Completed at {end_time.isoformat()} in {processing_time:.2f}s. Activities processed={activities_processed}")
         
-        return {
+        result = {
             'success': True,
             'activities_processed': activities_processed,
             'metrics_calculated': metrics_calculated,
@@ -990,8 +1147,12 @@ class StravaService:
             'initial_ctl': initial_metrics.get('ctl'),
             'initial_atl': initial_metrics.get('atl'),
             'initial_tsb': initial_metrics.get('tsb'),
-            'processing_time_seconds': round(processing_time, 2)
+            'processing_time_seconds': round(processing_time, 2),
+            'errors': errors_count
         }
+        
+        logger.info(f"[RECALC] Completed at {end_time.isoformat()} in {processing_time:.2f}s. Result: {result}")
+        return result
     
     def _calculate_initial_fitness_metrics(self, user_id: int) -> Dict[str, float]:
         """

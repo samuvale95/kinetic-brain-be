@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from loguru import logger
 import sys
+import os
 
 from app.config import settings
 from app.database import engine, Base
@@ -30,10 +31,36 @@ async def lifespan(app: FastAPI):
 
 # Configure logging
 logger.remove()
+
+# Create logs directory if it doesn't exist
+os.makedirs("logs", exist_ok=True)
+
+# Get log level from settings (default to INFO)
+log_level = settings.log_level.upper()
+
+# Log format for console (with colors)
+console_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+
+# Log format for file (without colors, more detailed)
+file_format = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}"
+
+# Add console handler
 logger.add(
     sys.stdout,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-    level="INFO"
+    format=console_format,
+    level=log_level,
+    colorize=True
+)
+
+# Add file handler for logs
+logger.add(
+    "logs/app.log",
+    format=file_format,
+    level=log_level,
+    rotation="10 MB",      # Rotate when file reaches 10MB
+    retention="30 days",   # Keep logs for 30 days
+    compression="zip",     # Compress old log files
+    encoding="utf-8"
 )
 
 # Create FastAPI app

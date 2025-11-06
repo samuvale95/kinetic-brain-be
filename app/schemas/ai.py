@@ -3,7 +3,7 @@ from typing import Optional, Dict, Any, List
 
 
 class AIRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, max_length=4000)
+    prompt: str = Field(..., min_length=1, max_length=15000)
     context: Optional[Dict[str, Any]] = None
     max_tokens: Optional[int] = Field(None, ge=1, le=4000)
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
@@ -11,7 +11,7 @@ class AIRequest(BaseModel):
 
 class AIResponse(BaseModel):
     response: str
-    usage: Optional[Dict[str, int]] = None
+    usage: Optional[Dict[str, Any]] = None
     model: str
     created_at: str
 
@@ -21,7 +21,7 @@ class WorkoutPlanGenerationRequest(BaseModel):
     level: str = Field(..., pattern="^(beginner|intermediate|advanced)$")
     goal: str = Field(..., min_length=1, max_length=200)
     duration_weeks: int = Field(..., ge=1, le=52)
-    weekly_hours: float = Field(..., gt=0, le=168)
+    weekly_hours: Optional[float] = Field(None, gt=0, le=168, description="Ore settimanali disponibili (indicativo)")
     user_profile: Optional[Dict[str, Any]] = None
     preferences: Optional[Dict[str, Any]] = None
 
@@ -53,7 +53,7 @@ class ProgressiveWorkoutPlanRequest(BaseModel):
     goal: str = Field(..., min_length=1, max_length=200)
     target_date: str = Field(..., description="Data obiettivo (es. gara) - formato YYYY-MM-DD")
     start_date: str = Field(..., description="Data inizio allenamento - formato YYYY-MM-DD")
-    weekly_hours: float = Field(..., gt=0, le=168)
+    weekly_hours: Optional[float] = Field(None, gt=0, le=168, description="Ore settimanali disponibili (indicativo)")
     user_profile: Optional[Dict[str, Any]] = None
     preferences: Optional[Dict[str, Any]] = None
 
