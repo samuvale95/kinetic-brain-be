@@ -513,6 +513,33 @@ async def debug_daily_metrics(current_user: dict = Depends(get_current_user),
         "metrics": result
     }
 
+@router.post("/recalculate-metrics")
+async def recalculate_metrics(current_user: dict = Depends(get_current_user),
+                              db: Session = Depends(get_db)):
+    """
+    Recalculate all metrics for user's Strava activities.
+    This will:
+    1. Calculate TSS, IF, TRIMP, zone distribution for all activities
+    2. Update daily metrics (CTL/ATL/TSB) for all affected dates
+    
+    No parameters required - uses current authenticated user.
+    """
+    try:
+        strava_service = StravaService(db)
+        result = strava_service.recalculate_all_metrics(current_user["user_id"])
+        
+        return {
+            "success": True,
+            "message": "Metrics recalculated successfully",
+            **result
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to recalculate metrics: {str(e)}"
+        )
+
+
 @router.get("/debug/hr-streams/{activity_id}")
 async def debug_hr_streams(activity_id: int,
                           current_user: dict = Depends(get_current_user),

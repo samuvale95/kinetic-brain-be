@@ -68,33 +68,69 @@ class StravaService:
         
         token_data = response.json()
         
-        # Save Strava account
-        strava_account = StravaAccount(
-            user_id=user_id,
-            strava_id=token_data["athlete"]["id"],
-            access_token=token_data["access_token"],
-            refresh_token=token_data["refresh_token"],
-            token_expires_at=datetime.fromtimestamp(token_data["expires_at"]),
-            firstname=token_data["athlete"].get("firstname"),
-            lastname=token_data["athlete"].get("lastname"),
-            profile_medium=token_data["athlete"].get("profile_medium"),
-            profile=token_data["athlete"].get("profile"),
-            city=token_data["athlete"].get("city"),
-            state=token_data["athlete"].get("state"),
-            country=token_data["athlete"].get("country"),
-            sex=token_data["athlete"].get("sex"),
-            premium=token_data["athlete"].get("premium", False),
-            summit=token_data["athlete"].get("summit", False)
-        )
+        # Check if this is a reconnection (account already exists for this user)
+        existing_account = self.db.execute(
+            select(StravaAccount)
+            .where(StravaAccount.user_id == user_id)
+        ).scalar_one_or_none()
         
-        self.db.add(strava_account)
+        is_first_connection = existing_account is None
+        
+        if existing_account:
+            # Update existing account tokens
+            logger.info(f"[STRAVA_AUTH] Reconnecting existing Strava account for user {user_id}")
+            existing_account.access_token = token_data["access_token"]
+            existing_account.refresh_token = token_data["refresh_token"]
+            existing_account.token_expires_at = datetime.fromtimestamp(token_data["expires_at"])
+            strava_account = existing_account
+        else:
+            # Create new Strava account (first connection)
+            logger.info(f"[STRAVA_AUTH] First time connection for user {user_id}")
+            strava_account = StravaAccount(
+                user_id=user_id,
+                strava_id=token_data["athlete"]["id"],
+                access_token=token_data["access_token"],
+                refresh_token=token_data["refresh_token"],
+                token_expires_at=datetime.fromtimestamp(token_data["expires_at"]),
+                firstname=token_data["athlete"].get("firstname"),
+                lastname=token_data["athlete"].get("lastname"),
+                profile_medium=token_data["athlete"].get("profile_medium"),
+                profile=token_data["athlete"].get("profile"),
+                city=token_data["athlete"].get("city"),
+                state=token_data["athlete"].get("state"),
+                country=token_data["athlete"].get("country"),
+                sex=token_data["athlete"].get("sex"),
+                premium=token_data["athlete"].get("premium", False),
+                summit=token_data["athlete"].get("summit", False)
+            )
+            self.db.add(strava_account)
+        
         self.db.commit()
         self.db.refresh(strava_account)
+        
+        # If first connection, sync activities and calculate all metrics
+        if is_first_connection:
+            logger.info(f"[STRAVA_AUTH] First connection detected - syncing activities and calculating metrics")
+            try:
+                # Sync activities (last 90 days)
+                sync_result = self.sync_user_activities(user_id, days_back=90)
+                logger.info(f"[STRAVA_AUTH] Initial sync complete: {sync_result.get('new_activities', 0)} activities synced")
+                
+                # Metrics are already calculated during sync, but ensure all are calculated
+                # This is redundant but ensures completeness for first connection
+                if sync_result.get('new_activities', 0) > 0:
+                    logger.info(f"[STRAVA_AUTH] Verifying all metrics are calculated...")
+                    recalc_result = self.recalculate_all_metrics(user_id)
+                    logger.info(f"[STRAVA_AUTH] Metrics calculation complete: {recalc_result.get('metrics_calculated', 0)} calculated")
+            except Exception as e:
+                logger.error(f"[STRAVA_AUTH] Error during initial sync/metrics calculation: {e}")
+                # Don't fail the connection if sync fails
         
         return {
             "strava_account_id": strava_account.id,
             "athlete": token_data["athlete"],
-            "access_token": token_data["access_token"]
+            "access_token": token_data["access_token"],
+            "is_first_connection": is_first_connection
         }
     
     def refresh_access_token(self, strava_account: StravaAccount) -> bool:
