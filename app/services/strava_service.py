@@ -1,18 +1,24 @@
-import requests
 import json
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from typing import List, Optional, Dict, Any
-from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, or_, func, desc
-from app.models.strava import StravaAccount, StravaActivity, StravaWebhook
-from app.models.workout import Workout, WorkoutStatus
-from app.models.user import User, UserProfile, PerformanceMetrics
-from app.models.training_metrics import TrainingMetrics
-from app.services.metrics_calculation_service import MetricsCalculationService
-from app.config import settings
-import logging
 
-logger = logging.getLogger(__name__)
+import requests
+from loguru import logger
+from sqlalchemy import select, and_, or_, func, desc
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.models.strava import (
+    StravaAccount,
+    StravaActivity,
+    StravaWebhook,
+    StravaSyncJob,
+    StravaSyncJobStatus,
+)
+from app.models.training_metrics import TrainingMetrics
+from app.models.user import User, UserProfile, PerformanceMetrics
+from app.models.workout import Workout, WorkoutStatus
+from app.services.metrics_calculation_service import MetricsCalculationService
 
 
 class StravaService:
@@ -21,6 +27,88 @@ class StravaService:
         self.base_url = "https://www.strava.com/api/v3"
         self.auth_url = "https://www.strava.com/oauth"
         self.metrics_service = MetricsCalculationService()
+
+    # ------------------------------------------------------------------
+    # Sync job helpers
+    # ------------------------------------------------------------------
+    def create_sync_job(
+        self,
+        user_id: int,
+        strava_account_id: int,
+        job_type: str = "initial_sync",
+        status_message: Optional[str] = None,
+        requested_days_back: int = 30,
+    ) -> StravaSyncJob:
+        """Create a sync job entry that can be tracked by the frontend."""
+        job = StravaSyncJob(
+            user_id=user_id,
+            strava_account_id=strava_account_id,
+            job_type=job_type,
+            status=StravaSyncJobStatus.PENDING,
+            status_message=status_message,
+            requested_days_back=requested_days_back,
+        )
+        self.db.add(job)
+        self.db.commit()
+        self.db.refresh(job)
+        return job
+
+    def get_sync_job(self, job_id: int) -> Optional[StravaSyncJob]:
+        return self.db.get(StravaSyncJob, job_id)
+
+    def get_latest_sync_jobs(self, user_id: int, limit: int = 5) -> List[StravaSyncJob]:
+        return (
+            self.db.query(StravaSyncJob)
+            .filter(StravaSyncJob.user_id == user_id)
+            .order_by(StravaSyncJob.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def _update_sync_job(
+        self,
+        job: StravaSyncJob,
+        *,
+        status: Optional[str] = None,
+        status_message: Optional[str] = None,
+        total_activities: Optional[int] = None,
+        processed_activities: Optional[int] = None,
+        metrics_phase: Optional[int] = None,
+        metrics_phases_total: Optional[int] = None,
+        error: Optional[str] = None,
+        started_at: Optional[datetime] = None,
+        finished_at: Optional[datetime] = None,
+        result: Optional[Dict[str, Any]] = None,
+        commit: bool = True,
+    ) -> StravaSyncJob:
+        if status is not None:
+            job.status = status
+        if status_message is not None:
+            job.status_message = status_message
+        if total_activities is not None:
+            job.total_activities = total_activities
+        if processed_activities is not None:
+            job.processed_activities = processed_activities
+        if metrics_phase is not None:
+            job.metrics_phase = metrics_phase
+        if metrics_phases_total is not None:
+            job.metrics_phases_total = metrics_phases_total
+        if error is not None:
+            job.error = error
+        if started_at is not None:
+            job.started_at = started_at
+        if finished_at is not None:
+            job.finished_at = finished_at
+        if result is not None:
+            job.result = result
+
+        self.db.add(job)
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
+        return job
+
     
     def _parse_json_field(self, field_value) -> Optional[Dict[str, Any]]:
         """
@@ -61,12 +149,33 @@ class StravaService:
             "grant_type": "authorization_code"
         }
         
-        response = requests.post(f"{self.auth_url}/token", data=data)
+        masked_code = f"{code[:6]}..." if len(code) > 6 else code
+        logger.info(
+            f"[STRAVA_AUTH] Exchanging code for token (user={user_id}, code={masked_code})"
+        )
+        try:
+            response = requests.post(
+                f"{self.auth_url}/token",
+                data=data,
+                timeout=15,
+            )
+        except requests.exceptions.RequestException as exc:
+            logger.exception(
+                f"[STRAVA_AUTH] Token exchange request failed (user={user_id}): {exc}"
+            )
+            raise Exception("Failed to reach Strava API for token exchange") from exc
         
         if response.status_code != 200:
+            logger.error(
+                f"[STRAVA_AUTH] Token exchange returned {response.status_code} for user {user_id}: {response.text}"
+            )
             raise Exception(f"Failed to exchange code: {response.text}")
         
         token_data = response.json()
+        logger.debug(
+            f"[STRAVA_AUTH] Token exchange successful for user {user_id}: "
+            f"athlete_id={token_data.get('athlete', {}).get('id')}"
+        )
         
         # Check if this is a reconnection (account already exists for this user)
         existing_account = self.db.execute(
@@ -108,29 +217,12 @@ class StravaService:
         self.db.commit()
         self.db.refresh(strava_account)
         
-        # If first connection, sync activities and calculate all metrics
-        if is_first_connection:
-            logger.info(f"[STRAVA_AUTH] First connection detected - syncing activities and calculating metrics")
-            try:
-                # Sync activities (last 90 days)
-                sync_result = self.sync_user_activities(user_id, days_back=90)
-                logger.info(f"[STRAVA_AUTH] Initial sync complete: {sync_result.get('new_activities', 0)} activities synced")
-                
-                # Metrics are already calculated during sync, but ensure all are calculated
-                # This is redundant but ensures completeness for first connection
-                if sync_result.get('new_activities', 0) > 0:
-                    logger.info(f"[STRAVA_AUTH] Verifying all metrics are calculated...")
-                    recalc_result = self.recalculate_all_metrics(user_id)
-                    logger.info(f"[STRAVA_AUTH] Metrics calculation complete: {recalc_result.get('metrics_calculated', 0)} calculated")
-            except Exception as e:
-                logger.error(f"[STRAVA_AUTH] Error during initial sync/metrics calculation: {e}")
-                # Don't fail the connection if sync fails
-        
         return {
             "strava_account_id": strava_account.id,
             "athlete": token_data["athlete"],
             "access_token": token_data["access_token"],
-            "is_first_connection": is_first_connection
+            "is_first_connection": is_first_connection,
+            "initial_sync_required": is_first_connection,
         }
     
     def refresh_access_token(self, strava_account: StravaAccount) -> bool:
@@ -317,9 +409,28 @@ class StravaService:
             logger.warning(f"Request error fetching streams for activity {activity_id}: {e}")
             raise Exception(f"Failed to fetch activity streams: {str(e)}")
     
-    def sync_user_activities(self, user_id: int, days_back: int = 30) -> Dict[str, Any]:
+    def sync_user_activities(
+        self,
+        user_id: int,
+        days_back: int = 30,
+        job: Optional[StravaSyncJob] = None,
+    ) -> Dict[str, Any]:
         """Sync user's Strava activities"""
         logger.info(f"[SYNC] Starting sync for user {user_id}, days_back={days_back}")
+
+        if job:
+            self._update_sync_job(
+                job,
+                status=StravaSyncJobStatus.RUNNING,
+                status_message=f"Fetching activities from Strava (last {days_back} days)",
+                processed_activities=0,
+                total_activities=0,
+                metrics_phase=0,
+                metrics_phases_total=0,
+                error=None,
+                result=None,
+                started_at=datetime.now(timezone.utc),
+            )
         
         # Get user's Strava account
         strava_account = self.db.execute(
@@ -329,14 +440,29 @@ class StravaService:
         
         if not strava_account:
             logger.error(f"[SYNC] No Strava account found for user {user_id}")
+            if job:
+                self._update_sync_job(
+                    job,
+                    status=StravaSyncJobStatus.FAILED,
+                    status_message="No Strava account found",
+                    finished_at=datetime.now(timezone.utc),
+                    error="No Strava account found for user",
+                )
             raise Exception("No Strava account found for user")
         
         logger.info(f"[SYNC] Found Strava account {strava_account.id} for user {user_id}")
         
         # Fetch activities
-        logger.info(f"[SYNC] Fetching activities from Strava API...")
+        logger.info(
+            f"[SYNC] Fetching activities from Strava API (account={strava_account.id})"
+        )
         activities = self.fetch_athlete_activities(strava_account)
         logger.info(f"[SYNC] Fetched {len(activities)} total activities from Strava")
+        if job:
+            self._update_sync_job(
+                job,
+                status_message=f"Fetched {len(activities)} activities. Filtering by date...",
+            )
         
         # Filter activities by date
         from datetime import timezone
@@ -346,6 +472,12 @@ class StravaService:
             if datetime.fromisoformat(activity["start_date"].replace("Z", "+00:00")) >= cutoff_date
         ]
         logger.info(f"[SYNC] Filtered to {len(recent_activities)} activities in last {days_back} days")
+        if job:
+            self._update_sync_job(
+                job,
+                total_activities=len(recent_activities),
+                status_message=f"Processing {len(recent_activities)} activities from the last {days_back} days",
+            )
         
         synced_count = 0
         updated_count = 0
@@ -353,7 +485,8 @@ class StravaService:
         new_activities = []
         updated_activities = []
         
-        logger.info(f"[SYNC] Processing {len(recent_activities)} activities...")
+        total_recent = len(recent_activities)
+        logger.info(f"[SYNC] Processing {total_recent} activities...")
         for idx, activity_data in enumerate(recent_activities, 1):
             # Check if activity already exists using strava_activity_id
             existing_activity = self.db.execute(
@@ -385,6 +518,14 @@ class StravaService:
                     updated_count += 1
                 else:
                     synced_count += 1
+                if job:
+                    commit_progress = idx % 5 == 0 or idx == total_recent
+                    self._update_sync_job(
+                        job,
+                        processed_activities=idx,
+                        status_message=f"Processing Strava activities ({idx}/{total_recent})",
+                        commit=commit_progress,
+                    )
                 continue
             
             # Create new Strava activity
@@ -392,6 +533,16 @@ class StravaService:
             self.db.add(strava_activity)
             new_activities.append(strava_activity)
             new_count += 1
+
+            if job:
+                commit_progress = idx % 5 == 0 or idx == total_recent
+                self._update_sync_job(
+                    job,
+                    processed_activities=idx,
+                    status_message=f"Processing Strava activities ({idx}/{total_recent})",
+                    commit=commit_progress,
+                )
+
         
         # Commit activities first so we can calculate metrics
         logger.info(f"[SYNC] Committing {new_count} new and {updated_count} updated activities to database...")
@@ -403,6 +554,15 @@ class StravaService:
         metrics_recalculated = 0
         metrics_errors = 0
         logger.info(f"[SYNC] Starting metrics calculation phase...")
+        metrics_total = len(new_activities) + len(updated_activities)
+        metrics_processed = 0
+        if job:
+            self._update_sync_job(
+                job,
+                status_message="Calculating metrics for synchronized activities",
+                metrics_phase=metrics_processed,
+                metrics_phases_total=metrics_total,
+            )
         
         # Process new activities
         if new_activities:
@@ -417,10 +577,20 @@ class StravaService:
                     training_metrics = self.calculate_activity_metrics(strava_activity, user_id)
                     self.db.add(training_metrics)
                     metrics_calculated += 1
+                    metrics_processed += 1
                     
                     # Log progress every 10 activities to show the process is working
                     if idx % 10 == 0:
                         logger.info(f"[SYNC][METRICS] Processed {idx}/{len(new_activities)} new activities (calculated: {metrics_calculated}, errors: {metrics_errors})")
+                    if job:
+                        commit_progress = (metrics_processed % 5 == 0) or (metrics_processed == metrics_total)
+                        self._update_sync_job(
+                            job,
+                            status_message=f"Calculating metrics ({metrics_processed}/{metrics_total})",
+                            metrics_phase=metrics_processed,
+                            metrics_phases_total=metrics_total,
+                            commit=commit_progress,
+                        )
                 except Exception as e:
                     logger.error(f"[SYNC][METRICS] Error calculating metrics for activity {strava_activity.strava_activity_id}: {e}")
                     metrics_errors += 1
@@ -455,10 +625,20 @@ class StravaService:
                         logger.debug(f"[SYNC][METRICS] Created new metrics for activity {strava_activity.id}")
                     
                     metrics_recalculated += 1
+                    metrics_processed += 1
                     
                     # Log progress every 10 activities to show the process is working
                     if idx % 10 == 0:
                         logger.info(f"[SYNC][METRICS] Processed {idx}/{len(updated_activities)} updated activities (recalculated: {metrics_recalculated}, errors: {metrics_errors})")
+                    if job:
+                        commit_progress = (metrics_processed % 5 == 0) or (metrics_processed == metrics_total)
+                        self._update_sync_job(
+                            job,
+                            status_message=f"Calculating metrics ({metrics_processed}/{metrics_total})",
+                            metrics_phase=metrics_processed,
+                            metrics_phases_total=metrics_total,
+                            commit=commit_progress,
+                        )
                 except Exception as e:
                     logger.error(f"[SYNC][METRICS] Error recalculating metrics for activity {strava_activity.strava_activity_id}: {e}")
                     metrics_errors += 1
@@ -472,6 +652,13 @@ class StravaService:
             logger.info(f"[SYNC][METRICS] Successfully committed metrics ({metrics_calculated} new, {metrics_recalculated} updated)")
         else:
             logger.info(f"[SYNC][METRICS] No metrics to commit")
+        if job:
+            self._update_sync_job(
+                job,
+                status_message="Updating daily metrics",
+                metrics_phase=metrics_total,
+                metrics_phases_total=metrics_total,
+            )
         
         # After sync, recalculate daily metrics for all affected dates
         # This ensures consistency after sync
@@ -488,6 +675,12 @@ class StravaService:
                     affected_dates.add(activity.start_date.date())
             
             logger.info(f"[SYNC][DAILY] Updating daily metrics for {len(affected_dates)} affected dates")
+            daily_total = len(affected_dates)
+            if job and daily_total:
+                self._update_sync_job(
+                    job,
+                    status_message=f"Updating daily metrics (0/{daily_total})",
+                )
             
             # Update daily metrics for all affected dates
             for idx, activity_date in enumerate(sorted(affected_dates), 1):
@@ -495,6 +688,13 @@ class StravaService:
                     logger.debug(f"[SYNC][DAILY] Updating daily metrics for date {activity_date} ({idx}/{len(affected_dates)})")
                     daily_metrics_service.update_daily_metrics(user_id, activity_date)
                     daily_metrics_updated += 1
+                    if job and daily_total:
+                        commit_progress = (idx % 5 == 0) or (idx == daily_total)
+                        self._update_sync_job(
+                            job,
+                            status_message=f"Updating daily metrics ({idx}/{daily_total})",
+                            commit=commit_progress,
+                        )
                 except Exception as e:
                     logger.warning(f"[SYNC][DAILY] Failed to update daily metrics for {activity_date} after sync: {e}")
             
@@ -519,6 +719,14 @@ class StravaService:
         }
         
         logger.info(f"[SYNC] Sync completed successfully: {result}")
+        if job:
+            self._update_sync_job(
+                job,
+                status=StravaSyncJobStatus.SUCCESS,
+                status_message="Sync completed successfully",
+                finished_at=datetime.now(timezone.utc),
+                result=result,
+            )
         return result
     
     def _create_strava_activity(self, strava_account: StravaAccount, 

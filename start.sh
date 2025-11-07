@@ -158,7 +158,7 @@ else:
     print('  📍 OAuth URL: https://accounts.google.com/o/oauth2/v2/auth')
 
 # Run database migrations
-print('\\n🔄 Running database migrations...')
+print('\n🔄 Running database migrations...')
 try:
     from alembic.config import Config
     from alembic import command
@@ -168,6 +168,49 @@ try:
 except Exception as e:
     print(f'⚠ Database migrations failed: {str(e)}')
     print('ℹ Tables may already exist, continuing...')
+
+# Ensure strava_sync_jobs table exists even if legacy migrations were skipped
+print('\n🛠  Ensuring Strava sync jobs table exists...')
+try:
+    from sqlalchemy import inspect
+    inspector = inspect(engine)
+    table_names = inspector.get_table_names()
+    if 'strava_sync_jobs' not in table_names:
+        with engine.begin() as conn:
+            conn.execute(text('''
+                CREATE TABLE IF NOT EXISTS strava_sync_jobs (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    strava_account_id INTEGER NOT NULL,
+                    job_type VARCHAR(50) NOT NULL DEFAULT 'initial_sync',
+                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                    status_message TEXT,
+                    total_activities INTEGER NOT NULL DEFAULT 0,
+                    processed_activities INTEGER NOT NULL DEFAULT 0,
+                    metrics_phase INTEGER NOT NULL DEFAULT 0,
+                    metrics_phases_total INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    started_at TIMESTAMPTZ,
+                    finished_at TIMESTAMPTZ,
+                    requested_days_back INTEGER NOT NULL DEFAULT 30,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ,
+                    result JSONB,
+                    CONSTRAINT fk_strava_sync_jobs_user_id FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_strava_sync_jobs_account_id FOREIGN KEY(strava_account_id) REFERENCES strava_accounts(id) ON DELETE CASCADE
+                );
+            '''))
+            conn.execute(text('''CREATE INDEX IF NOT EXISTS ix_strava_sync_jobs_user_id ON strava_sync_jobs (user_id);'''))
+            conn.execute(text('''CREATE INDEX IF NOT EXISTS ix_strava_sync_jobs_strava_account_id ON strava_sync_jobs (strava_account_id);'''))
+        print('✓ Created strava_sync_jobs table')
+    else:
+        # Ensure indexes exist even if table already present
+        with engine.begin() as conn:
+            conn.execute(text('''CREATE INDEX IF NOT EXISTS ix_strava_sync_jobs_user_id ON strava_sync_jobs (user_id);'''))
+            conn.execute(text('''CREATE INDEX IF NOT EXISTS ix_strava_sync_jobs_strava_account_id ON strava_sync_jobs (strava_account_id);'''))
+        print('✓ Strava sync jobs table already present')
+except Exception as e:
+    print(f'⚠ Failed to verify/create strava_sync_jobs table: {e}')
 
 print('\\n📊 Connection Status Summary:')
 print('==================================================')
@@ -335,17 +378,7 @@ else
     print_status "warning" "Google OAuth not configured (Google auth disabled)"
 fi
 
-# Run database migrations
-echo -e "\n${BLUE}🔄 Running database migrations...${NC}"
-alembic upgrade head > /dev/null 2>&1
-if [ $? -eq 0 ]; then
-    print_status "success" "Database migrations completed"
-else
-    print_status "error" "Database migrations failed"
-    exit 1
-fi
-
-# Final status summary
+# Final status summary (post-start checks)
 echo -e "\n${BLUE}📊 Connection Status Summary:${NC}"
 echo "=================================================="
 

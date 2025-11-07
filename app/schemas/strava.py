@@ -93,6 +93,35 @@ class StravaCallbackResponse(BaseModel):
     message: str
     strava_account_id: Optional[int] = None
     athlete: Optional[Dict[str, Any]] = None
+    sync_job_id: Optional[int] = None
+    sync_job_status: Optional[str] = None
+
+
+class StravaSyncJobResponse(BaseModel):
+    id: int
+    user_id: int
+    strava_account_id: int
+    job_type: str
+    status: str
+    status_message: Optional[str] = None
+    total_activities: int
+    processed_activities: int
+    metrics_phase: int
+    metrics_phases_total: int
+    error: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    requested_days_back: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    result: Optional[Dict[str, Any]] = None
+
+    class Config:
+        from_attributes = True
+
+
+class StravaSyncJobListResponse(BaseModel):
+    jobs: List[StravaSyncJobResponse]
 
 
 

@@ -1,19 +1,30 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import Response
-from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, func
-from typing import List, Optional
 from datetime import datetime
-from app.database import get_db
+from typing import List, Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi.responses import Response
+from sqlalchemy import select, and_, func
+from sqlalchemy.orm import Session
+
+from loguru import logger
+
+from app.api.auth import get_current_user
 from app.config import settings
+from app.database import get_db
+from app.models.strava import StravaAccount
 from app.schemas.strava import (
-    StravaAccountResponse, StravaActivityResponse, StravaSyncRequest,
-    StravaSyncResponse, StravaMatchResponse, StravaAuthResponse,
-    StravaCallbackRequest, StravaCallbackResponse
+    StravaAccountResponse,
+    StravaActivityResponse,
+    StravaAuthResponse,
+    StravaCallbackRequest,
+    StravaCallbackResponse,
+    StravaMatchResponse,
+    StravaSyncJobListResponse,
+    StravaSyncJobResponse,
+    StravaSyncRequest,
 )
 from app.services.strava_service import StravaService
-from app.api.auth import get_current_user
-from app.models.strava import StravaAccount
+from app.tasks.strava_tasks import run_strava_sync_job
 
 router = APIRouter(prefix="/strava", tags=["strava"])
 
@@ -48,8 +59,12 @@ async def options_strava_activities():
 async def get_strava_auth_url(current_user: dict = Depends(get_current_user),
                              db: Session = Depends(get_db)):
     """Get Strava OAuth authorization URL"""
+    logger.info(f"[STRAVA_AUTH][AUTH_URL] Generating Strava auth URL for user {current_user['user_id']}")
     strava_service = StravaService(db)
     auth_url = strava_service.get_auth_url(current_user["user_id"])
+    logger.debug(
+        f"[STRAVA_AUTH][AUTH_URL] Generated URL for user {current_user['user_id']}: {auth_url}"
+    )
     
     return StravaAuthResponse(
         auth_url=auth_url,
@@ -59,24 +74,54 @@ async def get_strava_auth_url(current_user: dict = Depends(get_current_user),
 
 @router.get("/auth/callback")
 async def strava_auth_callback_get(
+    background_tasks: BackgroundTasks,
     code: str = Query(...),
     state: str = Query(...),
     db: Session = Depends(get_db)
 ):
     """Handle Strava OAuth callback (GET request)"""
+    masked_code = f"{code[:6]}..." if len(code) > 6 else code
+    logger.info(
+        f"[STRAVA_AUTH][CALLBACK][GET] Received callback for state={state} with code={masked_code}"
+    )
     try:
         strava_service = StravaService(db)
+        user_id = int(state)
         result = strava_service.exchange_code_for_token(
             code=code,
-            user_id=int(state)
+            user_id=user_id
         )
+        logger.info(
+            f"[STRAVA_AUTH][CALLBACK][GET] Token exchange succeeded for user {state} "
+            f"(account={result.get('strava_account_id')}, first_connection={result.get('is_first_connection')})"
+        )
+        sync_job_id = None
+        if result.get("initial_sync_required"):
+            sync_job = strava_service.create_sync_job(
+                user_id=user_id,
+                strava_account_id=result["strava_account_id"],
+                job_type="initial_sync",
+                status_message="Initial Strava synchronization queued",
+                requested_days_back=90,
+            )
+            background_tasks.add_task(run_strava_sync_job, sync_job.id, 90)
+            sync_job_id = sync_job.id
+            logger.info(
+                f"[STRAVA_AUTH][CALLBACK][GET] Scheduled initial sync job {sync_job_id} for user {user_id}"
+            )
         
         # Redirect to frontend with success message
         from fastapi.responses import RedirectResponse
+        redirect_url = f"{settings.frontend_callback_uri}?success=true&strava_connected=true"
+        if sync_job_id:
+            redirect_url += f"&sync_job_id={sync_job_id}"
         return RedirectResponse(
-            url=f"http://localhost:8080/auth/callback?success=true&strava_connected=true"
+            url=redirect_url
         )
     except Exception as e:
+        logger.exception(
+            f"[STRAVA_AUTH][CALLBACK][GET] Token exchange failed for state={state}: {e}"
+        )
         # Redirect to frontend with error message
         from fastapi.responses import RedirectResponse
         return RedirectResponse(
@@ -85,23 +130,54 @@ async def strava_auth_callback_get(
 
 
 @router.post("/auth/callback", response_model=StravaCallbackResponse)
-async def strava_auth_callback(request: StravaCallbackRequest,
-                              db: Session = Depends(get_db)):
+async def strava_auth_callback(
+    request: StravaCallbackRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     """Handle Strava OAuth callback (POST request)"""
+    masked_code = f"{request.code[:6]}..." if len(request.code) > 6 else request.code
+    logger.info(
+        f"[STRAVA_AUTH][CALLBACK][POST] Processing callback for state={request.state} with code={masked_code}"
+    )
     try:
         strava_service = StravaService(db)
+        user_id = int(request.state)
         result = strava_service.exchange_code_for_token(
             code=request.code,
-            user_id=int(request.state)
+            user_id=user_id
         )
+        logger.info(
+            f"[STRAVA_AUTH][CALLBACK][POST] Token exchange succeeded for user {request.state} "
+            f"(account={result.get('strava_account_id')}, first_connection={result.get('is_first_connection')})"
+        )
+        sync_job_id = None
+        if result.get("initial_sync_required"):
+            sync_job = strava_service.create_sync_job(
+                user_id=user_id,
+                strava_account_id=result["strava_account_id"],
+                job_type="initial_sync",
+                status_message="Initial Strava synchronization queued",
+                requested_days_back=90,
+            )
+            background_tasks.add_task(run_strava_sync_job, sync_job.id, 90)
+            sync_job_id = sync_job.id
+            logger.info(
+                f"[STRAVA_AUTH][CALLBACK][POST] Scheduled initial sync job {sync_job_id} for user {user_id}"
+            )
         
         return StravaCallbackResponse(
             success=True,
             message="Strava account connected successfully",
             strava_account_id=result["strava_account_id"],
-            athlete=result["athlete"]
+            athlete=result["athlete"],
+            sync_job_id=sync_job_id,
+            sync_job_status="pending" if sync_job_id else None,
         )
     except Exception as e:
+        logger.exception(
+            f"[STRAVA_AUTH][CALLBACK][POST] Token exchange failed for state={request.state}: {e}"
+        )
         return StravaCallbackResponse(
             success=False,
             message=f"Failed to connect Strava account: {str(e)}"
@@ -190,23 +266,50 @@ async def disconnect_strava_account(current_user: dict = Depends(get_current_use
 
 
 # Activity Synchronization
-@router.post("/sync", response_model=StravaSyncResponse)
-async def sync_strava_activities(request: StravaSyncRequest,
-                                current_user: dict = Depends(get_current_user),
-                                db: Session = Depends(get_db)):
-    """Sync Strava activities"""
+@router.post("/sync", response_model=StravaSyncJobResponse)
+async def sync_strava_activities(
+    request: StravaSyncRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Queue Strava activities synchronization as a background job."""
     try:
+        strava_account = db.execute(
+            select(StravaAccount).where(
+                StravaAccount.user_id == current_user["user_id"]
+            )
+        ).scalar_one_or_none()
+        if not strava_account:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No Strava account connected",
+            )
+
         strava_service = StravaService(db)
-        result = strava_service.sync_user_activities(
+        job = strava_service.create_sync_job(
             user_id=current_user["user_id"],
-            days_back=request.days_back
+            strava_account_id=strava_account.id,
+            job_type="manual_sync",
+            status_message=f"Manual sync queued for the last {request.days_back} days",
+            requested_days_back=request.days_back,
         )
-        
-        return StravaSyncResponse(**result)
+        background_tasks.add_task(
+            run_strava_sync_job,
+            job.id,
+            request.days_back,
+        )
+        logger.info(
+            f"[SYNC][JOB] Queued manual sync job {job.id} for user {current_user['user_id']}"
+        )
+        return job
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.exception(f"[SYNC][JOB] Failed to queue manual sync: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to sync activities: {str(e)}"
+            detail=f"Failed to queue sync job: {str(e)}",
         )
 
 
@@ -226,6 +329,35 @@ async def match_activities_with_workouts(current_user: dict = Depends(get_curren
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to match activities: {str(e)}"
         )
+
+
+@router.get("/sync/jobs/latest", response_model=StravaSyncJobListResponse)
+async def get_latest_sync_jobs(
+    limit: int = Query(5, ge=1, le=20),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the latest Strava sync jobs for the current user."""
+    strava_service = StravaService(db)
+    jobs = strava_service.get_latest_sync_jobs(current_user["user_id"], limit=limit)
+    return StravaSyncJobListResponse(jobs=jobs)
+
+
+@router.get("/sync/jobs/{job_id}", response_model=StravaSyncJobResponse)
+async def get_sync_job(
+    job_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return details for a specific Strava sync job."""
+    strava_service = StravaService(db)
+    job = strava_service.get_sync_job(job_id)
+    if not job or job.user_id != current_user["user_id"]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sync job not found",
+        )
+    return job
 
 
 # Activity Management

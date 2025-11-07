@@ -14,7 +14,12 @@ class DailyMetricsService:
         self.db = db
         self.metrics_service = MetricsCalculationService()
     
-    def update_daily_metrics(self, user_id: int, activity_date: date) -> DailyPerformanceMetrics:
+    def update_daily_metrics(
+        self,
+        user_id: int,
+        activity_date: date,
+        propagate: bool = True
+    ) -> DailyPerformanceMetrics:
         """
         Aggiorna i metric giornalieri quando viene aggiunta/modificata un'attività
         
@@ -104,9 +109,10 @@ class DailyMetricsService:
         self.db.commit()
         self.db.refresh(record)
         
-        # 5. Propaga aggiornamento ai giorni successivi fino a oggi (solo se necessario)
+        # 5. Propaga aggiornamento ai giorni successivi fino a oggi (solo se richiesto)
         # Questo assicura che tutti i giorni successivi siano aggiornati
-        self._propagate_metrics_forward(user_id, activity_date, date.today())
+        if propagate:
+            self._propagate_metrics_forward(user_id, activity_date, date.today())
         
         return record
     
@@ -131,7 +137,7 @@ class DailyMetricsService:
                 break
             
             # Ricalcola questo giorno
-            self.update_daily_metrics(user_id, current_date)
+            self.update_daily_metrics(user_id, current_date, propagate=False)
             current_date += timedelta(days=1)
     
     def _calculate_from_history(self, user_id: int, target_date: date) -> Dict[str, float]:

@@ -1,4 +1,15 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, JSON, Float, Boolean, BigInteger
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    DateTime,
+    ForeignKey,
+    Text,
+    JSON,
+    Float,
+    Boolean,
+    BigInteger,
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -29,6 +40,7 @@ class StravaAccount(Base):
     # Relationships
     # user = relationship("User", back_populates="strava_account")  # Temporarily disabled
     activities = relationship("StravaActivity", back_populates="strava_account")
+    sync_jobs = relationship("StravaSyncJob", back_populates="strava_account")
 
 
 class StravaActivity(Base):
@@ -134,3 +146,34 @@ class StravaWebhook(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     processed_at = Column(DateTime(timezone=True))
+
+
+class StravaSyncJobStatus:
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
+class StravaSyncJob(Base):
+    __tablename__ = "strava_sync_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    strava_account_id = Column(Integer, ForeignKey("strava_accounts.id"), nullable=False)
+    job_type = Column(String(50), default="initial_sync")
+    status = Column(String(20), default=StravaSyncJobStatus.PENDING)
+    status_message = Column(Text)
+    total_activities = Column(Integer, default=0)
+    processed_activities = Column(Integer, default=0)
+    metrics_phase = Column(Integer, default=0)
+    metrics_phases_total = Column(Integer, default=0)
+    error = Column(Text)
+    started_at = Column(DateTime(timezone=True))
+    finished_at = Column(DateTime(timezone=True))
+    requested_days_back = Column(Integer, default=30)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    result = Column(JSON)
+
+    strava_account = relationship("StravaAccount", back_populates="sync_jobs")
