@@ -252,7 +252,6 @@ class StravaService:
     
     def get_valid_access_token(self, strava_account: StravaAccount) -> Optional[str]:
         """Get valid access token, refreshing if necessary"""
-        from datetime import timezone
         if datetime.now(timezone.utc) >= strava_account.token_expires_at:
             if not self.refresh_access_token(strava_account):
                 return None
@@ -465,7 +464,6 @@ class StravaService:
             )
         
         # Filter activities by date
-        from datetime import timezone
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_back)
         recent_activities = [
             activity for activity in activities 
