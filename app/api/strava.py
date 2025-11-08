@@ -108,7 +108,7 @@ async def strava_auth_callback_get(
             sync_job_id = sync_job.id
             logger.info(
                 f"[STRAVA_AUTH][CALLBACK][GET] Scheduled initial sync job {sync_job_id} for user {user_id}"
-            )
+        )
         
         # Redirect to frontend with success message
         from fastapi.responses import RedirectResponse
@@ -164,7 +164,7 @@ async def strava_auth_callback(
             sync_job_id = sync_job.id
             logger.info(
                 f"[STRAVA_AUTH][CALLBACK][POST] Scheduled initial sync job {sync_job_id} for user {user_id}"
-            )
+        )
         
         return StravaCallbackResponse(
             success=True,
@@ -270,7 +270,7 @@ async def disconnect_strava_account(current_user: dict = Depends(get_current_use
 async def sync_strava_activities(
     request: StravaSyncRequest,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user),
+                                current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Queue Strava activities synchronization as a background job."""

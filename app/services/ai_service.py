@@ -14,6 +14,10 @@ from loguru import logger
 class PlanGenerationError(Exception):
     """Raised when an AI workout plan chunk cannot be parsed or assembled."""
 
+    def __init__(self, message: str, raw_chunks: Optional[List[Dict[str, Any]]] = None):
+        super().__init__(message)
+        self.raw_chunks = raw_chunks or []
+
 
 class AIService:
     def __init__(self, db: Optional[Session] = None):
@@ -158,6 +162,8 @@ class AIService:
         except PlanGenerationError as exc:
             error_message = str(exc)
             logger.warning(f"[WORKOUT_PLAN] {error_message} - falling back to text response")
+            if exc.raw_chunks:
+                raw_chunks = exc.raw_chunks
             plan_data = self._build_fallback_plan(request, total_weeks, raw_chunks)
         finally:
             combined_prompt = self._combine_prompts(raw_chunks)
@@ -248,7 +254,8 @@ class AIService:
                     error_message=str(exc),
                 )
                 raise PlanGenerationError(
-                    f"Failed to parse AI response for weeks {week_start}-{week_end}: {exc}"
+                    f"Failed to parse AI response for weeks {week_start}-{week_end}: {exc}",
+                    raw_chunks=list(raw_chunks),
                 ) from exc
 
             weeks = partial_plan.get("weeks")
@@ -266,7 +273,8 @@ class AIService:
                     error_message=error_detail,
                 )
                 raise PlanGenerationError(
-                    f"Failed to generate workouts for weeks {week_start}-{week_end}: no weeks returned"
+                    f"Failed to generate workouts for weeks {week_start}-{week_end}: no weeks returned",
+                    raw_chunks=list(raw_chunks),
                 )
 
             combined_weeks.extend(weeks)
@@ -707,6 +715,7 @@ class AIService:
         - Ensure progression is appropriate for the user's level and available training time
         - ALWAYS prioritize safety: if physical_notes are present, carefully read and adapt workouts accordingly
         - Include modifications or alternatives in the description or modifications field when necessary to accommodate physical constraints
+        - The output MUST be valid JSON (double quotes for all keys/strings, no comments, no trailing commas, no explanations outside the JSON payload)
         """
 
         if week_start is not None and week_end is not None:
