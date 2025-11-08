@@ -212,6 +212,39 @@ try:
 except Exception as e:
     print(f'⚠ Failed to verify/create strava_sync_jobs table: {e}')
 
+# Ensure ai_response_logs table exists
+print('\n🧠 Ensuring AI response logs table exists...')
+try:
+    from sqlalchemy import inspect
+    inspector = inspect(engine)
+    table_names = inspector.get_table_names()
+    if 'ai_response_logs' not in table_names:
+        with engine.begin() as conn:
+            conn.execute(text('''
+                CREATE TABLE IF NOT EXISTS ai_response_logs (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                    request_type VARCHAR(100) NOT NULL,
+                    model VARCHAR(100),
+                    prompt TEXT,
+                    request_payload JSONB,
+                    response TEXT,
+                    parse_success BOOLEAN NOT NULL DEFAULT TRUE,
+                    error_message TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            '''))
+            conn.execute(text('''CREATE INDEX IF NOT EXISTS ix_ai_response_logs_user_id ON ai_response_logs (user_id);'''))
+            conn.execute(text('''CREATE INDEX IF NOT EXISTS ix_ai_response_logs_request_type ON ai_response_logs (request_type);'''))
+        print('✓ Created ai_response_logs table')
+    else:
+        with engine.begin() as conn:
+            conn.execute(text('''CREATE INDEX IF NOT EXISTS ix_ai_response_logs_user_id ON ai_response_logs (user_id);'''))
+            conn.execute(text('''CREATE INDEX IF NOT EXISTS ix_ai_response_logs_request_type ON ai_response_logs (request_type);'''))
+        print('✓ AI response logs table already present')
+except Exception as e:
+    print(f'⚠ Failed to verify/create ai_response_logs table: {e}')
+
 print('\\n📊 Connection Status Summary:')
 print('==================================================')
 

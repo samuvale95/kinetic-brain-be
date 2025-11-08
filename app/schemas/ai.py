@@ -20,7 +20,9 @@ class WorkoutPlanGenerationRequest(BaseModel):
     sport_type: str = Field(..., min_length=1, max_length=50)
     level: str = Field(..., pattern="^(beginner|intermediate|advanced)$")
     goal: str = Field(..., min_length=1, max_length=200)
-    duration_weeks: int = Field(..., ge=1, le=52)
+    duration_weeks: Optional[int] = Field(None, ge=1, le=52)
+    start_date: Optional[str] = Field(None, description="Data di inizio piano (YYYY-MM-DD)")
+    target_date: Optional[str] = Field(None, description="Data obiettivo/fine piano (YYYY-MM-DD)")
     weekly_hours: Optional[float] = Field(None, gt=0, le=168, description="Ore settimanali disponibili (indicativo)")
     user_profile: Optional[Dict[str, Any]] = None
     preferences: Optional[Dict[str, Any]] = None

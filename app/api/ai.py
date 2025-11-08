@@ -16,7 +16,7 @@ async def generate_ai_response(request: AIRequest,
                               current_user: dict = Depends(get_current_user),
                               db: Session = Depends(get_db)):
     """Generate AI response for general queries"""
-    ai_service = AIService()
+    ai_service = AIService(db)
     
     try:
         response = ai_service.generate_response(request)
@@ -33,10 +33,13 @@ async def generate_workout_plan(request: WorkoutPlanGenerationRequest,
                                current_user: dict = Depends(get_current_user),
                                db: Session = Depends(get_db)):
     """Generate personalized workout plan using AI"""
-    ai_service = AIService()
+    ai_service = AIService(db)
     
     try:
-        plan_data = ai_service.generate_workout_plan(request)
+        plan_data = ai_service.generate_workout_plan(
+            request,
+            user_id=current_user["user_id"],
+        )
         return {"plan": plan_data}
     except Exception as e:
         raise HTTPException(
@@ -50,7 +53,7 @@ async def analyze_workout(request: WorkoutAnalysisRequest,
                          current_user: dict = Depends(get_current_user),
                          db: Session = Depends(get_db)):
     """Analyze workout performance using AI"""
-    ai_service = AIService()
+    ai_service = AIService(db)
     
     try:
         analysis = ai_service.analyze_workout(request)
@@ -67,7 +70,7 @@ async def get_suggestions(request: SuggestionRequest,
                          current_user: dict = Depends(get_current_user),
                          db: Session = Depends(get_db)):
     """Get AI suggestions based on context"""
-    ai_service = AIService()
+    ai_service = AIService(db)
     
     # Build context-specific prompt
     prompt = f"""

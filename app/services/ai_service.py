@@ -1,15 +1,23 @@
 import openai
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
+from sqlalchemy.orm import Session
 from app.config import settings
 from app.schemas.ai import AIRequest, AIResponse, WorkoutPlanGenerationRequest, WorkoutAnalysisRequest, WorkoutAnalysisResponse
+from app.models.ai import AIResponseLog
 import json
 from datetime import datetime, timedelta
+import math
 import os
 from loguru import logger
 
 
+class PlanGenerationError(Exception):
+    """Raised when an AI workout plan chunk cannot be parsed or assembled."""
+
+
 class AIService:
-    def __init__(self):
+    def __init__(self, db: Optional[Session] = None):
+        self.db = db
         openai.api_key = settings.openai_api_key
         self.client = openai.OpenAI(api_key=settings.openai_api_key)
         self.mock_mode = settings.mock_llm
@@ -65,34 +73,53 @@ class AIService:
             logger.exception(f"[AI] Full exception traceback:")
             raise Exception(f"AI service error: {str(e)}")
     
-    def generate_workout_plan(self, request: WorkoutPlanGenerationRequest) -> Dict[str, Any]:
+    def generate_workout_plan(
+        self,
+        request: WorkoutPlanGenerationRequest,
+        *,
+        user_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Generate a personalized workout plan using AI"""
         logger.info(f"[WORKOUT_PLAN] Starting workout plan generation - sport: {request.sport_type}, level: {request.level}, goal: {request.goal}")
-        logger.debug(f"[WORKOUT_PLAN] Request details: sport_type={request.sport_type}, level={request.level}, duration_weeks={request.duration_weeks}, weekly_hours={request.weekly_hours}, has_user_profile={request.user_profile is not None}, has_preferences={request.preferences is not None}")
-        
-        # Build prompt (same for both mock and real)
-        prompt = self._build_workout_plan_prompt(request)
-        logger.debug(f"[WORKOUT_PLAN] Prompt built - length: {len(prompt)} characters")
-        
-        # Log full request data for debugging
+        logger.debug(f"[WORKOUT_PLAN] Request details: sport_type={request.sport_type}, level={request.level}, duration_weeks={request.duration_weeks}, weekly_hours={request.weekly_hours}, has_user_profile={request.user_profile is not None}, has_preferences={request.preferences is not None}, start_date={request.start_date}, target_date={request.target_date}")
+
         request_data = {
             "sport_type": request.sport_type,
             "level": request.level,
             "goal": request.goal,
             "duration_weeks": request.duration_weeks,
+            "start_date": request.start_date,
+            "target_date": request.target_date,
             "weekly_hours": request.weekly_hours,
             "user_profile": request.user_profile,
             "preferences": request.preferences
         }
+
+        try:
+            total_weeks = self._resolve_plan_duration(request)
+        except ValueError as exc:
+            logger.error(f"[WORKOUT_PLAN] Unable to determine plan duration: {exc}")
+            raise
+
+        # Update request object/state with resolved duration for downstream usage
+        request.duration_weeks = total_weeks
+        request_data["resolved_duration_weeks"] = total_weeks
+
+        logger.info(f"[WORKOUT_PLAN] Resolved plan duration: {total_weeks} weeks")
         logger.info(f"[WORKOUT_PLAN] Full request data: {json.dumps(request_data, indent=2, default=str)}")
-        logger.debug(f"[WORKOUT_PLAN] Prompt preview (first 500 chars): {prompt[:500]}...")
-        
+
         if self.mock_mode:
             logger.info(f"[WORKOUT_PLAN] Using MOCK mode for plan generation")
+            prompt = self._build_workout_plan_prompt(
+                request,
+                duration_weeks=total_weeks,
+                week_start=1,
+                week_end=total_weeks,
+                previous_weeks_summary=None,
+            )
             logger.info(f"[WORKOUT_PLAN][MOCK] Building same prompt as real LLM to validate data flow")
             logger.debug(f"[WORKOUT_PLAN][MOCK] Prompt that would be sent to LLM: {prompt[:1000]}...")
-            
-            # Create AIRequest same as real LLM would receive
+
             ai_request = AIRequest(
                 prompt=prompt,
                 context=request.user_profile,
@@ -100,44 +127,318 @@ class AIService:
                 temperature=0.7
             )
             logger.info(f"[WORKOUT_PLAN][MOCK] AIRequest created - prompt_length: {len(ai_request.prompt)}, has_context: {ai_request.context is not None}, max_tokens: {ai_request.max_tokens}")
-            
+
             result = self._generate_mock_workout_plan(request, prompt, ai_request)
+            result["duration_weeks"] = total_weeks
             logger.info(f"[WORKOUT_PLAN][MOCK] Mock plan generated successfully - title: {result.get('title', 'N/A')}")
             logger.debug(f"[WORKOUT_PLAN][MOCK] Mock plan keys: {list(result.keys())}")
             return result
-        
-        ai_request = AIRequest(
-            prompt=prompt,
-            context=request.user_profile,
-            max_tokens=2000,
-            temperature=0.7
-        )
-        
-        response = self.generate_response(ai_request)
-        
+
+        raw_chunks: List[Dict[str, Any]] = []
+        parse_success = False
+        error_message: Optional[str] = None
+
         try:
-            # Try to parse as JSON, fallback to text if not valid JSON
-            plan_data = json.loads(response.response)
-            logger.info(f"[WORKOUT_PLAN] Successfully parsed AI response as JSON")
-            logger.debug(f"[WORKOUT_PLAN] Plan data keys: {list(plan_data.keys())}")
-            if 'weeks' in plan_data:
-                logger.info(f"[WORKOUT_PLAN] Plan contains {len(plan_data.get('weeks', []))} weeks")
-            return plan_data
-        except json.JSONDecodeError as e:
-            logger.warning(f"[WORKOUT_PLAN] Failed to parse AI response as JSON, using fallback: {str(e)}")
-            # Return structured text response
-            fallback_data = {
-                "title": f"{request.sport_type.title()} Training Plan - {request.level.title()}",
-                "description": response.response,
-                "sport_type": request.sport_type,
-                "level": request.level,
-                "goal": request.goal,
-                "duration_weeks": request.duration_weeks,
-                "weekly_hours": request.weekly_hours if request.weekly_hours else None
-            }
-            logger.info(f"[WORKOUT_PLAN] Using fallback structured response")
-            return fallback_data
+            plan_metadata, combined_weeks, raw_chunks = self._generate_plan_batches(
+                request=request,
+                total_weeks=total_weeks,
+                user_id=user_id,
+                base_request_payload=request_data,
+            )
+
+            plan_data = self._assemble_plan_data(
+                request=request,
+                total_weeks=total_weeks,
+                plan_metadata=plan_metadata,
+                weeks=combined_weeks,
+            )
+
+            logger.info(f"[WORKOUT_PLAN] Successfully assembled plan with {len(combined_weeks)} weeks across {len(raw_chunks)} chunk(s)")
+            parse_success = True
+        except PlanGenerationError as exc:
+            error_message = str(exc)
+            logger.warning(f"[WORKOUT_PLAN] {error_message} - falling back to text response")
+            plan_data = self._build_fallback_plan(request, total_weeks, raw_chunks)
+        finally:
+            combined_prompt = self._combine_prompts(raw_chunks)
+            combined_response = self._combine_raw_chunks(raw_chunks)
+
+            self._log_ai_response(
+                request_type="workout_plan",
+                user_id=user_id,
+                prompt=combined_prompt,
+                request_payload={**request_data, "chunk_count": len(raw_chunks)},
+                response_text=combined_response,
+                model=(raw_chunks[-1]["model"] if raw_chunks else None),
+                parse_success=parse_success,
+                error_message=error_message,
+            )
+
+        return plan_data
     
+    def _generate_plan_batches(
+        self,
+        *,
+        request: WorkoutPlanGenerationRequest,
+        total_weeks: int,
+        user_id: Optional[int],
+        base_request_payload: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Call the LLM in chunks and merge their responses."""
+        week_ranges = self._build_week_ranges(total_weeks, chunk_size=4)
+        logger.info(f"[WORKOUT_PLAN] Generating plan in {len(week_ranges)} chunk(s) of up to 4 weeks")
+
+        combined_weeks: List[Dict[str, Any]] = []
+        plan_metadata: Dict[str, Any] = {}
+        raw_chunks: List[Dict[str, Any]] = []
+        previous_summary: Optional[str] = None
+
+        for index, (week_start, week_end) in enumerate(week_ranges, start=1):
+            prompt = self._build_workout_plan_prompt(
+                request,
+                duration_weeks=total_weeks,
+                week_start=week_start,
+                week_end=week_end,
+                previous_weeks_summary=previous_summary,
+            )
+            logger.debug(f"[WORKOUT_PLAN][CHUNK {index}] Prompt length: {len(prompt)} characters")
+            logger.debug(f"[WORKOUT_PLAN][CHUNK {index}] Prompt preview: {prompt[:600]}...")
+
+            ai_request = AIRequest(
+                prompt=prompt,
+                context=request.user_profile,
+                max_tokens=2000,
+                temperature=0.7,
+            )
+
+            response = self.generate_response(ai_request)
+            response_text = response.response
+
+            chunk_payload = {
+                **base_request_payload,
+                "chunk_index": index,
+                "chunk_week_start": week_start,
+                "chunk_week_end": week_end,
+                "resolved_duration_weeks": total_weeks,
+            }
+
+            raw_chunks.append(
+                {
+                    "index": index,
+                    "week_start": week_start,
+                    "week_end": week_end,
+                    "prompt": prompt,
+                    "response": response_text,
+                    "model": response.model,
+                }
+            )
+
+            try:
+                partial_plan = json.loads(response_text)
+            except json.JSONDecodeError as exc:
+                logger.warning(f"[WORKOUT_PLAN][CHUNK {index}] JSON parsing failed: {exc}")
+                self._log_ai_response(
+                    request_type=f"workout_plan_chunk_{index}",
+                    user_id=user_id,
+                    prompt=prompt,
+                    request_payload=chunk_payload,
+                    response_text=response_text,
+                    model=response.model,
+                    parse_success=False,
+                    error_message=str(exc),
+                )
+                raise PlanGenerationError(
+                    f"Failed to parse AI response for weeks {week_start}-{week_end}: {exc}"
+                ) from exc
+
+            weeks = partial_plan.get("weeks")
+            if not isinstance(weeks, list) or len(weeks) == 0:
+                error_detail = "AI chunk returned no weeks"
+                logger.warning(f"[WORKOUT_PLAN][CHUNK {index}] {error_detail}")
+                self._log_ai_response(
+                    request_type=f"workout_plan_chunk_{index}",
+                    user_id=user_id,
+                    prompt=prompt,
+                    request_payload=chunk_payload,
+                    response_text=response_text,
+                    model=response.model,
+                    parse_success=False,
+                    error_message=error_detail,
+                )
+                raise PlanGenerationError(
+                    f"Failed to generate workouts for weeks {week_start}-{week_end}: no weeks returned"
+                )
+
+            combined_weeks.extend(weeks)
+            plan_metadata = self._merge_plan_metadata(plan_metadata, partial_plan)
+            previous_summary = self._summarize_weeks_for_context(combined_weeks)
+
+            self._log_ai_response(
+                request_type=f"workout_plan_chunk_{index}",
+                user_id=user_id,
+                prompt=prompt,
+                request_payload=chunk_payload,
+                response_text=response_text,
+                model=response.model,
+                parse_success=True,
+                error_message=None,
+            )
+
+        return plan_metadata, combined_weeks, raw_chunks
+
+    def _assemble_plan_data(
+        self,
+        *,
+        request: WorkoutPlanGenerationRequest,
+        total_weeks: int,
+        plan_metadata: Dict[str, Any],
+        weeks: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Build the final plan payload combining metadata and weeks."""
+        default_title = f"{request.sport_type.title()} Training Plan - {request.level.title()}"
+        default_description = plan_metadata.get("summary") or ""
+
+        plan_data: Dict[str, Any] = {
+            "title": plan_metadata.get("title") or default_title,
+            "description": plan_metadata.get("description") or default_description,
+            "sport_type": plan_metadata.get("sport_type") or request.sport_type,
+            "level": plan_metadata.get("level") or request.level,
+            "goal": plan_metadata.get("goal") or request.goal,
+            "duration_weeks": total_weeks,
+            "weekly_hours": plan_metadata.get("weekly_hours", request.weekly_hours),
+            "weeks": weeks,
+        }
+
+        if request.start_date:
+            plan_data["start_date"] = request.start_date
+        if request.target_date:
+            plan_data["end_date"] = request.target_date
+
+        for optional_key in ("phases", "plan_summary", "notes", "macrocycles"):
+            if plan_metadata.get(optional_key) is not None:
+                plan_data[optional_key] = plan_metadata.get(optional_key)
+
+        return plan_data
+
+    def _build_fallback_plan(
+        self,
+        request: WorkoutPlanGenerationRequest,
+        total_weeks: int,
+        raw_chunks: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Fallback to a text-based plan when JSON parsing fails."""
+        combined_text = "\n\n".join(
+            chunk["response"] for chunk in raw_chunks if chunk.get("response")
+        )
+        if not combined_text:
+            combined_text = "AI response could not be parsed."
+
+        fallback_data = {
+            "title": f"{request.sport_type.title()} Training Plan - {request.level.title()}",
+            "description": combined_text,
+            "sport_type": request.sport_type,
+            "level": request.level,
+            "goal": request.goal,
+            "duration_weeks": total_weeks,
+            "weekly_hours": request.weekly_hours if request.weekly_hours else None,
+            "weeks": [],
+        }
+
+        if request.start_date:
+            fallback_data["start_date"] = request.start_date
+        if request.target_date:
+            fallback_data["end_date"] = request.target_date
+
+        return fallback_data
+
+    def _combine_prompts(self, raw_chunks: List[Dict[str, Any]]) -> Optional[str]:
+        if not raw_chunks:
+            return None
+        parts = []
+        for chunk in raw_chunks:
+            prompt = chunk.get("prompt")
+            if not prompt:
+                continue
+            parts.append(
+                f"CHUNK {chunk.get('index')} PROMPT (weeks {chunk.get('week_start')}-{chunk.get('week_end')}):\n{prompt}"
+            )
+        return "\n\n".join(parts) if parts else None
+
+    def _combine_raw_chunks(self, raw_chunks: List[Dict[str, Any]]) -> Optional[str]:
+        if not raw_chunks:
+            return None
+        parts = []
+        for chunk in raw_chunks:
+            response = chunk.get("response")
+            if response is None:
+                continue
+            parts.append(
+                f"CHUNK {chunk.get('index')} RESPONSE (weeks {chunk.get('week_start')}-{chunk.get('week_end')}):\n{response}"
+            )
+        return "\n\n".join(parts) if parts else None
+
+    def _resolve_plan_duration(self, request: WorkoutPlanGenerationRequest) -> int:
+        """Resolve the number of weeks using duration or start/end dates."""
+        if request.duration_weeks:
+            return request.duration_weeks
+
+        if request.start_date and request.target_date:
+            start = datetime.strptime(request.start_date, "%Y-%m-%d").date()
+            end = datetime.strptime(request.target_date, "%Y-%m-%d").date()
+            delta_days = (end - start).days
+            if delta_days < 0:
+                raise ValueError("target_date must be after start_date")
+            total_weeks = max(1, math.ceil((delta_days + 1) / 7))
+            return total_weeks
+
+        raise ValueError("Provide either duration_weeks or both start_date and target_date")
+
+    def _build_week_ranges(self, total_weeks: int, chunk_size: int) -> List[Tuple[int, int]]:
+        return [
+            (start, min(start + chunk_size - 1, total_weeks))
+            for start in range(1, total_weeks + 1, chunk_size)
+        ]
+
+    def _summarize_weeks_for_context(self, weeks: List[Dict[str, Any]]) -> Optional[str]:
+        if not weeks:
+            return None
+        summary_weeks = weeks[-2:] if len(weeks) >= 2 else weeks
+        lines = []
+        for week in summary_weeks:
+            focus = week.get("focus", "N/A")
+            workout_count = len(week.get("workouts", [])) if isinstance(week.get("workouts"), list) else 0
+            lines.append(f"Week {week.get('week')}: focus={focus}, workouts={workout_count}")
+        return "\n".join(lines)
+
+    def _extract_plan_metadata(self, partial_plan: Dict[str, Any]) -> Dict[str, Any]:
+        keys = [
+            "title",
+            "description",
+            "sport_type",
+            "level",
+            "goal",
+            "duration_weeks",
+            "weekly_hours",
+            "phases",
+            "plan_summary",
+            "notes",
+            "macrocycles",
+            "start_date",
+            "end_date",
+        ]
+        return {key: partial_plan.get(key) for key in keys if partial_plan.get(key) is not None}
+
+    def _merge_plan_metadata(self, base: Dict[str, Any], partial_plan: Dict[str, Any]) -> Dict[str, Any]:
+        if not base:
+            return self._extract_plan_metadata(partial_plan)
+
+        merged = dict(base)
+        partial_metadata = self._extract_plan_metadata(partial_plan)
+        for key, value in partial_metadata.items():
+            if key not in merged or merged[key] is None:
+                merged[key] = value
+        return merged
+
     def analyze_workout(self, request: WorkoutAnalysisRequest) -> WorkoutAnalysisResponse:
         """Analyze workout performance using AI"""
         logger.info(f"[WORKOUT_ANALYSIS] Starting workout analysis - analysis_type: {request.analysis_type}")
@@ -155,6 +456,21 @@ class AIService:
         
         response = self.generate_response(ai_request)
         
+        self._log_ai_response(
+            request_type="workout_analysis",
+            user_id=None,
+            prompt=prompt,
+            request_payload={
+                "analysis_type": request.analysis_type,
+                "has_workout_data": request.workout_data is not None,
+                "has_performance_metrics": request.performance_metrics is not None,
+            },
+            response_text=response.response,
+            model=response.model,
+            parse_success=True,
+            error_message=None,
+        )
+
         # Parse AI response to extract structured data
         analysis_data = self._parse_workout_analysis(response.response)
         logger.info(f"[WORKOUT_ANALYSIS] Analysis parsed successfully - has_score={analysis_data.get('score') is not None}, recommendations_count={len(analysis_data.get('recommendations', []))}")
@@ -169,8 +485,53 @@ class AIService:
         
         logger.info(f"[WORKOUT_ANALYSIS] Workout analysis completed successfully")
         return result
+
+    def _log_ai_response(
+        self,
+        *,
+        request_type: str,
+        user_id: Optional[int],
+        prompt: Optional[str],
+        request_payload: Optional[Dict[str, Any]],
+        response_text: Optional[str],
+        model: Optional[str],
+        parse_success: bool,
+        error_message: Optional[str],
+    ) -> None:
+        if not self.db:
+            return
+
+        try:
+            log_entry = AIResponseLog(
+                user_id=user_id,
+                request_type=request_type,
+                model=model,
+                prompt=prompt,
+                request_payload=request_payload,
+                response=response_text,
+                parse_success=parse_success,
+                error_message=error_message,
+            )
+            self.db.add(log_entry)
+            self.db.commit()
+            logger.debug(
+                f"[AI] Logged response for request_type={request_type}, user_id={user_id}, parse_success={parse_success}"
+            )
+        except Exception as exc:
+            self.db.rollback()
+            logger.warning(
+                f"[AI] Failed to log AI response for request_type={request_type}: {exc}"
+            )
     
-    def _build_workout_plan_prompt(self, request: WorkoutPlanGenerationRequest) -> str:
+    def _build_workout_plan_prompt(
+        self,
+        request: WorkoutPlanGenerationRequest,
+        *,
+        duration_weeks: int,
+        week_start: Optional[int] = None,
+        week_end: Optional[int] = None,
+        previous_weeks_summary: Optional[str] = None,
+    ) -> str:
         """Build prompt for workout plan generation"""
         weekly_hours_note = f"Weekly training hours: {request.weekly_hours}" if request.weekly_hours else "Weekly training hours: Not specified - YOU decide the optimal training volume based on the athlete's level and goals"
         
@@ -178,16 +539,28 @@ class AIService:
         Create a detailed {request.sport_type} training plan for a {request.level} athlete.
         
         Goal: {request.goal}
-        Duration: {request.duration_weeks} weeks
+        Duration: {duration_weeks} weeks
         {weekly_hours_note}
         
         Please provide a structured training plan that includes:
         1. Weekly breakdown with specific workouts
         2. Workout types and intensities (use heart rate zones, power zones, or pace zones as appropriate)
-        3. Progression over the {request.duration_weeks} weeks
+        3. Progression over the {duration_weeks} weeks
         4. Recovery and rest days
         5. Key training phases
         
+        """
+        if week_start is not None and week_end is not None:
+            prompt += f"""
+        === GENERATION SCOPE ===
+        - Generate ONLY weeks {week_start} through {week_end} (inclusive) of the full {duration_weeks}-week plan.
+        - Weeks must be numbered using the absolute plan numbering (do not restart from 1 in each chunk).
+        - Ensure continuity with the preceding weeks.
+        """
+            if previous_weeks_summary:
+                prompt += f"""
+        === PREVIOUS WEEKS SUMMARY (for continuity) ===
+        {previous_weeks_summary}
         """
         
         # Gestione user_profile - può contenere: age, weight, height, experience_years, 
@@ -334,6 +707,12 @@ class AIService:
         - Ensure progression is appropriate for the user's level and available training time
         - ALWAYS prioritize safety: if physical_notes are present, carefully read and adapt workouts accordingly
         - Include modifications or alternatives in the description or modifications field when necessary to accommodate physical constraints
+        """
+
+        if week_start is not None and week_end is not None:
+            prompt += f"""
+        - ONLY include weeks {week_start}-{week_end} in the weeks array.
+        - Summaries, phases, and other metadata should remain consistent with a {duration_weeks}-week plan.
         """
         
         return prompt

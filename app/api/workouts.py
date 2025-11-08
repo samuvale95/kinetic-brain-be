@@ -492,17 +492,13 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
         # Convert AIWorkoutPlanRequest to WorkoutPlanGenerationRequest
         from app.schemas.ai import WorkoutPlanGenerationRequest
         
-        if not ai_request.duration_weeks:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="duration_weeks is required for traditional workout plans"
-            )
-        
         workout_plan_request = WorkoutPlanGenerationRequest(
             sport_type=ai_request.sport_type,
             level=ai_request.level,
             goal=ai_request.goal,
             duration_weeks=ai_request.duration_weeks,
+            start_date=ai_request.start_date,
+            target_date=ai_request.target_date,
             weekly_hours=ai_request.weekly_hours,
             user_profile=ai_request.user_profile,
             preferences=ai_request.preferences
@@ -510,8 +506,11 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
         
         logger.debug(f"[API] Converted to WorkoutPlanGenerationRequest - has_preferences={workout_plan_request.preferences is not None}")
         
-        ai_service = AIService()
-        plan_data = ai_service.generate_workout_plan(workout_plan_request)
+        ai_service = AIService(db)
+        plan_data = ai_service.generate_workout_plan(
+            workout_plan_request,
+            user_id=current_user["user_id"],
+        )
         
         # Optionally save the generated plan
         if plan_data:

@@ -15,7 +15,7 @@ from loguru import logger
 class ProgressiveWorkoutPlanService:
     def __init__(self, db: Session):
         self.db = db
-        self.ai_service = AIService()
+        self.ai_service = AIService(db)
         self.mock_mode = settings.mock_llm
     
     def generate_weekly_plan(self, 

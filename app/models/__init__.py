@@ -4,6 +4,7 @@ from .calendar import CalendarEvent
 from .strava import StravaAccount, StravaActivity, StravaWebhook
 from .training_metrics import TrainingMetrics
 from .daily_metrics import DailyPerformanceMetrics
+from .ai import AIResponseLog
 
 __all__ = [
     "User",
@@ -18,5 +19,6 @@ __all__ = [
     "StravaActivity",
     "StravaWebhook",
     "TrainingMetrics",
-    "DailyPerformanceMetrics"
+    "DailyPerformanceMetrics",
+    "AIResponseLog",
 ]
