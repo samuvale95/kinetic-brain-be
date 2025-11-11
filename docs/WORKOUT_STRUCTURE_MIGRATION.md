@@ -125,3 +125,4 @@ Each workout includes a `structure_json` object with:
 - The AI prompt now *requires* the structured payload. Monitor AI responses in `ai_response_logs` to verify compliance during the first runs.
 - Keep the migration script handy for re-runs in case new legacy data surfaces (e.g., imported backups).
 
+

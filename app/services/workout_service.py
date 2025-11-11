@@ -1,14 +1,23 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, or_
 from typing import List, Optional, Dict, Any
+from copy import deepcopy
+import re
 from datetime import date, datetime, timedelta
 from app.models.workout import WorkoutPlan, Workout, WorkoutSession, WorkoutStatus
 from app.models.calendar import CalendarEvent
 from app.models.strava import StravaActivity
 from app.schemas.workout import (
-    WorkoutPlanCreate, WorkoutPlanUpdate, 
-    WorkoutCreate, WorkoutUpdate,
-    WorkoutSessionCreate
+    WorkoutPlanCreate,
+    WorkoutPlanUpdate,
+    WorkoutCreate,
+    WorkoutUpdate,
+    WorkoutSessionCreate,
+    WorkoutStructure,
+    WorkoutSegment,
+    WorkoutSegmentStep,
+    WorkoutDuration,
+    WorkoutTarget,
 )
 from loguru import logger
 
@@ -16,6 +25,310 @@ from loguru import logger
 class WorkoutService:
     def __init__(self, db: Session):
         self.db = db
+    
+    @staticmethod
+    def _clean_text(value: Optional[str], default: str, max_length: Optional[int] = None) -> str:
+        text = value if isinstance(value, str) else default
+        text = text.strip()
+        if not text:
+            text = default
+        if max_length is not None:
+            text = text[:max_length]
+        return text
+
+    @staticmethod
+    def _extract_zone(workout_data: Dict[str, Any], fallback: str = "Z2") -> str:
+        zone_value = workout_data.get("zone")
+        if isinstance(zone_value, str) and zone_value.strip():
+            return zone_value.strip().upper()[:10]
+
+        intensity = workout_data.get("intensity")
+        if isinstance(intensity, str):
+            match = re.search(r"Z\d+", intensity.upper())
+            if match:
+                return match.group(0)[:10]
+
+        target_hr = workout_data.get("target_hr")
+        if isinstance(target_hr, str):
+            match = re.search(r"Z\d+", target_hr.upper())
+            if match:
+                return match.group(0)[:10]
+
+        return fallback.upper()[:10]
+
+    @staticmethod
+    def _normalize_sport(sport: Optional[str]) -> str:
+        if not sport:
+            return "run"
+        sport_lower = sport.lower()
+        mapping = {
+            "running": "run",
+            "trail": "run",
+            "trail running": "run",
+            "road": "run",
+            "cycling": "bike",
+            "bicycling": "bike",
+            "bike": "bike",
+            "mtb": "bike",
+            "road cycling": "bike",
+            "swimming": "swim",
+            "triathlon": "triathlon",
+        }
+        return mapping.get(sport_lower, sport_lower)
+
+    @staticmethod
+    def _default_zone_for_sport(sport: str) -> str:
+        if sport in {"bike", "cycling"}:
+            return "Z2"
+        return "Z2"
+
+    def _build_structure_payload(
+        self,
+        *,
+        plan_sport: Optional[str],
+        workout_data: Dict[str, Any],
+        week_focus: Optional[str],
+    ) -> Dict[str, Any]:
+        structure = workout_data.get("structure")
+        normalized_sport = self._normalize_sport(
+            workout_data.get("sport")
+            or workout_data.get("sport_type")
+            or plan_sport
+        )
+
+        if isinstance(structure, dict):
+            payload = deepcopy(structure)
+            payload["sport"] = self._normalize_sport(payload.get("sport") or normalized_sport)
+            self._normalize_structure_targets(payload)
+
+            segments = payload.get("segments") or []
+            if not segments:
+                raise ValueError("Structure contains no segments")
+
+            metadata = payload.get("metadata") or {}
+            if week_focus and not metadata.get("focus"):
+                metadata["focus"] = week_focus
+            if workout_data.get("rpe_target") is not None and metadata.get("rpe_target") is None:
+                metadata["rpe_target"] = workout_data.get("rpe_target")
+            if workout_data.get("description") and not metadata.get("description"):
+                metadata["description"] = workout_data.get("description")
+            if metadata.get("rpe_target") is not None and metadata["rpe_target"] < 1:
+                metadata["rpe_target"] = None
+            payload["metadata"] = metadata or None
+            try:
+                validated = WorkoutStructure(**payload)
+                enriched = self._ensure_structure_segments(
+                    validated,
+                    normalized_sport=normalized_sport,
+                    duration_minutes=workout_data.get("duration_minutes", 60),
+                )
+                return enriched
+            except Exception as exc:
+                logger.warning(
+                    f"[WORKOUT_SERVICE] Invalid structured payload from AI, regenerating fallback. Error: {exc}"
+                )
+
+        # Fallback to build a basic structure when AI data is missing the structured payload
+        zone = self._extract_zone(workout_data, fallback=self._default_zone_for_sport(normalized_sport)).upper()
+        allowed_zones = {"Z1", "Z2", "Z3", "Z4", "Z5"}
+        if normalized_sport in {"bike", "cycling"}:
+            allowed_zones = {"Z1", "Z2", "Z3", "Z4", "Z5", "Z6", "Z7"}
+        if zone not in allowed_zones:
+            zone = self._default_zone_for_sport(normalized_sport).upper()
+        duration_minutes_raw = workout_data.get("duration_minutes", 60)
+        try:
+            duration_minutes = float(duration_minutes_raw)
+        except (TypeError, ValueError):
+            duration_minutes = 60
+        duration_minutes = max(duration_minutes, 1)
+        duration_seconds = max(int(duration_minutes * 60), 60)
+        warmup_seconds = min(600, max(duration_seconds // 6, 180))
+        cooldown_seconds = min(600, max(duration_seconds // 6, 180))
+        main_seconds = duration_seconds - warmup_seconds - cooldown_seconds
+        if main_seconds < 120:
+            deficit = 120 - main_seconds
+            reduction = min(deficit // 2, warmup_seconds - 60)
+            if reduction > 0:
+                warmup_seconds -= reduction
+            deficit = 120 - (duration_seconds - warmup_seconds - cooldown_seconds)
+            reduction = min(deficit, cooldown_seconds - 60)
+            if reduction > 0:
+                cooldown_seconds -= reduction
+            main_seconds = max(duration_seconds - warmup_seconds - cooldown_seconds, 60)
+
+        metadata = {
+            "focus": week_focus,
+            "rpe_target": workout_data.get("rpe_target"),
+            "description": workout_data.get("description"),
+            "notes": workout_data.get("modifications"),
+        }
+        if metadata["rpe_target"] is not None and metadata["rpe_target"] < 1:
+            metadata["rpe_target"] = None
+
+        warmup_step = {
+            "step_type": "steady",
+            "name": "Warm-up",
+            "duration": {
+                "type": "time",
+                "seconds": warmup_seconds,
+            },
+            "target": {
+                "type": "zone",
+                "zone": "Z1" if normalized_sport not in {"bike", "cycling"} else "Z1",
+            },
+            "notes": "Gradual build-in",
+        }
+
+        main_step = {
+            "step_type": "steady",
+            "name": workout_data.get("type", "Main Session"),
+            "duration": {
+                "type": "time",
+                "seconds": main_seconds,
+            },
+            "target": {
+                "type": "zone",
+                "zone": zone,
+            },
+            "notes": workout_data.get("description"),
+        }
+
+        cooldown_step = {
+            "step_type": "steady",
+            "name": "Cool-down",
+            "duration": {
+                "type": "time",
+                "seconds": cooldown_seconds,
+            },
+            "target": {
+                "type": "zone",
+                "zone": "Z1",
+            },
+            "notes": "Gradual cool-down",
+        }
+
+        structure_payload = {
+            "sport": normalized_sport,
+            "segments": [
+                {
+                    "segment_type": "warmup",
+                    "name": "Warm-up",
+                    "steps": [warmup_step],
+                },
+                {
+                    "segment_type": "main",
+                    "name": workout_data.get("title") or workout_data.get("type") or "Session",
+                    "steps": [main_step],
+                    "notes": workout_data.get("modifications"),
+                },
+                {
+                    "segment_type": "cooldown",
+                    "name": "Cool-down",
+                    "steps": [cooldown_step],
+                },
+            ],
+            "metadata": {k: v for k, v in metadata.items() if v is not None},
+        }
+
+        self._normalize_structure_targets(structure_payload)
+
+        try:
+            validated = WorkoutStructure(**structure_payload)
+            enriched = self._ensure_structure_segments(
+                validated,
+                normalized_sport=normalized_sport,
+                duration_minutes=duration_minutes,
+            )
+            return enriched
+        except Exception as exc:
+            logger.error(f"[WORKOUT_SERVICE] Failed to build fallback structure payload: {exc}")
+            raise
+
+    def _ensure_structure_segments(
+        self,
+        structure: WorkoutStructure,
+        *,
+        normalized_sport: str,
+        duration_minutes: int,
+    ) -> Dict[str, Any]:
+        segments = list(structure.segments)
+        has_warmup = any(seg.segment_type == "warmup" for seg in segments)
+        has_cooldown = any(seg.segment_type == "cooldown" for seg in segments)
+
+        if has_warmup and has_cooldown:
+            return structure.dict()
+
+        total_seconds = max(int(duration_minutes * 60), 300)
+        warmup_seconds = min(600, max(total_seconds // 10, 180))
+        cooldown_seconds = min(600, max(total_seconds // 10, 180))
+        zone_easy = "Z1" if normalized_sport not in {"bike", "cycling"} else "Z1"
+
+        def make_step(seconds: int, note: str) -> WorkoutSegmentStep:
+            return WorkoutSegmentStep(
+                step_type="steady",
+                duration=WorkoutDuration(type="time", seconds=seconds),
+                target=WorkoutTarget(type="zone", zone=zone_easy),
+                notes=note,
+                name=None,
+            )
+
+        if not has_warmup:
+            warmup_segment = WorkoutSegment(
+                segment_type="warmup",
+                name="Warm-up",
+                steps=[make_step(warmup_seconds, "Gradual warm-up")],
+            )
+            segments.insert(0, warmup_segment)
+
+        if not has_cooldown:
+            cooldown_segment = WorkoutSegment(
+                segment_type="cooldown",
+                name="Cool-down",
+                steps=[make_step(cooldown_seconds, "Gradual cool-down")],
+            )
+            segments.append(cooldown_segment)
+
+        updated_structure = WorkoutStructure(
+            sport=structure.sport,
+            segments=segments,
+            metadata=structure.metadata,
+            equipment=structure.equipment,
+        )
+        return updated_structure.dict()
+
+    @staticmethod
+    def _normalize_structure_targets(structure: Dict[str, Any]) -> None:
+        def normalize_step(step: Dict[str, Any]) -> None:
+            target = step.get("target")
+            if isinstance(target, dict):
+                target_type = target.get("type")
+                zone = target.get("zone")
+                has_numeric = any(
+                    target.get(field) is not None
+                    for field in ("min_value", "max_value")
+                )
+
+                if target_type in {"heart_rate", "power", "pace"} and zone and not has_numeric:
+                    target["type"] = "zone"
+                    if isinstance(zone, str):
+                        target["zone"] = zone.upper()
+                    else:
+                        target["zone"] = str(zone).upper()
+                    target["min_value"] = None
+                    target["max_value"] = None
+                    target["units"] = target.get("units")
+            nested_steps = step.get("steps")
+            if isinstance(nested_steps, list):
+                for nested in nested_steps:
+                    if isinstance(nested, dict):
+                        normalize_step(nested)
+
+        for segment in structure.get("segments", []):
+            steps = segment.get("steps")
+            if isinstance(steps, list):
+                for step in steps:
+                    if isinstance(step, dict):
+                        normalize_step(step)
     
     # Workout Plans
     def create_workout_plan(self, user_id: int, plan_data: WorkoutPlanCreate) -> WorkoutPlan:
@@ -107,21 +420,29 @@ class WorkoutService:
                 scheduled_date = current_date + timedelta(days=day_offset)
                 
                 # Create workout
+                title = self._clean_text(workout_data.get("type", "Workout"), "Workout", max_length=200)
+                workout_type = self._clean_text(workout_data.get("type", "endurance"), "endurance", max_length=50)
+                intensity = self._clean_text(workout_data.get("intensity", "moderate"), "moderate", max_length=20)
+                zone_value = self._extract_zone(workout_data, fallback=intensity if intensity.upper().startswith("Z") else "Z2")
+                zone = self._clean_text(zone_value, "Z2", max_length=10)
+
+                structure_payload = self._build_structure_payload(
+                    plan_sport=plan.sport_type,
+                    workout_data=workout_data,
+                    week_focus=week_data.get("focus"),
+                )
+
                 workout = Workout(
                     plan_id=plan_id,
                     user_id=user_id,
-                    title=workout_data.get("type", "Workout"),
-                    type=workout_data.get("type", "endurance"),
+                    title=title,
+                    type=workout_type,
                     day_number=len(workouts) + 1,
                     scheduled_date=scheduled_date,
                     duration_minutes=workout_data.get("duration_minutes", 60),
-                    intensity=workout_data.get("intensity", "moderate"),
-                    zone=workout_data.get("intensity", "Z2"),
-                    structure_json={
-                        "description": workout_data.get("description", ""),
-                        "rpe_target": workout_data.get("rpe_target", 6),
-                        "focus": week_data.get("focus", "Base Building")
-                    },
+                    intensity=intensity,
+                    zone=zone,
+                    structure_json=structure_payload,
                     status=WorkoutStatus.SCHEDULED
                 )
                 
@@ -172,21 +493,29 @@ class WorkoutService:
             scheduled_date = week_start + timedelta(days=day_offset)
             
             # Create workout
+            title = self._clean_text(workout_data.get("type", "Workout"), "Workout", max_length=200)
+            workout_type = self._clean_text(workout_data.get("type", "endurance"), "endurance", max_length=50)
+            intensity = self._clean_text(workout_data.get("intensity", "moderate"), "moderate", max_length=20)
+            zone_value = self._extract_zone(workout_data, fallback=intensity if intensity.upper().startswith("Z") else "Z2")
+            zone = self._clean_text(zone_value, "Z2", max_length=10)
+
+            structure_payload = self._build_structure_payload(
+                plan_sport=plan.sport_type,
+                workout_data=workout_data,
+                week_focus=week_focus,
+            )
+
             workout = Workout(
                 plan_id=plan_id,
                 user_id=user_id,
-                title=workout_data.get("type", "Workout"),
-                type=workout_data.get("type", "endurance"),
+                title=title,
+                type=workout_type,
                 day_number=len(workouts) + 1,
                 scheduled_date=scheduled_date,
                 duration_minutes=workout_data.get("duration_minutes", 60),
-                intensity=workout_data.get("intensity", "moderate"),
-                zone=workout_data.get("intensity", "Z2"),
-                structure_json={
-                    "description": workout_data.get("description", ""),
-                    "rpe_target": workout_data.get("rpe_target", 6),
-                    "focus": week_focus
-                },
+                intensity=intensity,
+                zone=zone,
+                structure_json=structure_payload,
                 status=WorkoutStatus.SCHEDULED
             )
             

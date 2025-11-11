@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
+from pydantic import model_validator
 
 
 class AIRequest(BaseModel):
@@ -7,6 +8,7 @@ class AIRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None
     max_tokens: Optional[int] = Field(None, ge=1, le=4000)
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    response_format: Optional[Dict[str, Any]] = None
 
 
 class AIResponse(BaseModel):
@@ -26,6 +28,24 @@ class WorkoutPlanGenerationRequest(BaseModel):
     weekly_hours: Optional[float] = Field(None, gt=0, le=168, description="Ore settimanali disponibili (indicativo)")
     user_profile: Optional[Dict[str, Any]] = None
     preferences: Optional[Dict[str, Any]] = None
+    race_distance_km: Optional[float] = Field(
+        None,
+        gt=0,
+        description="Distanza gara in km per piani running/trail",
+    )
+    race_type: Optional[Literal["sprint", "olympic", "half_ironman", "ironman"]] = Field(
+        None,
+        description="Tipologia gara triathlon",
+    )
+
+    @model_validator(mode="after")
+    def validate_race_details(cls, values: "WorkoutPlanGenerationRequest") -> "WorkoutPlanGenerationRequest":
+        sport = (values.sport_type or "").lower()
+        if values.race_type and sport != "triathlon":
+            raise ValueError("race_type è valido solo per piani triathlon")
+        if values.race_distance_km and sport not in {"running", "run", "trail", "trail running"}:
+            raise ValueError("race_distance_km è valido solo per piani running o trail")
+        return values
 
 
 class WorkoutAnalysisRequest(BaseModel):

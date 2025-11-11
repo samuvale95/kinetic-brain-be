@@ -112,9 +112,9 @@ class DailyMetricsService:
         # 5. Propaga aggiornamento ai giorni successivi fino a oggi (solo se richiesto)
         # Questo assicura che tutti i giorni successivi siano aggiornati
         if propagate:
-        self._propagate_metrics_forward(user_id, activity_date, date.today())
-        
-        return record
+            self._propagate_metrics_forward(user_id, activity_date, date.today())
+            
+            return record
     
     def _propagate_metrics_forward(self, user_id: int, start_date: date, end_date: date):
         """Propaga aggiornamenti ai giorni successivi"""

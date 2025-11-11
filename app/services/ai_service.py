@@ -1,5 +1,6 @@
 import openai
 from typing import Dict, Any, Optional, List, Tuple
+from copy import deepcopy
 from sqlalchemy.orm import Session
 from app.config import settings
 from app.schemas.ai import AIRequest, AIResponse, WorkoutPlanGenerationRequest, WorkoutAnalysisRequest, WorkoutAnalysisResponse
@@ -17,6 +18,765 @@ class PlanGenerationError(Exception):
     def __init__(self, message: str, raw_chunks: Optional[List[Dict[str, Any]]] = None):
         super().__init__(message)
         self.raw_chunks = raw_chunks or []
+
+
+def _step(step_type: str, seconds: int, zone: str, notes: str, name: Optional[str] = None) -> Dict[str, Any]:
+    step: Dict[str, Any] = {
+        "step_type": step_type,
+        "duration": {"type": "time", "seconds": seconds},
+        "target": {"type": "zone", "zone": zone},
+        "notes": notes,
+    }
+    if name:
+        step["name"] = name
+    return step
+
+
+def _repeat(repeat: int, steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return {
+        "step_type": "repeat",
+        "repeat": repeat,
+        "steps": steps,
+    }
+
+
+def _segment(segment_type: str, steps: List[Dict[str, Any]], name: Optional[str] = None) -> Dict[str, Any]:
+    segment: Dict[str, Any] = {"segment_type": segment_type, "steps": steps}
+    if name:
+        segment["name"] = name
+    return segment
+
+
+def _structure(
+    segments: List[Dict[str, Any]],
+    focus: str,
+    rpe_target: Optional[int],
+    description: str,
+    sport: str = "run",
+) -> Dict[str, Any]:
+    return {
+        "sport": sport,
+        "segments": segments,
+        "metadata": {
+            "focus": focus,
+            "rpe_target": rpe_target,
+            "description": description,
+        },
+    }
+
+
+RAW_MOCK_PLAN: List[Dict[str, Any]] = [
+    {
+        "week": 1,
+        "focus": "Base building",
+        "workouts": [
+            {
+                "day": "Monday",
+                "type": "Endurance",
+                "sport": "run",
+                "duration_minutes": 45,
+                "intensity": "Z2",
+                "rpe_target": 3,
+                "zone": "Z2",
+                "description": "Steady run focusing on building aerobic capacity.",
+                "modifications": "If experiencing any discomfort, reduce pace or shorten the duration.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 600, "Z1", "Easy jog to loosen up")], "Warm-up"),
+                        _segment(
+                            "main",
+                            [_step("steady", 2100, "Z2", "Maintain a comfortable pace where conversation is possible")],
+                            "Main Set",
+                        ),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Cool down with an easy jog")], "Cool-down"),
+                    ],
+                    "Base building",
+                    3,
+                    "Maintain a steady, comfortable pace to build endurance.",
+                ),
+            },
+            {
+                "day": "Wednesday",
+                "type": "Speed",
+                "sport": "run",
+                "duration_minutes": 30,
+                "intensity": "Z4",
+                "rpe_target": 7,
+                "zone": "Z4",
+                "description": "Short intervals to improve speed and cardiac efficiency.",
+                "modifications": "Adjust the number of intervals based on fatigue levels.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 600, "Z2", "Gradually increase your heart rate")], "Warm-up"),
+                        _segment(
+                            "main",
+                            [
+                                _repeat(
+                                    4,
+                                    [
+                                        _step("interval", 60, "Z4", "Run at a fast pace, close to race effort"),
+                                        _step("recovery", 180, "Z1", "Walk or jog for recovery"),
+                                    ],
+                                )
+                            ],
+                            "Intervals",
+                        ),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Ease out of the session with a gentle jog")], "Cool-down"),
+                    ],
+                    "Speed development",
+                    7,
+                    "Intense intervals to boost speed and improve recovery.",
+                ),
+            },
+            {
+                "day": "Friday",
+                "type": "Recovery",
+                "sport": "run",
+                "duration_minutes": 30,
+                "intensity": "Z1",
+                "rpe_target": 2,
+                "zone": "Z1",
+                "description": "Easy recovery run to promote muscle repair and mitigate fatigue.",
+                "modifications": "If feeling overly fatigued, consider a brisk walk instead of a run.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 300, "Z1", "Start with a gentle jog")], "Warm-up"),
+                        _segment("main", [_step("steady", 1200, "Z1", "Maintain a light, easy pace to facilitate recovery")], "Recovery Run"),
+                        _segment("cooldown", [_step("steady", 300, "Z1", "Finish with walking or very easy jogging")], "Cool-down"),
+                    ],
+                    "Recovery",
+                    2,
+                    "Keep effort very easy to promote recovery.",
+                ),
+            },
+            {
+                "day": "Sunday",
+                "type": "Long Run",
+                "sport": "run",
+                "duration_minutes": 75,
+                "intensity": "Z3",
+                "rpe_target": 5,
+                "zone": "Z3",
+                "description": "Longer duration run to enhance aerobic endurance.",
+                "modifications": "Hydrate well and adjust pace to maintain consistency.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z2", "Start gently to prepare for a longer effort")], "Warm-up"),
+                        _segment(
+                            "main",
+                            [_step("steady", 3600, "Z3", "Maintain a steady, challenging pace with controlled breathing")],
+                            "Main Set",
+                        ),
+                        _segment("cooldown", [_step("steady", 900, "Z1", "Gradually reduce pace to cool down")], "Cool-down"),
+                    ],
+                    "Aerobic endurance",
+                    5,
+                    "Build endurance and practice pacing over longer efforts.",
+                ),
+            },
+        ],
+    },
+    {
+        "week": 2,
+        "focus": "Base building and speed introduction",
+        "workouts": [
+            {
+                "day": "Monday",
+                "type": "Endurance",
+                "sport": "run",
+                "duration_minutes": 60,
+                "intensity": "Z2",
+                "rpe_target": 3,
+                "zone": "Z2",
+                "description": "Steady state run to further build the aerobic base.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z1", "Easy jog to warm up")], "Warm-up"),
+                        _segment("main", [_step("steady", 3600, "Z2", "Maintain a steady moderate pace")], "Main Set"),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Cool down with an easy jog")], "Cool-down"),
+                    ],
+                    "Base building",
+                    3,
+                    "Focus on maintaining a relaxed, steady effort.",
+                ),
+            },
+            {
+                "day": "Wednesday",
+                "type": "Speed",
+                "sport": "run",
+                "duration_minutes": 50,
+                "intensity": "Z4",
+                "rpe_target": 7,
+                "zone": "Z4",
+                "description": "More intense interval training to enhance speed.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z2", "Gradual warm-up")], "Warm-up"),
+                        _segment(
+                            "main",
+                            [
+                                _repeat(
+                                    6,
+                                    [
+                                        _step("interval", 180, "Z4", "Push to high intensity"),
+                                        _step("recovery", 180, "Z1", "Recovery jog"),
+                                    ],
+                                )
+                            ],
+                            "Speed Intervals",
+                        ),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Cool down with easy jogging")], "Cool-down"),
+                    ],
+                    "Speed development",
+                    7,
+                    "Enhance top-end speed with repeat intervals.",
+                ),
+            },
+            {
+                "day": "Friday",
+                "type": "Long Run",
+                "sport": "run",
+                "duration_minutes": 90,
+                "intensity": "Z2",
+                "rpe_target": 4,
+                "zone": "Z2",
+                "description": "Extended duration run to reinforce endurance.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z1", "Start gently")], "Warm-up"),
+                        _segment("main", [_step("steady", 6600, "Z2", "Maintain a consistent, moderate pace")], "Main Set"),
+                        _segment("cooldown", [_step("steady", 900, "Z1", "Ease out of the effort")], "Cool-down"),
+                    ],
+                    "Endurance",
+                    4,
+                    "Build stamina with a longer steady-state run.",
+                ),
+            },
+            {
+                "day": "Sunday",
+                "type": "Recovery Run",
+                "sport": "run",
+                "duration_minutes": 45,
+                "intensity": "Z1",
+                "rpe_target": 2,
+                "zone": "Z1",
+                "description": "Easy run to promote recovery.",
+                "modifications": "Extend cooldown if feeling particularly fatigued.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 300, "Z1", "Begin with a gentle jog")], "Warm-up"),
+                        _segment("main", [_step("steady", 2100, "Z1", "Keep a relaxed, comfortable pace")], "Recovery Run"),
+                        _segment("cooldown", [_step("steady", 300, "Z1", "Cool down with walking or light jogging")], "Cool-down"),
+                    ],
+                    "Recovery",
+                    2,
+                    "Allow muscles to recover before the next block.",
+                ),
+            },
+        ],
+    },
+    {
+        "week": 3,
+        "focus": "VO2 Max and Speed Endurance",
+        "workouts": [
+            {
+                "day": "Monday",
+                "type": "VO2 Max Intervals",
+                "sport": "run",
+                "duration_minutes": 50,
+                "intensity": "Z5",
+                "rpe_target": 8,
+                "zone": "Z5",
+                "description": "High-intensity interval training to boost VO2 max.",
+                "modifications": "Reduce the number of intervals if unable to sustain intensity.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z2", "Gradual warm-up to prepare muscles")], "Warm-up"),
+                        _segment(
+                            "main",
+                            [
+                                _repeat(
+                                    6,
+                                    [
+                                        _step("interval", 180, "Z5", "Maintain high intensity for VO2 max gains."),
+                                        _step("recovery", 240, "Z2", "Active recovery at a lower intensity."),
+                                    ],
+                                )
+                            ],
+                            "High-Intensity Intervals",
+                        ),
+                        _segment("cooldown", [_step("steady", 900, "Z1", "Cool down to ensure proper recovery.")], "Cool-down"),
+                    ],
+                    "VO2 Max enhancement",
+                    8,
+                    "Intense intervals to increase aerobic capacity.",
+                ),
+            },
+            {
+                "day": "Wednesday",
+                "type": "Tempo Run",
+                "sport": "run",
+                "duration_minutes": 40,
+                "intensity": "Z4",
+                "rpe_target": 7,
+                "zone": "Z4",
+                "description": "Sustained effort run to build speed endurance.",
+                "modifications": "Adjust the tempo duration based on fatigue levels.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 600, "Z2", "Easy jog to prepare for tempo pace.")], "Warm-up"),
+                        _segment("main", [_step("steady", 1800, "Z4", "Hold a challenging but sustainable pace.")], "Tempo Pace"),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Complete the session with a gradual cooldown.")], "Cool-down"),
+                    ],
+                    "Speed endurance",
+                    7,
+                    "Continuous effort at a controlled, hard pace.",
+                ),
+            },
+            {
+                "day": "Friday",
+                "type": "Easy Run",
+                "sport": "run",
+                "duration_minutes": 45,
+                "intensity": "Z2",
+                "rpe_target": 4,
+                "zone": "Z2",
+                "description": "Recovery run at a comfortable pace.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 600, "Z1", "Easy jogging to start.")], "Warm-up"),
+                        _segment("main", [_step("steady", 2100, "Z2", "Maintain a relaxed, comfortable pace.")], "Steady Run"),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Cool down to promote recovery.")], "Cool-down"),
+                    ],
+                    "Recovery",
+                    4,
+                    "Low intensity to aid in muscle recovery.",
+                ),
+            },
+            {
+                "day": "Sunday",
+                "type": "Long Run",
+                "sport": "run",
+                "duration_minutes": 90,
+                "intensity": "Z3",
+                "rpe_target": 6,
+                "zone": "Z3",
+                "description": "Extended duration run to build endurance.",
+                "modifications": "Adjust pace based on physical response to previous workouts.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z2", "Easy jog to begin.")], "Warm-up"),
+                        _segment("main", [_step("steady", 4200, "Z3", "Maintain a steady, moderate pace throughout.")], "Extended Steady Run"),
+                        _segment("cooldown", [_step("steady", 900, "Z1", "Cool down to end the session.")], "Cool-down"),
+                    ],
+                    "Endurance",
+                    6,
+                    "Maintain a steady pace for the duration.",
+                ),
+            },
+        ],
+    },
+    {
+        "week": 4,
+        "focus": "Recovery and Technique",
+        "workouts": [
+            {
+                "day": "Monday",
+                "type": "Recovery Run",
+                "sport": "run",
+                "duration_minutes": 40,
+                "intensity": "Z1",
+                "rpe_target": 3,
+                "zone": "Z1",
+                "description": "Light recovery run to enhance blood flow and aid recovery.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 600, "Z1", "Easy starting pace")], "Warm-up"),
+                        _segment("main", [_step("steady", 1800, "Z1", "Maintain a comfortable, easy pace")], "Main Set"),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Cool down at a very easy pace")], "Cool-down"),
+                    ],
+                    "Recovery",
+                    3,
+                    "Ensure relaxed breathing and focus on recovery.",
+                ),
+            },
+            {
+                "day": "Wednesday",
+                "type": "Technique Run",
+                "sport": "run",
+                "duration_minutes": 50,
+                "intensity": "Z2",
+                "rpe_target": 4,
+                "zone": "Z2",
+                "description": "Focus on running form and technique over a moderate distance.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 600, "Z1", "Gradually increase pace")], "Warm-up"),
+                        _segment("main", [_step("steady", 2400, "Z2", "Focus on maintaining proper running form")], "Main Set"),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Slow down and relax")], "Cool-down"),
+                    ],
+                    "Technique",
+                    4,
+                    "Concentrate on stride efficiency and posture.",
+                ),
+            },
+            {
+                "day": "Friday",
+                "type": "Active Recovery",
+                "sport": "run",
+                "duration_minutes": 30,
+                "intensity": "Z1",
+                "rpe_target": 2,
+                "zone": "Z1",
+                "description": "Very light jog or walk to keep legs active without adding stress.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 300, "Z1", "Start very easy")], "Warm-up"),
+                        _segment("main", [_step("steady", 1500, "Z1", "Maintain a very gentle pace")], "Main Set"),
+                        _segment("cooldown", [_step("steady", 300, "Z1", "Cool down slowly")], "Cool-down"),
+                    ],
+                    "Recovery",
+                    2,
+                    "Maintain light movement to promote recovery.",
+                ),
+            },
+            {
+                "day": "Sunday",
+                "type": "Long Run",
+                "sport": "run",
+                "duration_minutes": 90,
+                "intensity": "Z2",
+                "rpe_target": 5,
+                "zone": "Z2",
+                "description": "Longer duration run at a controlled pace to build endurance.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z1", "Gradually build up to Z2")], "Warm-up"),
+                        _segment("main", [_step("steady", 4200, "Z2", "Maintain a steady, controlled pace")], "Main Set"),
+                        _segment("cooldown", [_step("steady", 900, "Z1", "Cool down at an easy pace")], "Cool-down"),
+                    ],
+                    "Endurance",
+                    5,
+                    "Focus on maintaining a steady pace for the duration.",
+                ),
+            },
+        ],
+    },
+    {
+        "week": 5,
+        "focus": "Threshold and Race Pace",
+        "workouts": [
+            {
+                "day": "Monday",
+                "type": "Threshold Intervals",
+                "sport": "run",
+                "duration_minutes": 50,
+                "intensity": "Z4",
+                "rpe_target": 8,
+                "zone": "Z4",
+                "description": "Structured threshold intervals to enhance race pace endurance.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z2", "Easy jog to prepare muscles")], "Warm-up"),
+                        _segment(
+                            "main",
+                            [
+                                _repeat(
+                                    4,
+                                    [
+                                        _step("interval", 300, "Z4", "Maintain threshold pace"),
+                                        _step("recovery", 180, "Z2", "Active recovery jog"),
+                                    ],
+                                )
+                            ],
+                            "Main Set",
+                        ),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Cool down to aid recovery")], "Cool-down"),
+                    ],
+                    "Building race pace efficiency",
+                    8,
+                    "Focus on maintaining form and efficiency at threshold pace.",
+                ),
+            },
+            {
+                "day": "Wednesday",
+                "type": "Tempo Run",
+                "sport": "run",
+                "duration_minutes": 45,
+                "intensity": "Z3",
+                "rpe_target": 7,
+                "zone": "Z3",
+                "description": "Continuous tempo run.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 600, "Z2", "Gradual warm-up")], "Warm-up"),
+                        _segment("main", [_step("steady", 1800, "Z3", "Sustain a steady tempo pace")], "Main Set"),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Ease down to promote recovery")], "Cool-down"),
+                    ],
+                    "Improving metabolic efficiency",
+                    7,
+                    "Maintain a consistent effort throughout the tempo run.",
+                ),
+            },
+            {
+                "day": "Friday",
+                "type": "Easy Run",
+                "sport": "run",
+                "duration_minutes": 30,
+                "intensity": "Z2",
+                "rpe_target": 4,
+                "zone": "Z2",
+                "description": "Recovery easy run to maintain weekly mileage.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 300, "Z1", "Gentle warm-up")], "Warm-up"),
+                        _segment("main", [_step("steady", 1500, "Z2", "Maintain an easy, conversational pace")], "Main Set"),
+                        _segment("cooldown", [_step("steady", 300, "Z1", "Cool down at an easy pace")], "Cool-down"),
+                    ],
+                    "Active recovery",
+                    4,
+                    "Keep the pace easy and comfortable.",
+                ),
+            },
+            {
+                "day": "Sunday",
+                "type": "Long Run",
+                "sport": "run",
+                "duration_minutes": 90,
+                "intensity": "Z2",
+                "rpe_target": 6,
+                "zone": "Z2",
+                "description": "Long endurance run to build aerobic capacity.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 600, "Z2", "Start gently to prepare for the effort")], "Warm-up"),
+                        _segment("main", [_step("steady", 4200, "Z2", "Maintain a steady, sustainable pace")], "Main Set"),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Cool down to enhance recovery")], "Cool-down"),
+                    ],
+                    "Aerobic endurance",
+                    6,
+                    "Focus on maintaining a consistent pace that allows for conversation.",
+                ),
+            },
+        ],
+    },
+    {
+        "week": 6,
+        "focus": "High-Intensity Intervals and Long Run",
+        "workouts": [
+            {
+                "day": "Monday",
+                "type": "Intervals",
+                "sport": "run",
+                "duration_minutes": 55,
+                "intensity": "Mixed",
+                "rpe_target": 8,
+                "zone": "Z5",
+                "description": "Speed intervals to sharpen top-end speed.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z1", "Easy jog to prepare muscles for intense work")], "Warm-up"),
+                        _segment(
+                            "main",
+                            [
+                                _repeat(
+                                    8,
+                                    [
+                                        _step("interval", 60, "Z5", "Run at high intensity."),
+                                        _step("recovery", 120, "Z2", "Recovery jog."),
+                                    ],
+                                )
+                            ],
+                            "Speed Intervals",
+                        ),
+                        _segment("cooldown", [_step("steady", 900, "Z1", "Cool down to aid recovery")], "Cool-down"),
+                    ],
+                    "Improving speed and recovery",
+                    8,
+                    "Focus on fast recovery during the short rest intervals.",
+                ),
+            },
+            {
+                "day": "Wednesday",
+                "type": "Tempo Run",
+                "sport": "run",
+                "duration_minutes": 40,
+                "intensity": "Z4",
+                "rpe_target": 7,
+                "zone": "Z4",
+                "description": "Maintain a steady, hard pace.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 600, "Z1", "Warm-up at an easy pace")], "Warm-up"),
+                        _segment("main", [_step("steady", 1800, "Z4", "Run at a challenging but sustainable pace")], "Tempo"),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Cool down to aid recovery")], "Cool-down"),
+                    ],
+                    "Building endurance at a higher pace",
+                    7,
+                    "Focus on maintaining a consistent effort.",
+                ),
+            },
+            {
+                "day": "Friday",
+                "type": "Easy Run",
+                "sport": "run",
+                "duration_minutes": 30,
+                "intensity": "Z2",
+                "rpe_target": 4,
+                "zone": "Z2",
+                "description": "Recovery run at a relaxed pace.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 300, "Z1", "Gentle jog to start")], "Warm-up"),
+                        _segment("main", [_step("steady", 1500, "Z2", "Maintain an easy, comfortable pace")], "Easy pace"),
+                        _segment("cooldown", [_step("steady", 300, "Z1", "Cool down")], "Cool-down"),
+                    ],
+                    "Active recovery",
+                    4,
+                    "Focus on relaxation and enjoying the run.",
+                ),
+            },
+            {
+                "day": "Sunday",
+                "type": "Long Run",
+                "sport": "run",
+                "duration_minutes": 90,
+                "intensity": "Z3",
+                "rpe_target": 6,
+                "zone": "Z3",
+                "description": "Long endurance run to build stamina.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z1", "Start with an easy jog")], "Warm-up"),
+                        _segment("main", [_step("steady", 4200, "Z3", "Maintain a steady, moderate pace")], "Endurance"),
+                        _segment("cooldown", [_step("steady", 900, "Z1", "Gradually cool down")], "Cool-down"),
+                    ],
+                    "Building aerobic base and endurance",
+                    6,
+                    "Focus on maintaining a consistent pace and form.",
+                ),
+            },
+        ],
+    },
+    {
+        "week": 7,
+        "focus": "Taper and Race Preparation",
+        "workouts": [
+            {
+                "day": "Monday",
+                "type": "Recovery Run",
+                "sport": "run",
+                "duration_minutes": 30,
+                "intensity": "Z1",
+                "rpe_target": 3,
+                "zone": "Z1",
+                "description": "Light recovery run to maintain leg turnover without adding fatigue.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 600, "Z1", "Easy jog to loosen up the muscles")], "Warm-up"),
+                        _segment("main", [_step("steady", 1200, "Z1", "Maintain a relaxed pace, focus on smooth breathing")], "Main Set"),
+                        _segment("cooldown", [_step("steady", 300, "Z1", "Slow down to a very easy jog or walk")], "Cool-down"),
+                    ],
+                    "Recovery",
+                    3,
+                    "Keep the effort light while maintaining leg turnover.",
+                ),
+            },
+            {
+                "day": "Wednesday",
+                "type": "Pre-Race Workout",
+                "sport": "run",
+                "duration_minutes": 50,
+                "intensity": "Z3",
+                "rpe_target": 6,
+                "zone": "Z3",
+                "description": "Shorter intervals to sharpen race pace feeling.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z1", "Gradually increase pace towards the end of warm-up")], "Warm-up"),
+                        _segment(
+                            "main",
+                            [
+                                _repeat(
+                                    5,
+                                    [
+                                        _step("interval", 180, "Z3", "Run at goal race pace"),
+                                        _step("recovery", 180, "Z1", "Easy jog for recovery"),
+                                    ],
+                                )
+                            ],
+                            "Intervals",
+                        ),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Cool down with an easy jog or walk")], "Cool-down"),
+                    ],
+                    "Race readiness",
+                    6,
+                    "Sharpen race pace mechanics while keeping overall load light.",
+                ),
+            },
+            {
+                "day": "Friday",
+                "type": "Easy Run",
+                "sport": "run",
+                "duration_minutes": 30,
+                "intensity": "Z2",
+                "rpe_target": 4,
+                "zone": "Z2",
+                "description": "Easy run to keep the legs moving pre-race.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 600, "Z1", "Light jog to start")], "Warm-up"),
+                        _segment("main", [_step("steady", 1200, "Z2", "Keep a comfortable pace, focus on relaxation")], "Main Set"),
+                        _segment("cooldown", [_step("steady", 300, "Z1", "Ease into a walk or slow jog")], "Cool-down"),
+                    ],
+                    "Taper",
+                    4,
+                    "Maintain movement without generating fatigue.",
+                ),
+            },
+            {
+                "day": "Sunday",
+                "type": "Race Day",
+                "sport": "run",
+                "duration_minutes": 120,
+                "intensity": "Race Pace",
+                "rpe_target": 9,
+                "zone": "Z4",
+                "description": "Execute race plan as practiced. Focus on pacing and maintaining effort through the finish.",
+                "modifications": "Follow the race plan, hydrate well, and adjust to conditions.",
+                "structure": _structure(
+                    [
+                        _segment("warmup", [_step("steady", 900, "Z1", "Light jog with a few strides to prepare for race")], "Pre-Race Warm-up"),
+                        _segment("main", [_step("steady", 5400, "Z4", "Maintain target race pace and adjust as needed.")], "Race"),
+                        _segment("cooldown", [_step("steady", 600, "Z1", "Cool down gradually to aid recovery")], "Post-Race Cool-down"),
+                    ],
+                    "Race execution",
+                    9,
+                    "Execute everything trained for and manage effort across the race distance.",
+                ),
+            },
+        ],
+    },
+]
+
+
+def _build_mock_running_plan_standard() -> Dict[str, Any]:
+    return {
+        "title": "7-Week Intermediate Running Plan for Race Preparation",
+        "description": (
+            "Plan designed to build endurance, introduce speed work, and prepare for a race. "
+            "Includes structured warm-up, main sets, and cool-down for every workout."
+        ),
+        "sport_type": "running",
+        "level": "intermediate",
+        "goal": "Gara",
+        "duration_weeks": 7,
+        "weekly_hours": None,
+        "weeks": RAW_MOCK_PLAN,
+    }
+
+
+MOCK_RUNNING_PLAN_STANDARD: Dict[str, Any] = _build_mock_running_plan_standard()
 
 
 class AIService:
@@ -43,15 +803,20 @@ class AIService:
             }
             logger.debug(f"[AI] OpenAI request details: {json.dumps(request_summary, indent=2)}")
             
-            response = self.client.chat.completions.create(
+            request_kwargs = dict(
                 model=settings.openai_model,
                 messages=[
                     {"role": "system", "content": "You are a professional sports coach and training expert specialized in running, triathlon, cycling, swimming, and trail. You create detailed, scientifically based training plans tailored to athlete level, goals, and time availability. When personal data is unavailable, provide generic yet effective plans. Always structure plans with clear workout types, intensities, progressions, rest days, and phases. Respect privacy preferences and adapt your responses accordingly."},
                     {"role": "user", "content": request.prompt}
                 ],
                 max_tokens=request.max_tokens or settings.openai_max_tokens,
-                temperature=request.temperature or 0.7
+                temperature=request.temperature or 0.7,
             )
+
+            if request.response_format:
+                request_kwargs["response_format"] = request.response_format
+
+            response = self.client.chat.completions.create(**request_kwargs)
             
             # Log response details
             response_content = response.choices[0].message.content
@@ -96,7 +861,9 @@ class AIService:
             "target_date": request.target_date,
             "weekly_hours": request.weekly_hours,
             "user_profile": request.user_profile,
-            "preferences": request.preferences
+            "preferences": request.preferences,
+            "race_distance_km": request.race_distance_km,
+            "race_type": request.race_type,
         }
 
         try:
@@ -127,8 +894,9 @@ class AIService:
             ai_request = AIRequest(
                 prompt=prompt,
                 context=request.user_profile,
-                max_tokens=2000,
-                temperature=0.7
+                max_tokens=3500,
+                temperature=0.7,
+                response_format={"type": "json_object"},
             )
             logger.info(f"[WORKOUT_PLAN][MOCK] AIRequest created - prompt_length: {len(ai_request.prompt)}, has_context: {ai_request.context is not None}, max_tokens: {ai_request.max_tokens}")
 
@@ -191,8 +959,17 @@ class AIService:
         base_request_payload: Dict[str, Any],
     ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Call the LLM in chunks and merge their responses."""
-        week_ranges = self._build_week_ranges(total_weeks, chunk_size=4)
-        logger.info(f"[WORKOUT_PLAN] Generating plan in {len(week_ranges)} chunk(s) of up to 4 weeks")
+        sport = (request.sport_type or "").lower()
+        if sport in {"running", "run", "trail", "trail running"}:
+            chunk_size = 1
+        elif sport in {"triathlon"}:
+            chunk_size = 1
+        elif sport in {"cycling", "bike"}:
+            chunk_size = 2
+        else:
+            chunk_size = 1
+        week_ranges = self._build_week_ranges(total_weeks, chunk_size=chunk_size)
+        logger.info(f"[WORKOUT_PLAN] Generating plan in {len(week_ranges)} chunk(s) of up to {chunk_size} weeks")
 
         combined_weeks: List[Dict[str, Any]] = []
         plan_metadata: Dict[str, Any] = {}
@@ -213,8 +990,9 @@ class AIService:
             ai_request = AIRequest(
                 prompt=prompt,
                 context=request.user_profile,
-                max_tokens=2000,
+                max_tokens=3500,
                 temperature=0.7,
+                response_format={"type": "json_object"},
             )
 
             response = self.generate_response(ai_request)
@@ -553,9 +1331,10 @@ class AIService:
         Please provide a structured training plan that includes:
         1. Weekly breakdown with specific workouts
         2. Workout types and intensities (use heart rate zones, power zones, or pace zones as appropriate)
-        3. Progression over the {duration_weeks} weeks
-        4. Recovery and rest days
-        5. Key training phases
+        3. Detailed session structures (warm-up, main set, cooldown) with explicit steps, durations, repeats, and targets
+        4. Progression over the {duration_weeks} weeks
+        5. Recovery and rest days
+        6. Key training phases
         
         """
         if week_start is not None and week_end is not None:
@@ -681,6 +1460,14 @@ class AIService:
             if request.preferences.get("min_session_duration_minutes"):
                 prompt += f"\n- User indicated minimum session duration of ~{request.preferences.get('min_session_duration_minutes')} minutes - use as REFERENCE, but optimize for best training outcomes"
         
+        if request.race_distance_km or request.race_type:
+            prompt += "\n\n=== RACE SPECIFICATIONS ==="
+            if request.race_distance_km:
+                prompt += f"\n- Target race distance: {request.race_distance_km} km (running/trail)"
+            if request.race_type:
+                prompt += f"\n- Triathlon race type: {request.race_type.replace('_', ' ').title()}"
+            prompt += "\n- Structure the training phases to peak for this event, aligning long workouts, simulations, and taper accordingly."
+        
         prompt += """
         
         Format the response as a JSON object with the following structure:
@@ -695,11 +1482,69 @@ class AIService:
                         {
                             "day": "Monday",
                             "type": "Endurance",
+                            "sport": "run",
                             "duration_minutes": 60,
                             "intensity": "Z2",
-                            "target_hr": "140-150 bpm (or power/pace if zones provided)",
                             "rpe_target": 6,
+                            "zone": "Z2",
                             "description": "Easy aerobic run",
+                            "structure": {
+                                "sport": "run",
+                                "segments": [
+                                    {
+                                        "segment_type": "warmup",
+                                        "name": "Warm-up",
+                                        "steps": [
+                                            {
+                                                "step_type": "steady",
+                                                "duration": {"type": "time", "seconds": 600},
+                                                "target": {"type": "zone", "zone": "Z2"},
+                                                "notes": "Easy jog"
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "segment_type": "main",
+                                        "name": "Intervals",
+                                        "steps": [
+                                            {
+                                                "step_type": "repeat",
+                                                "repeat": 6,
+                                                "steps": [
+                                                    {
+                                                        "step_type": "interval",
+                                                        "duration": {"type": "time", "seconds": 120},
+                                                        "target": {"type": "zone", "zone": "Z4"},
+                                                        "notes": "Uphill sprint"
+                                                    },
+                                                    {
+                                                        "step_type": "recovery",
+                                                        "duration": {"type": "time", "seconds": 120},
+                                                        "target": {"type": "zone", "zone": "Z2"},
+                                                        "notes": "Jog back down"
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "segment_type": "cooldown",
+                                        "steps": [
+                                            {
+                                                "step_type": "steady",
+                                                "duration": {"type": "time", "seconds": 600},
+                                                "target": {"type": "zone", "zone": "Z1"},
+                                                "notes": "Easy jog"
+                                            }
+                                        ]
+                                    }
+                                ],
+                                "metadata": {
+                                    "focus": "Base building with speed introduction",
+                                    "rpe_target": 6,
+                                    "description": "Maintain relaxed form during repeats"
+                                }
+                            },
                             "modifications": "Optional: modifications if physical limitations exist"
                         }
                     ]
@@ -708,9 +1553,12 @@ class AIService:
         }
         
         Important:
-        - If HR zones are provided in user_profile, use specific HR ranges in target_hr field
+        - For running/trail workouts use heart-rate or pace zones Z1-Z5; for cycling use Z1-Z7; ensure targets match provided user thresholds when available
+        - If HR zones are provided in user_profile, include exact HR ranges in the structure targets (type: "heart_rate")
         - If power zones are provided, use power targets (e.g., "200-250W")
         - If pace zones are provided, use pace targets (e.g., "5:00-5:30 min/km")
+        - Every workout MUST contain a structure object with segments and steps; do not fallback to plain text descriptions
+        - Every workout MUST include warmup and cooldown segments, each with at least one step describing duration and target
         - Adjust workout prescriptions based on user's physical characteristics and experience
         - Ensure progression is appropriate for the user's level and available training time
         - ALWAYS prioritize safety: if physical_notes are present, carefully read and adapt workouts accordingly
@@ -789,6 +1637,8 @@ class AIService:
             "user_profile_keys": list(request.user_profile.keys()) if request.user_profile else None,
             "user_profile": request.user_profile,
             "preferences": request.preferences,
+                "race_distance_km": request.race_distance_km,
+                "race_type": request.race_type,
             "prompt_length": len(prompt),
             "ai_request_context": ai_request.context
         }
@@ -805,50 +1655,41 @@ class AIService:
         return result
     
     def _generate_mock_running_plan(self, request: WorkoutPlanGenerationRequest, prompt: str, ai_request: AIRequest) -> Dict[str, Any]:
-        """Generate mock running plan (2 months to Dec 24, 2025) - uses same data as real LLM"""
+        """Return the canned 7-week running plan for mock mode, adjusting metadata to the request."""
         logger.info(f"[WORKOUT_PLAN][MOCK][RUNNING] Generating mock running plan")
         logger.debug(f"[WORKOUT_PLAN][MOCK][RUNNING] Prompt received: {len(prompt)} chars")
         logger.debug(f"[WORKOUT_PLAN][MOCK][RUNNING] User profile: {json.dumps(request.user_profile, indent=2, default=str) if request.user_profile else None}")
         logger.debug(f"[WORKOUT_PLAN][MOCK][RUNNING] Preferences: {json.dumps(request.preferences, indent=2, default=str) if request.preferences else None}")
-        
-        # Use default weekly hours if not specified (based on level)
+
         default_hours = {
             "beginner": 4.0,
             "intermediate": 6.0,
-            "advanced": 8.0
+            "advanced": 8.0,
         }
         weekly_hours = request.weekly_hours or default_hours.get(request.level.lower(), 6.0)
-        logger.debug(f"[WORKOUT_PLAN][MOCK][RUNNING] Using weekly_hours: {weekly_hours} (from request: {request.weekly_hours})")
-        
-        weeks = []
-        start_date = datetime(2025, 10, 25)
-        
-        for week_num in range(1, 9):  # 8 weeks = 2 months
-            week_start = start_date + timedelta(weeks=week_num-1)
-            week_end = week_start + timedelta(days=6)
-            
-            week_data = {
-                "week": week_num,
-                "focus": self._get_running_focus(week_num),
-                "total_hours": weekly_hours,
-                "workouts": self._generate_running_workouts(week_num, weekly_hours),
-                "week_start": week_start.strftime("%Y-%m-%d"),
-                "week_end": week_end.strftime("%Y-%m-%d")
-            }
-            weeks.append(week_data)
-        
-        return {
-            "title": f"Running Training Plan - {request.goal}",
-            "description": f"8-week running plan to achieve {request.goal} by December 24, 2025",
-            "sport_type": "running",
-            "level": request.level,
-            "goal": request.goal,
-            "duration_weeks": 8,
-            "weekly_hours": weekly_hours,
-            "start_date": "2025-10-25",
-            "end_date": "2025-12-24",
-            "weeks": weeks
-        }
+
+        plan = deepcopy(MOCK_RUNNING_PLAN_STANDARD)
+        plan["level"] = request.level
+        plan["goal"] = request.goal
+        plan["weekly_hours"] = weekly_hours
+        plan["duration_weeks"] = len(plan.get("weeks", []))
+
+        title_suffix: List[str] = []
+        description_suffix: List[str] = []
+
+        if request.race_distance_km:
+            title_suffix.append(f"{request.race_distance_km:g} km")
+            description_suffix.append(f"Target race distance: {request.race_distance_km:g} km.")
+        if request.race_type:
+            readable_type = request.race_type.replace("_", " ").title()
+            title_suffix.append(readable_type)
+            description_suffix.append(f"Race type: {readable_type}.")
+
+        if title_suffix:
+            plan["title"] = f"{plan['title']} ({', '.join(title_suffix)})"
+        plan["description"] = " ".join([plan["description"], *description_suffix]).strip()
+
+        return plan
     
     def _generate_mock_triathlon_plan(self, request: WorkoutPlanGenerationRequest, prompt: str, ai_request: AIRequest) -> Dict[str, Any]:
         """Generate mock triathlon plan (2 months to Dec 24, 2025) - uses same data as real LLM"""
@@ -868,6 +1709,7 @@ class AIService:
         
         weeks = []
         start_date = datetime(2025, 10, 25)
+        race_type = request.race_type or "olympic"
         
         for week_num in range(1, 9):  # 8 weeks = 2 months
             week_start = start_date + timedelta(weeks=week_num-1)
@@ -883,9 +1725,11 @@ class AIService:
             }
             weeks.append(week_data)
         
+        description_suffix = f" ({race_type.replace('_', ' ').title()})" if race_type else ""
+        
         return {
-            "title": f"Triathlon Training Plan - {request.goal}",
-            "description": f"8-week triathlon plan to achieve {request.goal} by December 24, 2025",
+            "title": f"Triathlon Training Plan - {request.goal}{description_suffix}",
+            "description": f"8-week triathlon plan to achieve {request.goal} by December 24, 2025{description_suffix}.",
             "sport_type": "triathlon",
             "level": request.level,
             "goal": request.goal,
@@ -966,6 +1810,16 @@ class AIService:
             workout = base_workouts[workout_idx].copy()
             workout["day"] = days[i]
             workout["rpe_target"] = 6 + (workout_idx % 3)
+            workout["sport"] = "run"
+            zone = workout.get("intensity", "Z2").upper()
+            workout["zone"] = zone if zone.startswith("Z") else "Z2"
+            workout["structure"] = self._build_mock_structure(
+                sport="run",
+                duration_minutes=workout["duration_minutes"],
+                zone=workout["zone"],
+                description=workout.get("description", ""),
+                workout_type=workout.get("type", "Run"),
+            )
             workouts.append(workout)
         
         return workouts
@@ -1000,6 +1854,106 @@ class AIService:
             workout = tri_workouts[workout_idx].copy()
             workout["day"] = days[i]
             workout["rpe_target"] = 6 + (workout_idx % 3)
+            sport = self._infer_mock_sport_from_type(workout.get("type"))
+            workout["sport"] = sport
+            zone = workout.get("intensity", "Z2").upper()
+            if sport == "bike" and zone == "Z3":
+                workout["zone"] = "Z3"
+            else:
+                workout["zone"] = zone if zone.startswith("Z") else "Z2"
+            workout["structure"] = self._build_mock_structure(
+                sport=sport,
+                duration_minutes=workout["duration_minutes"],
+                zone=workout["zone"],
+                description=workout.get("description", ""),
+                workout_type=workout.get("type", "Session"),
+            )
             workouts.append(workout)
         
         return workouts
+
+    def _build_mock_structure(
+        self,
+        *,
+        sport: str,
+        duration_minutes: int,
+        zone: str,
+        description: str,
+        workout_type: str,
+    ) -> Dict[str, Any]:
+        total_seconds = max(int(duration_minutes * 60), 600)
+        warmup_seconds = min(600, max(total_seconds // 6, 300))
+        cooldown_seconds = warmup_seconds
+        main_seconds = max(total_seconds - warmup_seconds - cooldown_seconds, 300)
+
+        warmup_step = {
+            "step_type": "steady",
+            "duration": {"type": "time", "seconds": warmup_seconds},
+            "target": {"type": "zone", "zone": "Z2" if sport != "bike" else "Z2"},
+            "notes": "Gradually build effort" if sport != "swim" else "Smooth easy strokes",
+        }
+
+        cooldown_step = {
+            "step_type": "steady",
+            "duration": {"type": "time", "seconds": cooldown_seconds},
+            "target": {"type": "zone", "zone": "Z1"},
+            "notes": "Relax and lower intensity",
+        }
+
+        if "interval" in workout_type.lower():
+            interval_seconds = max(main_seconds // 6, 90)
+            recovery_seconds = interval_seconds
+            repeat_count = max(main_seconds // (interval_seconds + recovery_seconds), 3)
+            repeat_step = {
+                "step_type": "repeat",
+                "repeat": int(repeat_count),
+                "steps": [
+                    {
+                        "step_type": "interval",
+                        "duration": {"type": "time", "seconds": interval_seconds},
+                        "target": {"type": "zone", "zone": zone},
+                        "notes": description or "Hard effort",
+                    },
+                    {
+                        "step_type": "recovery",
+                        "duration": {"type": "time", "seconds": recovery_seconds},
+                        "target": {"type": "zone", "zone": "Z2"},
+                        "notes": "Controlled recovery",
+                    },
+                ],
+            }
+            main_steps = [repeat_step]
+        else:
+            main_steps = [
+                {
+                    "step_type": "steady",
+                    "duration": {"type": "time", "seconds": main_seconds},
+                    "target": {"type": "zone", "zone": zone},
+                    "notes": description or "Sustain target intensity",
+                }
+            ]
+
+        return {
+            "sport": sport,
+            "segments": [
+                {"segment_type": "warmup", "name": "Warm-up", "steps": [warmup_step]},
+                {"segment_type": "main", "name": "Main Set", "steps": main_steps},
+                {"segment_type": "cooldown", "name": "Cool-down", "steps": [cooldown_step]},
+            ],
+            "metadata": {
+                "description": description,
+            },
+        }
+
+    @staticmethod
+    def _infer_mock_sport_from_type(workout_type: Optional[str]) -> str:
+        if not workout_type:
+            return "run"
+        lowered = workout_type.lower()
+        if "swim" in lowered:
+            return "swim"
+        if "bike" in lowered or "ride" in lowered or "brick" in lowered:
+            return "bike"
+        if "run" in lowered:
+            return "run"
+        return "triathlon"
