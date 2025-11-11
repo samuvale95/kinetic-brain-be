@@ -896,7 +896,7 @@ class AIService:
                 context=request.user_profile,
                 max_tokens=3500,
                 temperature=0.7,
-                response_format={"type": "json_object"},
+                response_format={"type": "json_schema", "json_schema": WORKOUT_PLAN_JSON_SCHEMA},
             )
             logger.info(f"[WORKOUT_PLAN][MOCK] AIRequest created - prompt_length: {len(ai_request.prompt)}, has_context: {ai_request.context is not None}, max_tokens: {ai_request.max_tokens}")
 
@@ -961,7 +961,7 @@ class AIService:
         """Call the LLM in chunks and merge their responses."""
         sport = (request.sport_type or "").lower()
         if sport in {"running", "run", "trail", "trail running"}:
-            chunk_size = 1
+            chunk_size = 2
         elif sport in {"triathlon"}:
             chunk_size = 1
         elif sport in {"cycling", "bike"}:
@@ -992,7 +992,7 @@ class AIService:
                 context=request.user_profile,
                 max_tokens=3500,
                 temperature=0.7,
-                response_format={"type": "json_object"},
+                response_format={"type": "json_schema", "json_schema": WORKOUT_PLAN_JSON_SCHEMA},
             )
 
             response = self.generate_response(ai_request)
@@ -1957,3 +1957,164 @@ class AIService:
         if "run" in lowered:
             return "run"
         return "triathlon"
+
+
+WORKOUT_PLAN_JSON_SCHEMA: Dict[str, Any] = {
+    "name": "workout_plan_chunk",
+    "schema": {
+        "type": "object",
+        "required": ["weeks"],
+        "properties": {
+            "title": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "summary": {"type": ["string", "null"]},
+            "notes": {"type": ["string", "null"]},
+            "weeks": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "required": ["week", "focus", "workouts"],
+                    "properties": {
+                        "week": {"type": "integer", "minimum": 1},
+                        "focus": {"type": "string"},
+                        "week_start": {"type": ["string", "null"]},
+                        "week_end": {"type": ["string", "null"]},
+                        "total_hours": {"type": ["number", "null"], "minimum": 0},
+                        "workouts": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "required": ["day", "sport", "duration_minutes", "structure"],
+                                "properties": {
+                                    "day": {"type": "string"},
+                                    "type": {"type": ["string", "null"]},
+                                    "sport": {"type": "string"},
+                                    "duration_minutes": {"type": ["number", "integer"], "minimum": 0.1},
+                                    "intensity": {"type": ["string", "null"]},
+                                    "rpe_target": {"type": ["integer", "null"], "minimum": 1},
+                                    "zone": {"type": ["string", "null"]},
+                                    "description": {"type": ["string", "null"]},
+                                    "modifications": {"type": ["string", "null"]},
+                                    "notes": {"type": ["string", "null"]},
+                                    "structure": {
+                                        "type": "object",
+                                        "required": ["sport", "segments"],
+                                        "properties": {
+                                            "sport": {"type": "string"},
+                                            "segments": {
+                                                "type": "array",
+                                                "minItems": 1,
+                                                "items": {"$ref": "#/definitions/segment"}
+                                            },
+                                            "metadata": {
+                                                "anyOf": [
+                                                    {"$ref": "#/definitions/structureMetadata"},
+                                                    {"type": "null"}
+                                                ]
+                                            },
+                                            "equipment": {
+                                                "anyOf": [
+                                                    {
+                                                        "type": "array",
+                                                        "items": {"type": "string"}
+                                                    },
+                                                    {"type": "null"}
+                                                ]
+                                            }
+                                        },
+                                        "additionalProperties": False
+                                    }
+                                },
+                                "additionalProperties": False
+                            }
+                        }
+                    },
+                    "additionalProperties": False
+                }
+            }
+        },
+        "additionalProperties": False,
+        "definitions": {
+            "duration": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["time", "distance", "repetitions"]},
+                    "seconds": {"type": "integer", "minimum": 1},
+                    "distance": {"type": "number", "minimum": 0.1},
+                    "repetitions": {"type": "integer", "minimum": 1},
+                    "units": {"type": ["string", "null"]}
+                },
+                "additionalProperties": False
+            },
+            "target": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": ["string", "null"]},
+                    "zone": {"type": ["string", "null"]},
+                    "min_value": {"type": ["number", "null"]},
+                    "max_value": {"type": ["number", "null"]},
+                    "units": {"type": ["string", "null"]}
+                },
+                "additionalProperties": False
+            },
+            "segmentStep": {
+                "type": "object",
+                "required": ["step_type"],
+                "properties": {
+                    "step_type": {"type": "string"},
+                    "name": {"type": ["string", "null"]},
+                    "repeat": {"type": ["integer", "null"], "minimum": 1},
+                    "duration": {
+                        "anyOf": [
+                            {"$ref": "#/definitions/duration"},
+                            {"type": "null"}
+                        ]
+                    },
+                    "target": {
+                        "anyOf": [
+                            {"$ref": "#/definitions/target"},
+                            {"type": "null"}
+                        ]
+                    },
+                    "notes": {"type": ["string", "null"]},
+                    "steps": {
+                        "anyOf": [
+                            {
+                                "type": "array",
+                                "items": {"$ref": "#/definitions/segmentStep"}
+                            },
+                            {"type": "null"}
+                        ]
+                    }
+                },
+                "additionalProperties": False
+            },
+            "segment": {
+                "type": "object",
+                "required": ["segment_type", "steps"],
+                "properties": {
+                    "segment_type": {"type": "string"},
+                    "name": {"type": ["string", "null"]},
+                    "steps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"$ref": "#/definitions/segmentStep"}
+                    }
+                },
+                "additionalProperties": False
+            },
+            "structureMetadata": {
+                "type": "object",
+                "properties": {
+                    "focus": {"type": ["string", "null"]},
+                    "rpe_target": {"type": ["integer", "null"], "minimum": 1},
+                    "description": {"type": ["string", "null"]},
+                    "notes": {"type": ["string", "null"]}
+                },
+                "additionalProperties": False
+            }
+        }
+    }
+}
