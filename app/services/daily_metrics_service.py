@@ -1,9 +1,12 @@
-from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, func
 from datetime import date, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
+
+from loguru import logger
+from sqlalchemy import and_, func, select
+from sqlalchemy.orm import Session
+
 from app.models.daily_metrics import DailyPerformanceMetrics
-from app.models.strava import StravaActivity, StravaAccount
+from app.models.strava import StravaAccount, StravaActivity
 from app.services.metrics_calculation_service import MetricsCalculationService
 
 
@@ -28,6 +31,10 @@ class DailyMetricsService:
         - Dopo ogni calcolo metriche attività
         - Quando l'utente completa un workout
         """
+        logger.bind(user_id=user_id, activity_date=str(activity_date)).info(
+            "[DAILY_METRICS] Updating daily metrics"
+        )
+
         # 1. Calcola TSS totale per questo giorno
         strava_account_ids = self._get_strava_account_ids(user_id)
         
@@ -43,6 +50,12 @@ class DailyMetricsService:
         ).scalars().all()
         
         daily_tss = sum(a.tss or 0 for a in activities)
+        logger.bind(
+            user_id=user_id,
+            activity_date=str(activity_date),
+            activities_count=len(activities),
+            daily_tss=daily_tss,
+        ).info("[DAILY_METRICS] Aggregated daily TSS")
         
         # 2. Recupera o calcola valori del giorno precedente
         prev_date = activity_date - timedelta(days=1)
@@ -92,6 +105,13 @@ class DailyMetricsService:
             existing.prev_atl = metrics['prev_atl']
             existing.activities_count = len(activities)
             record = existing
+            logger.bind(
+                user_id=user_id,
+                activity_date=str(activity_date),
+                ctl=metrics["ctl"],
+                atl=metrics["atl"],
+                tsb=metrics["tsb"],
+            ).info("[DAILY_METRICS] Updated existing daily metrics record")
         else:
             record = DailyPerformanceMetrics(
                 user_id=user_id,
@@ -105,6 +125,13 @@ class DailyMetricsService:
                 activities_count=len(activities)
             )
             self.db.add(record)
+            logger.bind(
+                user_id=user_id,
+                activity_date=str(activity_date),
+                ctl=metrics["ctl"],
+                atl=metrics["atl"],
+                tsb=metrics["tsb"],
+            ).info("[DAILY_METRICS] Created new daily metrics record")
         
         self.db.commit()
         self.db.refresh(record)
@@ -115,6 +142,11 @@ class DailyMetricsService:
             self._propagate_metrics_forward(user_id, activity_date, date.today())
             
             return record
+        
+        logger.bind(user_id=user_id, activity_date=str(activity_date)).info(
+            "[DAILY_METRICS] Daily metrics update complete"
+        )
+        return record
     
     def _propagate_metrics_forward(self, user_id: int, start_date: date, end_date: date):
         """Propaga aggiornamenti ai giorni successivi"""
@@ -139,6 +171,12 @@ class DailyMetricsService:
             # Ricalcola questo giorno
             self.update_daily_metrics(user_id, current_date, propagate=False)
             current_date += timedelta(days=1)
+        
+        logger.bind(
+            user_id=user_id,
+            start_date=str(start_date),
+            end_date=str(end_date),
+        ).info("[DAILY_METRICS] Propagation complete")
     
     def _calculate_from_history(self, user_id: int, target_date: date) -> Dict[str, float]:
         """Calcola CTL/ATL dalla storia se non abbiamo valori precedenti"""

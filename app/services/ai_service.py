@@ -1,15 +1,24 @@
-import openai
-from typing import Dict, Any, Optional, List, Tuple
-from copy import deepcopy
-from sqlalchemy.orm import Session
-from app.config import settings
-from app.schemas.ai import AIRequest, AIResponse, WorkoutPlanGenerationRequest, WorkoutAnalysisRequest, WorkoutAnalysisResponse
-from app.models.ai import AIResponseLog
 import json
-from datetime import datetime, timedelta
 import math
+import openai
 import os
+import uuid
+from copy import deepcopy
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
+
 from loguru import logger
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.models.ai import AIResponseLog
+from app.schemas.ai import (
+    AIRequest,
+    AIResponse,
+    WorkoutAnalysisRequest,
+    WorkoutAnalysisResponse,
+    WorkoutPlanGenerationRequest,
+)
 
 
 class PlanGenerationError(Exception):
@@ -779,6 +788,14 @@ def _build_mock_running_plan_standard() -> Dict[str, Any]:
 MOCK_RUNNING_PLAN_STANDARD: Dict[str, Any] = _build_mock_running_plan_standard()
 
 
+def _truncate_text(value: Optional[str], limit: int = 500) -> Optional[str]:
+    if not value:
+        return None
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}...<truncated>"
+
+
 class AIService:
     def __init__(self, db: Optional[Session] = None):
         self.db = db
@@ -788,21 +805,33 @@ class AIService:
     
     def generate_response(self, request: AIRequest) -> AIResponse:
         """Generate AI response using OpenAI API"""
-        logger.info(f"[AI] Starting OpenAI API call - model: {settings.openai_model}, max_tokens: {request.max_tokens or settings.openai_max_tokens}, temperature: {request.temperature or 0.7}")
-        logger.debug(f"[AI] Request prompt length: {len(request.prompt)} characters")
-        logger.debug(f"[AI] Request prompt preview: {request.prompt[:200]}...")
+        request_id = str(uuid.uuid4())
+        resolved_max_tokens = request.max_tokens or settings.openai_max_tokens
+        resolved_temperature = request.temperature or 0.7
+
+        log_ctx: Dict[str, Any] = {
+            "ai_request_id": request_id,
+            "model": settings.openai_model,
+            "prompt_length": len(request.prompt),
+            "has_context": request.context is not None,
+            "response_format": request.response_format.get("type") if request.response_format else None,
+            "max_tokens": resolved_max_tokens,
+            "temperature": resolved_temperature,
+        }
+
+        prompt_preview = _truncate_text(request.prompt, limit=400)
+        if prompt_preview:
+            log_ctx["prompt_preview"] = prompt_preview
+
+        if request.context:
+            if isinstance(request.context, dict):
+                log_ctx["context_keys"] = list(request.context.keys())
+            else:
+                log_ctx["context_type"] = type(request.context).__name__
+
+        logger.bind(**log_ctx).info("[AI] Starting OpenAI API call")
         
         try:
-            # Log request details (without full prompt to avoid log spam)
-            request_summary = {
-                "model": settings.openai_model,
-                "max_tokens": request.max_tokens or settings.openai_max_tokens,
-                "temperature": request.temperature or 0.7,
-                "prompt_length": len(request.prompt),
-                "has_context": request.context is not None
-            }
-            logger.debug(f"[AI] OpenAI request details: {json.dumps(request_summary, indent=2)}")
-            
             request_kwargs = dict(
                 model=settings.openai_model,
                 messages=[
@@ -821,11 +850,16 @@ class AIService:
             # Log response details
             response_content = response.choices[0].message.content
             usage_info = response.usage.dict() if response.usage else None
-            
-            logger.info(f"[AI] OpenAI API call successful - model: {response.model}, response length: {len(response_content)} characters")
-            logger.debug(f"[AI] Response preview: {response_content[:200]}...")
-            if usage_info:
-                logger.info(f"[AI] Token usage: {json.dumps(usage_info, indent=2)}")
+
+            response_context = {
+                **log_ctx,
+                "model": response.model,
+                "response_length": len(response_content),
+                "response_preview": _truncate_text(response_content, limit=400),
+                "usage": usage_info,
+            }
+
+            logger.bind(**response_context).info("[AI] OpenAI API call successful")
             
             ai_response = AIResponse(
                 response=response_content,
@@ -834,12 +868,11 @@ class AIService:
                 created_at=datetime.utcnow().isoformat()
             )
             
-            logger.debug(f"[AI] AIResponse created successfully")
             return ai_response
             
         except Exception as e:
-            logger.error(f"[AI] OpenAI API call failed: {str(e)}")
-            logger.exception(f"[AI] Full exception traceback:")
+            error_context = {**log_ctx, "error": str(e)}
+            logger.bind(**error_context).exception("[AI] OpenAI API call failed")
             raise Exception(f"AI service error: {str(e)}")
     
     def generate_workout_plan(

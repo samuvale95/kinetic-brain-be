@@ -3,16 +3,19 @@ Statistics Service
 Provides aggregated statistics and analytics for training data
 """
 
-from typing import Dict, Any, List, Optional
-from datetime import datetime, date, timedelta
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+from loguru import logger
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, func
-from app.models.strava import StravaActivity
-from app.models.workout import Workout, WorkoutSession
+
 from app.models.daily_metrics import DailyPerformanceMetrics
+from app.models.strava import StravaActivity
 from app.models.user import User
-from app.services.metrics_calculation_service import MetricsCalculationService
+from app.models.workout import Workout, WorkoutSession
 from app.services.daily_metrics_service import DailyMetricsService
+from app.services.metrics_calculation_service import MetricsCalculationService
 
 
 class StatisticsService:
@@ -29,6 +32,8 @@ class StatisticsService:
         
         Returns total workouts, volume, current CTL/ATL/TSB, weekly TSS, zone distribution
         """
+        logger.bind(user_id=user_id).info("[STATS] Calculating dashboard overview")
+
         # Get Strava account IDs for user
         strava_account_ids = self._get_strava_account_ids(user_id)
         
@@ -144,7 +149,7 @@ class StatisticsService:
         # Completion rate - would need workout plans to calculate
         completion_rate = None
         
-        return {
+        overview = {
             'total_workouts': total_workouts,
             'total_training_hours': round(total_training_hours, 1),
             'current_ctl': current_ctl,
@@ -156,6 +161,15 @@ class StatisticsService:
             'zone_distribution_current_week': zone_distribution,
             'completion_rate_current_week': completion_rate
         }
+        logger.bind(
+            user_id=user_id,
+            total_workouts=total_workouts,
+            weekly_tss=round(weekly_tss, 2),
+            ctl=current_ctl,
+            atl=current_atl,
+            tsb=current_tsb,
+        ).info("[STATS] Overview calculation complete")
+        return overview
     
     def get_performance_chart_data(self, user_id: int, weeks: int = 12) -> Dict[str, Any]:
         """

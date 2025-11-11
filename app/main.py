@@ -11,6 +11,7 @@ from app.config import settings
 from app.database import engine, Base
 from app.api import auth, profile, workouts, calendar, ai, dashboard, strava, weather, statistics
 from app.middleware.auth_middleware import AuthMiddleware
+from app.middleware.logging_middleware import RequestResponseLoggingMiddleware
 
 
 @asynccontextmanager
@@ -70,6 +71,9 @@ app = FastAPI(
     description="Backend API for Kinetic Brain - Sports Training Management",
     lifespan=lifespan
 )
+
+# Centralized request/response logging
+app.add_middleware(RequestResponseLoggingMiddleware)
 
 # Add authentication middleware (before CORS)
 @app.middleware("http")

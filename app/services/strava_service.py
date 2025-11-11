@@ -107,6 +107,16 @@ class StravaService:
             self.db.commit()
         else:
             self.db.flush()
+
+        logger.bind(
+            job_id=job.id,
+            status=job.status,
+            processed=job.processed_activities,
+            total=job.total_activities,
+            metrics_phase=job.metrics_phase,
+            metrics_total=job.metrics_phases_total,
+            error=job.error,
+        ).debug("[STRAVA_SYNC] Sync job updated")
         return job
 
     
