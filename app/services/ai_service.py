@@ -19,6 +19,7 @@ from app.schemas.ai import (
     WorkoutAnalysisResponse,
     WorkoutPlanGenerationRequest,
 )
+from app.services.plan_validator import PlanValidationError, WorkoutPlanValidator
 
 
 class PlanGenerationError(Exception):
@@ -802,6 +803,7 @@ class AIService:
         openai.api_key = settings.openai_api_key
         self.client = openai.OpenAI(api_key=settings.openai_api_key)
         self.mock_mode = settings.mock_llm
+        self.plan_validator = WorkoutPlanValidator()
     
     def generate_response(self, request: AIRequest) -> AIResponse:
         """Generate AI response using OpenAI API"""
@@ -960,12 +962,19 @@ class AIService:
 
             logger.info(f"[WORKOUT_PLAN] Successfully assembled plan with {len(combined_weeks)} weeks across {len(raw_chunks)} chunk(s)")
             parse_success = True
+
+            self.plan_validator.validate(plan_data)
         except PlanGenerationError as exc:
             error_message = str(exc)
             logger.warning(f"[WORKOUT_PLAN] {error_message} - falling back to text response")
             if exc.raw_chunks:
                 raw_chunks = exc.raw_chunks
             plan_data = self._build_fallback_plan(request, total_weeks, raw_chunks)
+        except PlanValidationError as exc:
+            error_message = f"Plan validation failed: {', '.join(exc.violations)}"
+            logger.error(f"[WORKOUT_PLAN] {error_message}")
+            parse_success = False
+            raise PlanGenerationError(error_message, raw_chunks=raw_chunks) from exc
         finally:
             combined_prompt = self._combine_prompts(raw_chunks)
             combined_response = self._combine_raw_chunks(raw_chunks)
