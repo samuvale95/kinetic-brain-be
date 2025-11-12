@@ -6,8 +6,9 @@ The endpoint `POST /ai/generate-plan` now accepts additional race metadata so th
 ## Endpoint
 - **URL**: `/ai/generate-plan`
 - **Method**: `POST`
-- **Auth**: Bearer token (same as other protected endpoints)
-- **Response**: `{ "plan": { ... } }` – unchanged response structure
+- **Auth**: Bearer token (same as altre rotte protette)
+- **Success response**: `{ "plan": { ... } }`
+- **Error response**: `{"detail": "...", "violations": [...]}` per violazioni del validator (status `500`)
 
 ## Request Schema
 ```json
@@ -106,5 +107,87 @@ Validation rules (enforced server-side):
 - Backend prompt already incorporates the extra race data to guide the LLM.
 - Mock mode echoes the new fields in logs and sample plan metadata; use it to verify end-to-end integration without consuming tokens.
 - No changes are required for plan ingestion endpoints; structured workouts are delivered as before.
+
+## Response Examples
+
+### Success
+```json
+{
+  "plan": {
+    "title": "Running Training Plan - Intermediate",
+    "description": "16-week progression toward a half marathon PB.",
+    "sport_type": "running",
+    "level": "intermediate",
+    "goal": "PB Half Marathon (21.097 km)",
+    "duration_weeks": 16,
+    "weekly_hours": 6.5,
+    "start_date": "2025-01-06",
+    "end_date": "2025-05-04",
+    "phases": [
+      {"name": "Base", "weeks": "1-4"},
+      {"name": "Build", "weeks": "5-10"},
+      {"name": "Peak", "weeks": "11-14"},
+      {"name": "Taper", "weeks": "15-16"}
+    ],
+    "weeks": [
+      {
+        "week": 1,
+        "focus": "Aerobic base + drills",
+        "workouts": [
+          {
+            "day": "Monday",
+            "type": "Endurance",
+            "sport": "run",
+            "duration_minutes": 55,
+            "intensity": "Z2",
+            "rpe_target": 4,
+            "structure": {
+              "sport": "run",
+              "segments": [
+                {"segment_type": "warmup", "steps": [...]},
+                {"segment_type": "main", "steps": [...]},
+                {"segment_type": "cooldown", "steps": [...]}
+              ],
+              "metadata": {
+                "focus": "Easy aerobic volume, cadence drills",
+                "rpe_target": 4
+              }
+            }
+          },
+          "... other workouts ..."
+        ]
+      },
+      "... weeks 2-16 ..."
+    ]
+  }
+}
+```
+
+### Validation failure (readiness / injury risk)
+Il validator ora usa i dati più recenti di readiness (`daily_readiness_metrics`) e carico settimanale (`weekly_training_summaries`). Se l’atleta risulta non pronto, il piano viene bloccato:
+
+```json
+{
+  "detail": "AI plan generation error: Plan validation failed",
+  "violations": [
+    "Athlete readiness state requires rest before new plan",
+    "Athlete injury risk score 1.72 exceeds safe threshold 1.50"
+  ]
+}
+```
+
+### Validation failure (schema)
+Restano valide le regole precedenti (es. combinazioni di sport e campi gara non consentite):
+
+```json
+{
+  "detail": "AI plan generation error: sport_type 'cycling' does not accept race_type",
+  "violations": [
+    "sport_type 'cycling' does not accept race_type"
+  ]
+}
+```
+
+In tutti i casi di errore, il frontend deve intercettare la risposta `500`, mostrare il messaggio principale (`detail`) e, quando presenti, le singole violazioni per aiutare l’utente a capire cosa correggere.
 
 

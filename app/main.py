@@ -9,7 +9,7 @@ import os
 
 from app.config import settings
 from app.database import engine, Base
-from app.api import auth, profile, workouts, calendar, ai, dashboard, strava, weather, statistics
+from app.api import auth, profile, workouts, calendar, ai, dashboard, strava, weather, statistics, metrics
 from app.middleware.auth_middleware import AuthMiddleware
 from app.middleware.logging_middleware import RequestResponseLoggingMiddleware
 
@@ -121,6 +121,7 @@ app.include_router(dashboard.router)
 app.include_router(strava.router)
 app.include_router(weather.router)
 app.include_router(statistics.router)
+app.include_router(metrics.router)
 
 
 # Root endpoint

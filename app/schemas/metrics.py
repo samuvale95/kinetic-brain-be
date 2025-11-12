@@ -1,5 +1,8 @@
+from datetime import date
+from enum import Enum
+from typing import Any, Dict, Optional
+
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
 
 
 class TrainingMetricsResponse(BaseModel):
@@ -26,5 +29,85 @@ class TrainingMetricsResponse(BaseModel):
         from_attributes = True
 
 
-# WeeklySummaryResponse removed - now using daily metrics
+class GroupingGranularity(str, Enum):
+    day = "day"
+    week = "week"
+    month = "month"
+    year = "year"
+
+
+class MetricsLoadMetadata(BaseModel):
+    grouping: GroupingGranularity
+    start_date: date
+    end_date: date
+    sport: Optional[str] = None
+
+
+class PlanAdherenceSummary(BaseModel):
+    planned: int
+    completed_sessions: int
+    scheduled_completed: int
+    scheduled_skipped: int
+
+
+class LoadLongWorkout(BaseModel):
+    duration_minutes: Optional[float] = None
+    distance_km: Optional[float] = None
+    progression_pct: Optional[float] = None
+
+
+class LoadSeriesPoint(BaseModel):
+    period_start: date
+    period_end: date
+    total_duration_minutes: Optional[float] = None
+    total_distance_km: Optional[float] = None
+    total_tss: Optional[float] = None
+    multi_sport_load: Optional[float] = None
+    ct_load: Optional[float] = None
+    acute_load: Optional[float] = None
+    training_stress_balance: Optional[float] = None
+    sport_breakdown: Optional[Dict[str, Dict[str, Any]]] = None
+    high_intensity_ratio: Optional[float] = None
+    high_intensity_sessions: Optional[int] = None
+    long_workout: Optional[LoadLongWorkout] = None
+    compliance_score: Optional[float] = None
+    plan_adherence: Optional[PlanAdherenceSummary] = None
+
+
+class LoadMetricsResponse(BaseModel):
+    metadata: MetricsLoadMetadata
+    series: list[LoadSeriesPoint]
+
+
+class ReadinessPointHR(BaseModel):
+    baseline: Optional[float] = None
+    value: Optional[float] = None
+    delta: Optional[float] = None
+
+
+class ReadinessSeriesPoint(BaseModel):
+    period_start: date
+    period_end: date
+    recovery_index: Optional[float] = None
+    readiness_state: Optional[str] = None
+    hydration_score: Optional[float] = None
+    nutrition_score: Optional[float] = None
+    hrv: Optional[ReadinessPointHR] = None
+    rhr: Optional[ReadinessPointHR] = None
+    sleep_hours: Optional[float] = None
+    sleep_quality_score: Optional[float] = None
+    epoc: Optional[float] = None
+    injury_risk_score: Optional[float] = None
+
+
+class ReadinessMetadata(BaseModel):
+    grouping: GroupingGranularity
+    start_date: date
+    end_date: date
+
+
+class ReadinessMetricsResponse(BaseModel):
+    metadata: ReadinessMetadata
+    series: list[ReadinessSeriesPoint]
+
 
