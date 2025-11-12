@@ -2,9 +2,10 @@ from .user import User, UserProfile, PerformanceMetrics, OAuthAccount
 from .workout import WorkoutPlan, Workout, WorkoutSession
 from .calendar import CalendarEvent
 from .strava import StravaAccount, StravaActivity, StravaWebhook
-from .training_metrics import TrainingMetrics
-from .daily_metrics import DailyPerformanceMetrics
+from .training_metrics import TrainingMetrics, WeeklyTrainingSummary
+from .daily_metrics import DailyPerformanceMetrics, DailyReadinessMetrics
 from .ai import AIResponseLog
+from .metrics_job import MetricsPendingJob
 
 __all__ = [
     "User",
@@ -19,6 +20,9 @@ __all__ = [
     "StravaActivity",
     "StravaWebhook",
     "TrainingMetrics",
+    "WeeklyTrainingSummary",
     "DailyPerformanceMetrics",
+    "DailyReadinessMetrics",
+    "MetricsPendingJob",
     "AIResponseLog",
 ]

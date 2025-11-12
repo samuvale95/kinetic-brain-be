@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, Float, ForeignKey, DateTime, Date
+from sqlalchemy import Column, Integer, Float, ForeignKey, DateTime, Date, String, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+
 from app.database import Base
 
 
@@ -31,4 +32,39 @@ class DailyPerformanceMetrics(Base):
     
     # Relationships
     user = relationship("User", back_populates="daily_metrics")
+
+
+class DailyReadinessMetrics(Base):
+    __tablename__ = "daily_readiness_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    metric_date = Column(Date, nullable=False)
+
+    hrv_baseline = Column(Float)
+    hrv_value = Column(Float)
+    hrv_delta = Column(Float)
+
+    rhr_baseline = Column(Float)
+    rhr_value = Column(Float)
+    rhr_delta = Column(Float)
+
+    sleep_hours = Column(Float)
+    sleep_quality_score = Column(Float)
+    epoc = Column(Float)
+
+    recovery_index = Column(Float)
+    readiness_state = Column(String(32))
+
+    hydration_status = Column(String(32))
+    hydration_score = Column(Float)
+    nutrition_score = Column(Float)
+    weight_delta_kg = Column(Float)
+
+    notes = Column(Text)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User", back_populates="daily_readiness_metrics")
 

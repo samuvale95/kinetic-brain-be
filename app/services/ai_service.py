@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.ai import AIResponseLog
+from app.models.daily_metrics import DailyReadinessMetrics
+from app.models.training_metrics import WeeklyTrainingSummary
 from app.schemas.ai import (
     AIRequest,
     AIResponse,
@@ -20,6 +22,7 @@ from app.schemas.ai import (
     WorkoutPlanGenerationRequest,
 )
 from app.services.plan_validator import PlanValidationError, WorkoutPlanValidator
+from app.services.metrics_orchestrator import enqueue_weekly_summary_job, process_metrics_jobs
 
 
 class PlanGenerationError(Exception):
@@ -963,7 +966,25 @@ class AIService:
             logger.info(f"[WORKOUT_PLAN] Successfully assembled plan with {len(combined_weeks)} weeks across {len(raw_chunks)} chunk(s)")
             parse_success = True
 
-            self.plan_validator.validate(plan_data)
+            user_state = self._build_user_state(user_id)
+            self.plan_validator.validate(plan_data, user_state=user_state)
+
+            if self.db and user_id:
+                try:
+                    plan_start = plan_data.get("start_date")
+                    if plan_start:
+                        week_start = datetime.strptime(plan_start, "%Y-%m-%d").date()
+                    else:
+                        week_start = datetime.utcnow().date()
+                    week_start = week_start - timedelta(days=week_start.weekday())
+                    enqueue_weekly_summary_job(self.db, user_id=user_id, week_start=week_start)
+                    process_metrics_jobs(self.db, limit=1)
+                except Exception as exc:
+                    logger.warning(
+                        "[WORKOUT_PLAN] Failed to enqueue/process weekly summary after plan generation for user=%s: %s",
+                        user_id,
+                        exc,
+                    )
         except PlanGenerationError as exc:
             error_message = str(exc)
             logger.warning(f"[WORKOUT_PLAN] {error_message} - falling back to text response")
@@ -1266,6 +1287,34 @@ class AIService:
             if key not in merged or merged[key] is None:
                 merged[key] = value
         return merged
+
+    def _build_user_state(self, user_id: Optional[int]) -> Optional[Dict[str, Any]]:
+        if not self.db or not user_id:
+            return None
+
+        readiness_record = (
+            self.db.query(DailyReadinessMetrics)
+            .filter(DailyReadinessMetrics.user_id == user_id)
+            .order_by(DailyReadinessMetrics.metric_date.desc())
+            .first()
+        )
+
+        weekly_summary = (
+            self.db.query(WeeklyTrainingSummary)
+            .filter(WeeklyTrainingSummary.user_id == user_id)
+            .order_by(WeeklyTrainingSummary.week_start.desc())
+            .first()
+        )
+
+        if not readiness_record and not weekly_summary:
+            return None
+
+        return {
+            "readiness_state": readiness_record.readiness_state if readiness_record else None,
+            "recovery_index": readiness_record.recovery_index if readiness_record else None,
+            "hydration_score": readiness_record.hydration_score if readiness_record else None,
+            "injury_risk_score": weekly_summary.injury_risk_score if weekly_summary else None,
+        }
 
     def analyze_workout(self, request: WorkoutAnalysisRequest) -> WorkoutAnalysisResponse:
         """Analyze workout performance using AI"""

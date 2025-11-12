@@ -65,7 +65,7 @@ class WorkoutPlanValidator:
     ) -> None:
         self.thresholds = thresholds or DEFAULT_THRESHOLDS
 
-    def validate(self, plan: Dict[str, Any]) -> None:
+    def validate(self, plan: Dict[str, Any], user_state: Optional[Dict[str, Any]] = None) -> None:
         violations: List[str] = []
 
         weeks = plan.get("weeks") or []
@@ -109,6 +109,23 @@ class WorkoutPlanValidator:
                 thresholds=thresholds,
             )
         )
+
+        if user_state:
+            readiness_state = user_state.get("readiness_state")
+            recovery_index = user_state.get("recovery_index")
+            injury_risk_score = user_state.get("injury_risk_score")
+            hydration_score = user_state.get("hydration_score")
+
+            if readiness_state == "rest":
+                violations.append("Athlete readiness state requires rest before new plan")
+            elif readiness_state == "caution" and recovery_index is not None and recovery_index < 0.6:
+                violations.append("Athlete readiness indicates caution; recovery index too low for new load")
+
+            if injury_risk_score is not None and injury_risk_score > 1.5:
+                violations.append(f"Athlete injury risk score {injury_risk_score:.2f} exceeds safe threshold 1.50")
+
+            if hydration_score is not None and hydration_score < 0.4:
+                violations.append("Hydration score critically low; postpone plan generation")
 
         if violations:
             logger.warning(

@@ -8,6 +8,11 @@ from sqlalchemy.orm import Session
 from app.models.daily_metrics import DailyPerformanceMetrics
 from app.models.strava import StravaAccount, StravaActivity
 from app.services.metrics_calculation_service import MetricsCalculationService
+from app.services.metrics_orchestrator import (
+    enqueue_daily_readiness_job,
+    enqueue_weekly_summary_job,
+    process_metrics_jobs,
+)
 
 
 class DailyMetricsService:
@@ -136,6 +141,28 @@ class DailyMetricsService:
         self.db.commit()
         self.db.refresh(record)
         
+        try:
+            enqueue_daily_readiness_job(
+                self.db,
+                user_id=user_id,
+                metric_date=activity_date,
+                inputs={
+                    "ctl": metrics.get("ctl"),
+                    "atl": metrics.get("atl"),
+                    "tsb": metrics.get("tsb"),
+                },
+            )
+            week_start = activity_date - timedelta(days=activity_date.weekday())
+            enqueue_weekly_summary_job(self.db, user_id=user_id, week_start=week_start)
+            process_metrics_jobs(self.db, limit=2)
+        except Exception as exc:
+            logger.warning(
+                "[DAILY_METRICS] Failed to enqueue/process advanced metric jobs for user=%s date=%s: %s",
+                user_id,
+                activity_date,
+                exc,
+            )
+
         # 5. Propaga aggiornamento ai giorni successivi fino a oggi (solo se richiesto)
         # Questo assicura che tutti i giorni successivi siano aggiornati
         if propagate:
