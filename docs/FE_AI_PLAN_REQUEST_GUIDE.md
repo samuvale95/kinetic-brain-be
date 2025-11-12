@@ -95,6 +95,7 @@ Validation rules (enforced server-side):
 4. **Error handling**
    - Backend returns 422 if validation fails (e.g., race_type with sport ≠ triathlon). Surface error to the user.
    - For 500 errors, show a generic retry message.
+   - If the requested duration exceeds the configured limit (`MAX_PLAN_DURATION_WEEKS`, default 24), the API responds with `500` and a message like `"Requested plan duration (32 weeks) exceeds the maximum allowed of 24 weeks."`; prompt the athlete to shorten the plan window.
 
 5. **Testing Checklist**
    - [ ] Running plan with `race_distance_km` sent; response includes tailored messaging.

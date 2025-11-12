@@ -9,9 +9,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.config import settings
 from app.models.ai import AIResponseLog
+from app.models.plan_version import PlanVersion
 from app.models.daily_metrics import DailyReadinessMetrics
 from app.models.training_metrics import WeeklyTrainingSummary
 from app.schemas.ai import (
@@ -910,6 +912,16 @@ class AIService:
             logger.error(f"[WORKOUT_PLAN] Unable to determine plan duration: {exc}")
             raise
 
+        if total_weeks > settings.max_plan_duration_weeks:
+            logger.warning(
+                "[WORKOUT_PLAN] Requested duration %s exceeds limit %s weeks",
+                total_weeks,
+                settings.max_plan_duration_weeks,
+            )
+            raise PlanGenerationError(
+                f"Requested plan duration ({total_weeks} weeks) exceeds the maximum allowed of {settings.max_plan_duration_weeks} weeks."
+            )
+
         # Update request object/state with resolved duration for downstream usage
         request.duration_weeks = total_weeks
         request_data["resolved_duration_weeks"] = total_weeks
@@ -942,6 +954,14 @@ class AIService:
             result["duration_weeks"] = total_weeks
             logger.info(f"[WORKOUT_PLAN][MOCK] Mock plan generated successfully - title: {result.get('title', 'N/A')}")
             logger.debug(f"[WORKOUT_PLAN][MOCK] Mock plan keys: {list(result.keys())}")
+
+            self._store_plan_version(
+                user_id=user_id,
+                plan_data=result,
+                duration_weeks=total_weeks,
+                sport_type=result.get("sport_type") or request.sport_type,
+                level=result.get("level") or request.level,
+            )
             return result
 
         raw_chunks: List[Dict[str, Any]] = []
@@ -985,6 +1005,14 @@ class AIService:
                         user_id,
                         exc,
                     )
+
+            self._store_plan_version(
+                user_id=user_id,
+                plan_data=plan_data,
+                duration_weeks=total_weeks,
+                sport_type=plan_data.get("sport_type") or request.sport_type,
+                level=plan_data.get("level") or request.level,
+            )
         except PlanGenerationError as exc:
             error_message = str(exc)
             logger.warning(f"[WORKOUT_PLAN] {error_message} - falling back to text response")
@@ -1315,6 +1343,50 @@ class AIService:
             "hydration_score": readiness_record.hydration_score if readiness_record else None,
             "injury_risk_score": weekly_summary.injury_risk_score if weekly_summary else None,
         }
+
+    def _store_plan_version(
+        self,
+        *,
+        user_id: Optional[int],
+        plan_data: Dict[str, Any],
+        duration_weeks: int,
+        sport_type: Optional[str],
+        level: Optional[str],
+        plan_id: Optional[int] = None,
+        validator_violations: Optional[List[str]] = None,
+    ) -> None:
+        if not self.db or not user_id:
+            return
+
+        try:
+            snapshot = json.loads(json.dumps(plan_data))
+        except (TypeError, ValueError):
+            snapshot = deepcopy(plan_data)
+
+        try:
+            version = PlanVersion(
+                user_id=user_id,
+                plan_id=plan_id,
+                duration_weeks=duration_weeks,
+                sport_type=sport_type,
+                level=level,
+                plan_payload=snapshot,
+                validator_violations=validator_violations,
+            )
+            self.db.add(version)
+            self.db.commit()
+            logger.debug(
+                "[WORKOUT_PLAN] Stored plan version for user=%s duration=%s",
+                user_id,
+                duration_weeks,
+            )
+        except Exception as exc:
+            self.db.rollback()
+            logger.warning(
+                "[WORKOUT_PLAN] Failed to store plan version for user=%s: %s",
+                user_id,
+                exc,
+            )
 
     def analyze_workout(self, request: WorkoutAnalysisRequest) -> WorkoutAnalysisResponse:
         """Analyze workout performance using AI"""

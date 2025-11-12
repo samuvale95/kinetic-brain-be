@@ -31,6 +31,7 @@ class WorkoutPlan(Base):
     # Relationships
     user = relationship("User", back_populates="workout_plans")
     workouts = relationship("Workout", back_populates="plan")
+    versions = relationship("PlanVersion", back_populates="plan")
 
 
 class Workout(Base):

@@ -29,6 +29,7 @@ class User(Base):
     daily_metrics = relationship("DailyPerformanceMetrics", back_populates="user")
     daily_readiness_metrics = relationship("DailyReadinessMetrics", back_populates="user")
     weekly_training_summaries = relationship("WeeklyTrainingSummary", back_populates="user")
+    plan_versions = relationship("PlanVersion", back_populates="user")
     # strava_account = relationship("StravaAccount", back_populates="user", uselist=False)  # Temporarily disabled
 
 

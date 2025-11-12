@@ -8,6 +8,7 @@
 - [Calendario](#calendario)
 - [AI Integration](#ai-integration)
 - [Dashboard](#dashboard)
+- [Plan Versions](#plan-versions)
 
 ---
 
@@ -1883,3 +1884,49 @@ Per supporto tecnico o domande:
 - **Documentazione API**: `/docs` (Swagger UI)
 - **Documentazione Alternativa**: `/redoc`
 - **Health Check**: `/health`
+
+## Plan Versions
+
+### GET /plans/versions/
+Elenca gli snapshot dei piani generati per l’utente autenticato.
+
+**Query params opzionali**
+- `plan_id`: filtra le versioni legate a uno specifico `workout_plan`.
+- `limit` / `offset`: paginazione (default 20 / 0, max 100).
+
+**Response (200):**
+```json
+{
+  "items": [
+    {
+      "id": 42,
+      "created_at": "2025-11-12T18:40:22.910000+00:00",
+      "duration_weeks": 8,
+      "sport_type": "running",
+      "level": "intermediate",
+      "version_label": null,
+      "description": null
+    }
+  ],
+  "total": 7,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+### GET /plans/versions/{version_id}
+Recupera il payload completo di una versione. Restituisce `404` se la versione non appartiene all’utente.
+
+**Response (200):**
+```json
+{
+  "id": 42,
+  "created_at": "2025-11-12T18:40:22.910000+00:00",
+  "duration_weeks": 8,
+  "sport_type": "running",
+  "level": "intermediate",
+  "plan_id": null,
+  "plan_payload": { "title": "Half Marathon Builder", "duration_weeks": 8, "weeks": [...] },
+  "validator_violations": null
+}
+```

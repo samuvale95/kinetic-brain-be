@@ -6,6 +6,7 @@ from .training_metrics import TrainingMetrics, WeeklyTrainingSummary
 from .daily_metrics import DailyPerformanceMetrics, DailyReadinessMetrics
 from .ai import AIResponseLog
 from .metrics_job import MetricsPendingJob
+from .plan_version import PlanVersion
 
 __all__ = [
     "User",
@@ -24,5 +25,6 @@ __all__ = [
     "DailyPerformanceMetrics",
     "DailyReadinessMetrics",
     "MetricsPendingJob",
+    "PlanVersion",
     "AIResponseLog",
 ]

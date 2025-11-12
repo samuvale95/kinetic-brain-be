@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     
     # Mock progressive plan - always allow next week generation (for testing)
     mock_progressive_always_allow_generation: bool = False
+
+    # Plan generation limits
+    max_plan_duration_weeks: int = 24
     
     # Strava OAuth
     strava_client_id: str = ""
