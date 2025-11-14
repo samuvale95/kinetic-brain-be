@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 from typing import List, Optional
 from datetime import date, datetime
 from app.database import get_db
@@ -9,7 +9,7 @@ from app.schemas.calendar import (
     CalendarEventCreate, CalendarEventUpdate, CalendarEventResponse,
     DragDropRequest, CalendarMonthRequest
 )
-from app.models.workout import Workout, WorkoutPlan
+from app.models.workout import Workout, WorkoutPlan, WorkoutSession
 from app.services.workout_service import WorkoutService
 from app.api.auth import get_current_user
 
@@ -80,6 +80,10 @@ async def get_calendar_month(year: int, month: int,
     else:
         end_date = date(year, month + 1, 1) - date.resolution
     
+    # Convert to datetime for session queries
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    end_datetime = datetime.combine(end_date, datetime.max.time())
+    
     # Get workout IDs from inactive plans (same logic as /dashboard/upcoming)
     inactive_plan_workout_ids = db.execute(
         select(Workout.id)
@@ -93,8 +97,8 @@ async def get_calendar_month(year: int, month: int,
     ).scalars().all()
     inactive_plan_workout_ids = set(inactive_plan_workout_ids)
     
-    # Get all workouts for the month
-    workouts = db.execute(
+    # Get workouts with scheduled_date in the month
+    scheduled_workouts = db.execute(
         select(Workout)
         .where(
             and_(
@@ -104,11 +108,59 @@ async def get_calendar_month(year: int, month: int,
                 Workout.status.in_(["scheduled", "completed"])
             )
         )
-        .order_by(Workout.scheduled_date)
     ).scalars().all()
     
-    # Filter out workouts from inactive plans (same logic as /dashboard/upcoming)
-    filtered_workouts = [w for w in workouts if w.id not in inactive_plan_workout_ids]
+    # Get workouts completed in the month (via WorkoutSession.actual_date)
+    # This includes standalone workouts that were done but not scheduled for this month
+    workouts_from_sessions = db.execute(
+        select(Workout)
+        .join(WorkoutSession, Workout.id == WorkoutSession.workout_id)
+        .where(
+            and_(
+                WorkoutSession.user_id == user_id,
+                WorkoutSession.actual_date >= start_datetime,
+                WorkoutSession.actual_date <= end_datetime,
+                # Include standalone workouts or workouts not from inactive plans
+                or_(
+                    Workout.plan_id.is_(None),  # Standalone workouts
+                    ~Workout.id.in_(inactive_plan_workout_ids)  # Workouts from active plans
+                )
+            )
+        )
+        .distinct()
+    ).scalars().all()
+    
+    # Combine both lists and remove duplicates
+    all_workouts = list(scheduled_workouts) + list(workouts_from_sessions)
+    unique_workouts = {}
+    for workout in all_workouts:
+        # Filter out workouts from inactive plans
+        if workout.id not in inactive_plan_workout_ids:
+            unique_workouts[workout.id] = workout
+    
+    # Sort by scheduled_date (use actual_date from session if scheduled_date is None or different)
+    def get_display_date(w):
+        # If workout has scheduled_date in the month, use it
+        if w.scheduled_date and start_date <= w.scheduled_date <= end_date:
+            return w.scheduled_date
+        # Otherwise, try to get actual_date from the first session in the month
+        sessions_in_month = db.execute(
+            select(WorkoutSession)
+            .where(
+                and_(
+                    WorkoutSession.workout_id == w.id,
+                    WorkoutSession.actual_date >= start_datetime,
+                    WorkoutSession.actual_date <= end_datetime
+                )
+            )
+            .order_by(WorkoutSession.actual_date.asc())
+        ).scalars().first()
+        if sessions_in_month:
+            return sessions_in_month.actual_date.date()
+        return w.scheduled_date or date.min
+    
+    filtered_workouts = list(unique_workouts.values())
+    filtered_workouts.sort(key=lambda w: (get_display_date(w), w.duration_minutes or 0))
     
     return filtered_workouts
 
