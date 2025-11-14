@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+from sqlalchemy import select, and_
 from typing import List, Optional
 from datetime import date, datetime
 from app.database import get_db
@@ -8,6 +9,7 @@ from app.schemas.calendar import (
     CalendarEventCreate, CalendarEventUpdate, CalendarEventResponse,
     DragDropRequest, CalendarMonthRequest
 )
+from app.models.workout import Workout, WorkoutPlan
 from app.services.workout_service import WorkoutService
 from app.api.auth import get_current_user
 
@@ -52,11 +54,11 @@ async def get_calendar_events(start_date: Optional[date] = Query(None),
     return events
 
 
-@router.get("/{year}/{month}", response_model=List[CalendarEventResponse])
+@router.get("/{year}/{month}")
 async def get_calendar_month(year: int, month: int,
                             current_user: dict = Depends(get_current_user),
                             db: Session = Depends(get_db)):
-    """Get calendar events for specific month"""
+    """Get workouts for specific month (same format as upcoming/today-workouts)"""
     if month < 1 or month > 12:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -69,6 +71,8 @@ async def get_calendar_month(year: int, month: int,
             detail="Invalid year"
         )
     
+    user_id = current_user["user_id"]
+    
     # Calculate month boundaries
     start_date = date(year, month, 1)
     if month == 12:
@@ -76,14 +80,37 @@ async def get_calendar_month(year: int, month: int,
     else:
         end_date = date(year, month + 1, 1) - date.resolution
     
-    workout_service = WorkoutService(db)
-    events = workout_service.get_calendar_events(
-        user_id=current_user["user_id"],
-        start_date=start_date,
-        end_date=end_date
-    )
+    # Get workout IDs from inactive plans (same logic as /dashboard/upcoming)
+    inactive_plan_workout_ids = db.execute(
+        select(Workout.id)
+        .join(WorkoutPlan, Workout.plan_id == WorkoutPlan.id)
+        .where(
+            and_(
+                WorkoutPlan.user_id == user_id,
+                WorkoutPlan.status != "active"
+            )
+        )
+    ).scalars().all()
+    inactive_plan_workout_ids = set(inactive_plan_workout_ids)
     
-    return events
+    # Get all workouts for the month
+    workouts = db.execute(
+        select(Workout)
+        .where(
+            and_(
+                Workout.user_id == user_id,
+                Workout.scheduled_date >= start_date,
+                Workout.scheduled_date <= end_date,
+                Workout.status.in_(["scheduled", "completed"])
+            )
+        )
+        .order_by(Workout.scheduled_date)
+    ).scalars().all()
+    
+    # Filter out workouts from inactive plans (same logic as /dashboard/upcoming)
+    filtered_workouts = [w for w in workouts if w.id not in inactive_plan_workout_ids]
+    
+    return filtered_workouts
 
 
 @router.post("/events", response_model=CalendarEventResponse, status_code=status.HTTP_201_CREATED)
