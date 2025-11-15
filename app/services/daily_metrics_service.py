@@ -26,7 +26,8 @@ class DailyMetricsService:
         self,
         user_id: int,
         activity_date: date,
-        propagate: bool = True
+        propagate: bool = True,
+        skip_advanced_metrics: bool = False
     ) -> DailyPerformanceMetrics:
         """
         Aggiorna i metric giornalieri quando viene aggiunta/modificata un'attività
@@ -141,27 +142,29 @@ class DailyMetricsService:
         self.db.commit()
         self.db.refresh(record)
         
-        try:
-            enqueue_daily_readiness_job(
-                self.db,
-                user_id=user_id,
-                metric_date=activity_date,
-                inputs={
-                    "ctl": metrics.get("ctl"),
-                    "atl": metrics.get("atl"),
-                    "tsb": metrics.get("tsb"),
-                },
-            )
-            week_start = activity_date - timedelta(days=activity_date.weekday())
-            enqueue_weekly_summary_job(self.db, user_id=user_id, week_start=week_start)
-            process_metrics_jobs(self.db, limit=2)
-        except Exception as exc:
-            logger.warning(
-                "[DAILY_METRICS] Failed to enqueue/process advanced metric jobs for user=%s date=%s: %s",
-                user_id,
-                activity_date,
-                exc,
-            )
+        # Skip advanced metrics calculation during bulk operations for performance
+        if not skip_advanced_metrics:
+            try:
+                enqueue_daily_readiness_job(
+                    self.db,
+                    user_id=user_id,
+                    metric_date=activity_date,
+                    inputs={
+                        "ctl": metrics.get("ctl"),
+                        "atl": metrics.get("atl"),
+                        "tsb": metrics.get("tsb"),
+                    },
+                )
+                week_start = activity_date - timedelta(days=activity_date.weekday())
+                enqueue_weekly_summary_job(self.db, user_id=user_id, week_start=week_start)
+                process_metrics_jobs(self.db, limit=2)
+            except Exception as exc:
+                logger.warning(
+                    "[DAILY_METRICS] Failed to enqueue/process advanced metric jobs for user=%s date=%s: %s",
+                    user_id,
+                    activity_date,
+                    exc,
+                )
 
         # 5. Propaga aggiornamento ai giorni successivi fino a oggi (solo se richiesto)
         # Questo assicura che tutti i giorni successivi siano aggiornati
@@ -175,7 +178,7 @@ class DailyMetricsService:
         )
         return record
     
-    def _propagate_metrics_forward(self, user_id: int, start_date: date, end_date: date):
+    def _propagate_metrics_forward(self, user_id: int, start_date: date, end_date: date, skip_advanced_metrics: bool = False):
         """Propaga aggiornamenti ai giorni successivi"""
         current_date = start_date + timedelta(days=1)
         
@@ -195,8 +198,13 @@ class DailyMetricsService:
             if not prev_record:
                 break
             
-            # Ricalcola questo giorno
-            self.update_daily_metrics(user_id, current_date, propagate=False)
+            # Ricalcola questo giorno (skip advanced metrics during bulk propagation)
+            self.update_daily_metrics(
+                user_id, 
+                current_date, 
+                propagate=False, 
+                skip_advanced_metrics=skip_advanced_metrics
+            )
             current_date += timedelta(days=1)
         
         logger.bind(

@@ -50,3 +50,51 @@ def run_strava_sync_job(job_id: int, days_back: int = 30) -> None:
     finally:
         db.close()
 
+
+def run_recalculate_metrics_job(job_id: int, months_back: int = 12) -> None:
+    """
+    Background task to execute a metrics recalculation job without blocking the request thread.
+    
+    Args:
+        job_id: Job ID to execute
+        months_back: Number of months to look back for activities (default: 12)
+    """
+    db = SessionLocal()
+    service = StravaService(db)
+    job = None
+
+    try:
+        job = service.get_sync_job(job_id)
+        if not job:
+            logger.error(f"[RECALC][JOB] Job {job_id} not found, aborting")
+            return
+
+        logger.info(
+            f"[RECALC][JOB] Starting background recalculation job {job_id} "
+            f"(user={job.user_id}, months_back={months_back})"
+        )
+
+        service.recalculate_all_metrics(
+            user_id=job.user_id,
+            job=job,
+            months_back=months_back,
+        )
+    except Exception as exc:
+        logger.exception(f"[RECALC][JOB] Job {job_id} failed: {exc}")
+        if job:
+            try:
+                service._update_sync_job(
+                    job,
+                    status=StravaSyncJobStatus.FAILED,
+                    status_message="Recalculation failed",
+                    error=str(exc),
+                    finished_at=datetime.now(timezone.utc),
+                )
+            except Exception as update_exc:
+                logger.error(
+                    f"[RECALC][JOB] Failed to update status for job {job_id}: {update_exc}"
+                )
+        db.rollback()
+    finally:
+        db.close()
+

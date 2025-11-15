@@ -211,11 +211,26 @@ async def get_calendar_month(year: int, month: int,
                 "max_heartrate": activity.max_heartrate,
                 "average_watts": activity.average_watts,
                 "max_watts": activity.max_watts,
+                "weighted_average_watts": activity.weighted_average_watts,  # Potenza normalizzata da Strava
                 "average_cadence": activity.average_cadence,
                 "temperature": activity.temperature,
                 "calories": activity.calories,
                 "start_date": activity.start_date,
                 "start_date_local": activity.start_date_local,
+                # Training metrics (calcolate dall'applicazione)
+                "tss": activity.tss,
+                "normalized_power": activity.normalized_power,
+                "intensity_factor": activity.intensity_factor,
+                "trimp": activity.trimp,
+                # Time in zones (minuti)
+                "time_in_zone_1": activity.time_in_zone_1,
+                "time_in_zone_2": activity.time_in_zone_2,
+                "time_in_zone_3": activity.time_in_zone_3,
+                "time_in_zone_4": activity.time_in_zone_4,
+                "time_in_zone_5": activity.time_in_zone_5,
+                # Zone distribution (JSON)
+                "zone_distribution": activity.zone_distribution,
+                "metrics_calculated": activity.metrics_calculated,
             }
         }
         return workout_dict

@@ -114,11 +114,33 @@ class StravaActivitySummary(BaseModel):
     max_heartrate: Optional[float] = None  # bpm
     average_watts: Optional[float] = None  # watt
     max_watts: Optional[float] = None  # watt
+    weighted_average_watts: Optional[float] = None  # watt (potenza normalizzata da Strava)
     average_cadence: Optional[float] = None  # rpm
     temperature: Optional[float] = None  # celsius
     calories: Optional[float] = None
     start_date: datetime
     start_date_local: datetime
+    
+    # Training metrics (calcolate dall'applicazione)
+    tss: Optional[float] = None  # Training Stress Score
+    normalized_power: Optional[float] = None  # Potenza normalizzata (ciclismo)
+    intensity_factor: Optional[float] = None  # IF (rapporto NP/FTP per ciclismo o basato su FC per running)
+    trimp: Optional[float] = None  # Training Impulse (basato su FC)
+    
+    # Time in zones (minuti) - possono essere zone FC o potenza
+    time_in_zone_1: Optional[int] = None
+    time_in_zone_2: Optional[int] = None
+    time_in_zone_3: Optional[int] = None
+    time_in_zone_4: Optional[int] = None
+    time_in_zone_5: Optional[int] = None
+    
+    # Zone distribution (JSON: {"z1": minuti, "z2": minuti, ...})
+    # Per running: zone cardiache (basate su FC)
+    # Per ciclismo: zone potenza (basate su watt)
+    zone_distribution: Optional[Dict[str, Any]] = None
+    
+    # Flag per sapere se le metriche sono state calcolate
+    metrics_calculated: Optional[bool] = None
     
     class Config:
         from_attributes = True

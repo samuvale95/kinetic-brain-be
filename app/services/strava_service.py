@@ -541,6 +541,9 @@ class StravaService:
             self.db.add(strava_activity)
             new_activities.append(strava_activity)
             new_count += 1
+            
+            # Mark for metrics calculation (will be calculated in batch later)
+            # We don't calculate here to avoid blocking the sync process
 
             if job:
                 commit_progress = idx % 5 == 0 or idx == total_recent
@@ -1018,8 +1021,13 @@ class StravaService:
         
         return result
     
-    def calculate_activity_metrics(self, strava_activity: StravaActivity, user_id: int, 
-                                   fetch_streams: bool = True) -> TrainingMetrics:
+    def calculate_activity_metrics(
+        self, 
+        strava_activity: StravaActivity, 
+        user_id: int, 
+        fetch_streams: bool = True,
+        skip_daily_update: bool = False
+    ) -> TrainingMetrics:
         """
         Calculate training metrics for a Strava activity
         
@@ -1151,31 +1159,62 @@ class StravaService:
                 duration_seconds=duration_seconds,
                 avg_hr=strava_activity.average_heartrate
             )
+            # Ensure time_in_zones is a dict (safety check)
+            if not isinstance(time_in_zones, dict):
+                logger.warning(f"[METRICS] time_in_zones is not a dict (type: {type(time_in_zones)}), using defaults")
+                time_in_zones = {'z1': 0, 'z2': 0, 'z3': 0, 'z4': 0, 'z5': 0}
             logger.debug(f"[METRICS] Time in zones calculated: {time_in_zones}")
         else:
             logger.debug(f"[METRICS] No average HR available, skipping zone calculation")
             time_in_zones = {'z1': 0, 'z2': 0, 'z3': 0, 'z4': 0, 'z5': 0}
         
-        # Create TrainingMetrics record
-        training_metrics = TrainingMetrics(
-            strava_activity_id=strava_activity.id,
-            tss=tss,
-            normalized_power=strava_activity.weighted_average_watts,
-            intensity_factor=intensity_factor,
-            trimp=trimp,
-            time_in_zone_1=time_in_zones.get('z1', 0),
-            time_in_zone_2=time_in_zones.get('z2', 0),
-            time_in_zone_3=time_in_zones.get('z3', 0),
-            time_in_zone_4=time_in_zones.get('z4', 0),
-            time_in_zone_5=time_in_zones.get('z5', 0),
-            zone_distribution={
+        # Get or create TrainingMetrics record (update if exists, create if not)
+        existing_metrics = self.db.execute(
+            select(TrainingMetrics)
+            .where(TrainingMetrics.strava_activity_id == strava_activity.id)
+        ).scalar_one_or_none()
+        
+        if existing_metrics:
+            # Update existing metrics
+            existing_metrics.tss = tss
+            existing_metrics.normalized_power = strava_activity.weighted_average_watts
+            existing_metrics.intensity_factor = intensity_factor
+            existing_metrics.trimp = trimp
+            existing_metrics.time_in_zone_1 = time_in_zones.get('z1', 0)
+            existing_metrics.time_in_zone_2 = time_in_zones.get('z2', 0)
+            existing_metrics.time_in_zone_3 = time_in_zones.get('z3', 0)
+            existing_metrics.time_in_zone_4 = time_in_zones.get('z4', 0)
+            existing_metrics.time_in_zone_5 = time_in_zones.get('z5', 0)
+            existing_metrics.zone_distribution = {
                 "z1": time_in_zones.get('z1', 0),
                 "z2": time_in_zones.get('z2', 0),
                 "z3": time_in_zones.get('z3', 0),
                 "z4": time_in_zones.get('z4', 0),
                 "z5": time_in_zones.get('z5', 0)
             }
-        )
+            training_metrics = existing_metrics
+        else:
+            # Create new TrainingMetrics record
+            training_metrics = TrainingMetrics(
+                strava_activity_id=strava_activity.id,
+                tss=tss,
+                normalized_power=strava_activity.weighted_average_watts,
+                intensity_factor=intensity_factor,
+                trimp=trimp,
+                time_in_zone_1=time_in_zones.get('z1', 0),
+                time_in_zone_2=time_in_zones.get('z2', 0),
+                time_in_zone_3=time_in_zones.get('z3', 0),
+                time_in_zone_4=time_in_zones.get('z4', 0),
+                time_in_zone_5=time_in_zones.get('z5', 0),
+                zone_distribution={
+                    "z1": time_in_zones.get('z1', 0),
+                    "z2": time_in_zones.get('z2', 0),
+                    "z3": time_in_zones.get('z3', 0),
+                    "z4": time_in_zones.get('z4', 0),
+                    "z5": time_in_zones.get('z5', 0)
+                }
+            )
+            self.db.add(training_metrics)
         
         # Update StravaActivity with denormalized values for quick access
         strava_activity.tss = tss
@@ -1190,8 +1229,8 @@ class StravaService:
         strava_activity.metrics_calculated = True
         strava_activity.zone_distribution = training_metrics.zone_distribution
         
-        # Update daily metrics for this activity's date
-        if strava_activity.start_date:
+        # Update daily metrics for this activity's date (skip during bulk recalculation for performance)
+        if not skip_daily_update and strava_activity.start_date:
             activity_date = strava_activity.start_date.date()
             from app.services.daily_metrics_service import DailyMetricsService
             daily_metrics_service = DailyMetricsService(self.db)
@@ -1204,20 +1243,36 @@ class StravaService:
         logger.debug(f"[METRICS] Completed metrics calculation for activity {strava_activity.strava_activity_id} (TSS={tss}, TRIMP={trimp}, IF={intensity_factor})")
         return training_metrics
     
-    def recalculate_all_metrics(self, user_id: int) -> Dict[str, Any]:
+    def recalculate_all_metrics(
+        self, 
+        user_id: int, 
+        job: Optional[StravaSyncJob] = None,
+        months_back: int = 12
+    ) -> Dict[str, Any]:
         """
-        Recalculate metrics for all existing activities for a user
+        Recalculate metrics for activities within the specified time window
         
         This is called on first Strava connection and when user explicitly requests recalculation
         
         Args:
             user_id: User ID to recalculate metrics for
+            job: Optional job object to track progress
+            months_back: Number of months to look back (default: 12)
         
         Returns:
             Dictionary with recalculation results
         """
         start_time = datetime.now()
         logger.info(f"[RECALC] Starting recalculation for user {user_id} at {start_time.isoformat()}")
+        
+        # Update job status if provided
+        if job:
+            self._update_sync_job(
+                job,
+                status=StravaSyncJobStatus.RUNNING,
+                status_message="Recalculation started",
+                started_at=datetime.now(timezone.utc),
+            )
         
         # Get user's Strava account
         strava_account = self.db.execute(
@@ -1227,70 +1282,66 @@ class StravaService:
         
         if not strava_account:
             logger.error(f"[RECALC] No Strava account found for user {user_id}")
-            raise Exception("No Strava account found for user")
+            error_msg = "No Strava account found for user"
+            if job:
+                self._update_sync_job(
+                    job,
+                    status=StravaSyncJobStatus.FAILED,
+                    status_message=error_msg,
+                    error=error_msg,
+                    finished_at=datetime.now(timezone.utc),
+                )
+            raise Exception(error_msg)
         
         logger.info(f"[RECALC] Found Strava account {strava_account.id} for user {user_id}")
         
-        # Quick check: Get last activity ID that has metrics
-        logger.debug(f"[RECALC] Checking which activities need metrics...")
-        last_activity_with_metrics = self.db.execute(
-            select(StravaActivity.id)
-            .join(TrainingMetrics, StravaActivity.id == TrainingMetrics.strava_activity_id)
-            .where(StravaActivity.strava_account_id == strava_account.id)
-            .order_by(StravaActivity.id.desc())
-            .limit(1)
-        ).scalar()
+        # Calculate cutoff date based on months_back
+        cutoff_date = datetime.now() - timedelta(days=months_back * 30)
+        logger.info(f"[RECALC] Filtering activities from last {months_back} months (since {cutoff_date.date()})...")
         
-        # Get last activity ID overall
-        last_activity_id = self.db.execute(
-            select(func.max(StravaActivity.id))
-            .where(StravaActivity.strava_account_id == strava_account.id)
-        ).scalar()
-        
-        logger.debug(f"[RECALC] Last activity with metrics: {last_activity_with_metrics}, Last activity overall: {last_activity_id}")
-        
-        # If all activities already have metrics, skip entire recalculation
-        if last_activity_id and last_activity_with_metrics and last_activity_id == last_activity_with_metrics:
-            logger.info(f"[RECALC] All activities already have metrics calculated. Skipping activities processing.")
-            activities = []  # Skip processing activities
-            activities_count = 0
-        else:
-            # Get activities that need metrics (don't have metrics yet OR are newer than last calculated)
-            if last_activity_with_metrics:
-                # Only get activities that don't have metrics yet
-                logger.info(f"[RECALC] Fetching activities without metrics (last calculated: {last_activity_with_metrics})...")
-                activities = self.db.execute(
-                    select(StravaActivity)
-                    .outerjoin(TrainingMetrics, StravaActivity.id == TrainingMetrics.strava_activity_id)
-                    .where(and_(
-                        StravaActivity.strava_account_id == strava_account.id,
-                        TrainingMetrics.id.is_(None)
-                    ))
-                    .order_by(StravaActivity.start_date)
-                ).scalars().all()
-                activities_count = len(activities)
-                logger.info(f"[RECALC] Found {activities_count} activities without metrics")
-            else:
-                # First time: get all activities
-                logger.info(f"[RECALC] First time recalculation - fetching all activities...")
-                activities = self.db.execute(
-                    select(StravaActivity)
-                    .where(StravaActivity.strava_account_id == strava_account.id)
-                    .order_by(StravaActivity.start_date)
-                ).scalars().all()
-                activities_count = len(activities)
-                logger.info(f"[RECALC] Found {activities_count} total activities to process")
+        # Recalculate activities in the specified time window (force recalculation)
+        logger.info(f"[RECALC] Fetching activities for recalculation (forcing recalculation of existing metrics)...")
+        activities = self.db.execute(
+            select(StravaActivity)
+            .where(
+                and_(
+                    StravaActivity.strava_account_id == strava_account.id,
+                    StravaActivity.start_date >= cutoff_date
+                )
+            )
+            .order_by(StravaActivity.start_date)
+        ).scalars().all()
+        activities_count = len(activities)
+        logger.info(f"[RECALC] Found {activities_count} activities to recalculate (last {months_back} months)")
         
         logger.info(f"[RECALC] Activities needing metrics: {activities_count}")
         
+        # Update job with total activities
+        if job:
+            self._update_sync_job(
+                job,
+                total_activities=activities_count,
+                status_message=f"Found {activities_count} activities to process",
+            )
+        
         if activities_count == 0:
             logger.info(f"[RECALC] No activities to process. Recalculation complete.")
-            return {
+            result = {
                 "activities_processed": 0,
                 "metrics_calculated": 0,
                 "errors": 0,
                 "duration_seconds": (datetime.now() - start_time).total_seconds()
             }
+            if job:
+                self._update_sync_job(
+                    job,
+                    status=StravaSyncJobStatus.SUCCESS,
+                    status_message="No activities to process",
+                    processed_activities=0,
+                    result=result,
+                    finished_at=datetime.now(timezone.utc),
+                )
+            return result
         
         metrics_calculated = {
             'tss_calculated': 0,
@@ -1300,88 +1351,150 @@ class StravaService:
         }
         
         activities_processed = 0
-        metrics_to_update = []
         errors_count = 0
         
         logger.info(f"[RECALC] Processing {len(activities)} activities (fetch_streams=False for performance)...")
         
         for idx, activity in enumerate(activities, start=1):
-            # Calculate new metrics (we already filtered to only activities without metrics)
+            # Recalculate metrics for all activities (both with and without existing metrics)
             # Disable streams fetch during bulk recalculation to avoid blocking
             try:
                 logger.debug(f"[RECALC] Processing activity {idx}/{len(activities)}: {activity.strava_activity_id} - {activity.name}")
-                metrics = self.calculate_activity_metrics(activity, user_id, fetch_streams=False)
-                
-                # Add to list for bulk insert (all activities here need metrics)
-                metrics_to_update.append(metrics)
+                # Skip daily metrics update during bulk recalculation - will do batch update at the end
+                self.calculate_activity_metrics(activity, user_id, fetch_streams=False, skip_daily_update=True)
                 
                 # Debug zones calculation
                 if activity.average_heartrate:
-                    zones_sum = (metrics.time_in_zone_1 or 0) + (metrics.time_in_zone_2 or 0) + \
-                                (metrics.time_in_zone_3 or 0) + (metrics.time_in_zone_4 or 0) + (metrics.time_in_zone_5 or 0)
+                    zones_sum = (activity.time_in_zone_1 or 0) + (activity.time_in_zone_2 or 0) + \
+                                (activity.time_in_zone_3 or 0) + (activity.time_in_zone_4 or 0) + (activity.time_in_zone_5 or 0)
                     if zones_sum == 0:
                         logger.warning(f"[RECALC][ZONES] Activity {activity.id} '{activity.name}' has HR={activity.average_heartrate} but zones are 0")
                 
-                metrics_calculated['tss_calculated'] += 1 if metrics.tss else 0
-                metrics_calculated['trimp_calculated'] += 1 if metrics.trimp else 0
-                metrics_calculated['if_calculated'] += 1 if metrics.intensity_factor else 0
-                metrics_calculated['zones_calculated'] += 1 if (metrics.time_in_zone_1 or metrics.time_in_zone_2 or metrics.time_in_zone_3) else 0
+                metrics_calculated['tss_calculated'] += 1 if activity.tss else 0
+                metrics_calculated['trimp_calculated'] += 1 if activity.trimp else 0
+                metrics_calculated['if_calculated'] += 1 if activity.intensity_factor else 0
+                metrics_calculated['zones_calculated'] += 1 if (activity.time_in_zone_1 or activity.time_in_zone_2 or activity.time_in_zone_3) else 0
                 
                 activities_processed += 1
+                
+                # Commit periodically to avoid memory issues with large datasets
+                if idx % 50 == 0:
+                    self.db.commit()
+                    logger.debug(f"[RECALC] Committed progress at {idx}/{len(activities)}")
+                
+                # Update job progress every 25 activities
+                if job and idx % 25 == 0:
+                    self._update_sync_job(
+                        job,
+                        processed_activities=idx,
+                        status_message=f"Processing activities: {idx}/{len(activities)}",
+                        commit=False,  # Don't commit on every update to avoid overhead
+                    )
                 if idx % 25 == 0:
                     logger.info(f"[RECALC] Processed {idx}/{len(activities)} activities (tss={metrics_calculated['tss_calculated']}, trimp={metrics_calculated['trimp_calculated']}, if={metrics_calculated['if_calculated']}, zones={metrics_calculated['zones_calculated']})")
             except Exception as e:
-                logger.error(f"[RECALC] Error calculating metrics for activity {activity.id}: {e}")
+                logger.error(f"[RECALC] Error calculating metrics for activity {activity.id}: {e}", exc_info=True)
                 errors_count += 1
+                # Continue with next activity even if one fails
                 continue
         
         logger.info(f"[RECALC] Finished processing activities: {activities_processed} processed, {errors_count} errors")
         
-        # Bulk add new metrics only
-        if metrics_to_update:
-            logger.info(f"[RECALC] Bulk inserting {len(metrics_to_update)} metrics...")
-            self.db.add_all(metrics_to_update)
-        logger.info(f"[RECALC] Committing metrics updates (bulk_inserts={len(metrics_to_update)})")
-        # Commit all changes
+        # Update job with activities processed
+        if job:
+            self._update_sync_job(
+                job,
+                processed_activities=activities_processed,
+                metrics_phase=1,
+                metrics_phases_total=3,
+                status_message=f"Processed {activities_processed} activities, committing changes...",
+            )
+        
+        # Commit all remaining changes (both new metrics added and existing ones updated)
+        logger.info(f"[RECALC] Committing final metrics updates...")
         self.db.commit()
         logger.info(f"[RECALC] Metrics commit complete")
         
         # Calculate initial CTL/ATL/TSB
         logger.info(f"[RECALC] Calculating initial CTL/ATL/TSB (42-day window)...")
+        if job:
+            self._update_sync_job(
+                job,
+                metrics_phase=2,
+                status_message="Calculating fitness metrics (CTL/ATL/TSB)...",
+            )
         initial_metrics = self._calculate_initial_fitness_metrics(user_id)
         logger.info(f"[RECALC] Initial metrics calculated: {initial_metrics}")
         
-        # Create/update daily metrics for all activities
-        logger.info(f"[RECALC] Creating/updating daily metrics...")
+        # Batch update daily metrics for all affected dates (more efficient than per-activity updates)
+        logger.info(f"[RECALC] Creating/updating daily metrics in batch...")
+        if job:
+            self._update_sync_job(
+                job,
+                metrics_phase=3,
+                status_message="Updating daily metrics (batch)...",
+            )
         from app.services.daily_metrics_service import DailyMetricsService
         daily_metrics_service = DailyMetricsService(self.db)
         
-        # Get all unique dates from activities
+        # Get all unique dates from activities in the time window that have metrics
         unique_dates = set()
-        all_activities = self.db.execute(
+        all_activities_with_metrics = self.db.execute(
             select(StravaActivity)
             .where(
                 and_(
-                    StravaActivity.strava_account_id.in_(strava_account_ids),
+                    StravaActivity.strava_account_id == strava_account.id,
+                    StravaActivity.start_date >= cutoff_date,
                     StravaActivity.tss.isnot(None)
                 )
             )
         ).scalars().all()
         
-        for activity in all_activities:
-            activity_date = activity.start_date.date()
-            unique_dates.add(activity_date)
+        for activity in all_activities_with_metrics:
+            if activity.start_date:
+                activity_date = activity.start_date.date()
+                unique_dates.add(activity_date)
         
-        # Update daily metrics for each date
+        # Update daily metrics for each date (skip advanced metrics and propagation for speed)
         logger.info(f"[RECALC] Updating daily metrics for {len(unique_dates)} unique dates...")
         daily_metrics_updated = 0
         for idx, activity_date in enumerate(sorted(unique_dates), 1):
             try:
                 logger.debug(f"[RECALC] Updating daily metrics for date {activity_date} ({idx}/{len(unique_dates)})")
-                daily_metrics_service.update_daily_metrics(user_id, activity_date)
+                # Skip advanced metrics and propagation during bulk update - will do at end
+                daily_metrics_service.update_daily_metrics(
+                    user_id, 
+                    activity_date, 
+                    propagate=False, 
+                    skip_advanced_metrics=True
+                )
                 daily_metrics_updated += 1
+                
+                # Update job progress periodically
+                if job and idx % 10 == 0:
+                    self._update_sync_job(
+                        job,
+                        status_message=f"Updating daily metrics ({idx}/{len(unique_dates)})...",
+                    )
             except Exception as e:
                 logger.warning(f"[RECALC] Failed to update daily metrics for {activity_date}: {e}")
+        
+        # After all dates updated, propagate forward once (from earliest date to today)
+        # Skip advanced metrics during propagation for speed
+        if unique_dates:
+            earliest_date = min(unique_dates)
+            logger.info(f"[RECALC] Propagating metrics forward from {earliest_date} to today...")
+            if job:
+                self._update_sync_job(
+                    job,
+                    status_message="Propagating metrics forward...",
+                )
+            daily_metrics_service._propagate_metrics_forward(
+                user_id, 
+                earliest_date, 
+                date.today(),
+                skip_advanced_metrics=True
+            )
         
         if daily_metrics_updated > 0:
             self.db.commit()
@@ -1404,6 +1517,18 @@ class StravaService:
         }
         
         logger.info(f"[RECALC] Completed at {end_time.isoformat()} in {processing_time:.2f}s. Result: {result}")
+        
+        # Update job with final result
+        if job:
+            self._update_sync_job(
+                job,
+                status=StravaSyncJobStatus.SUCCESS,
+                status_message=f"Recalculation complete: {activities_processed} activities processed",
+                processed_activities=activities_processed,
+                result=result,
+                finished_at=datetime.now(timezone.utc),
+            )
+        
         return result
     
     def _calculate_initial_fitness_metrics(self, user_id: int) -> Dict[str, float]:

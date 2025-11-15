@@ -24,7 +24,7 @@ from app.schemas.strava import (
     StravaSyncRequest,
 )
 from app.services.strava_service import StravaService
-from app.tasks.strava_tasks import run_strava_sync_job
+from app.tasks.strava_tasks import run_strava_sync_job, run_recalculate_metrics_job
 
 router = APIRouter(prefix="/strava", tags=["strava"])
 
@@ -645,30 +645,62 @@ async def debug_daily_metrics(current_user: dict = Depends(get_current_user),
         "metrics": result
     }
 
-@router.post("/recalculate-metrics")
-async def recalculate_metrics(current_user: dict = Depends(get_current_user),
-                              db: Session = Depends(get_db)):
+@router.post("/recalculate-metrics", response_model=StravaSyncJobResponse)
+async def recalculate_metrics(
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    months_back: int = Query(12, ge=1, le=60, description="Recalculate metrics for activities in the last N months (default: 12)"),
+):
     """
-    Recalculate all metrics for user's Strava activities.
+    Queue metrics recalculation as a background job.
     This will:
-    1. Calculate TSS, IF, TRIMP, zone distribution for all activities
+    1. Calculate TSS, IF, TRIMP, zone distribution for activities in the specified time window
     2. Update daily metrics (CTL/ATL/TSB) for all affected dates
     
-    No parameters required - uses current authenticated user.
+    Args:
+        months_back: Number of months to look back (default: 12, max: 60)
+                    Reduces processing time by limiting the date range
+    
+    Returns:
+        Job that can be tracked via /strava/sync/jobs/{job_id}
     """
     try:
+        strava_account = db.execute(
+            select(StravaAccount).where(
+                StravaAccount.user_id == current_user["user_id"]
+            )
+        ).scalar_one_or_none()
+        if not strava_account:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No Strava account connected",
+            )
+
         strava_service = StravaService(db)
-        result = strava_service.recalculate_all_metrics(current_user["user_id"])
-        
-        return {
-            "success": True,
-            "message": "Metrics recalculated successfully",
-            **result
-        }
+        job = strava_service.create_sync_job(
+            user_id=current_user["user_id"],
+            strava_account_id=strava_account.id,
+            job_type="recalculate_metrics",
+            status_message=f"Metrics recalculation queued for last {months_back} months",
+            requested_days_back=months_back * 30,  # Store for reference
+        )
+        background_tasks.add_task(
+            run_recalculate_metrics_job,
+            job.id,
+            months_back,
+        )
+        logger.info(
+            f"[RECALC][JOB] Queued recalculation job {job.id} for user {current_user['user_id']} (months_back={months_back})"
+        )
+        return job
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.exception(f"[RECALC][JOB] Failed to queue recalculation: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to recalculate metrics: {str(e)}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to queue recalculation job: {str(e)}",
         )
 
 

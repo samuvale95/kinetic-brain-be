@@ -55,10 +55,55 @@ class MetricsApiService:
             return []
 
         if grouping == GroupingGranularity.week:
+            # For weekly grouping, we need both summaries and daily metrics to get CTL/ATL/TSB
             summaries = self._fetch_weekly_summaries(
                 user_id=user_id, start_date=periods[0].start, end_date=periods[-1].end, sport=sport
             )
-            return [self._serialize_weekly_summary(summary) for summary in summaries]
+            daily_metrics = self._fetch_daily_performance_metrics(user_id=user_id, start=periods[0].start, end=periods[-1].end)
+            activities = self._fetch_activities(user_id=user_id, start=periods[0].start, end=periods[-1].end, sport=sport)
+            
+            # Create a map of week_start to summary
+            summary_map = {summary.week_start: summary for summary in summaries}
+            
+            result = []
+            for period in periods:
+                # Find matching summary or create from aggregation
+                week_start = period.start - timedelta(days=period.start.weekday())
+                summary = summary_map.get(week_start)
+                
+                if summary:
+                    serialized = self._serialize_weekly_summary(summary)
+                else:
+                    # If no summary exists, aggregate from activities and daily metrics
+                    serialized = self._aggregate_load_for_period(
+                        activities=activities,
+                        daily_metrics=daily_metrics,
+                        weekly_summaries=[],
+                        period=period,
+                        include_compliance=False,
+                    )
+                    # Convert period_start/period_end to period_start/period_end format
+                    if "period_start" in serialized:
+                        serialized["period_start"] = period.start
+                        serialized["period_end"] = period.end
+                
+                # Always add CTL/ATL/TSB from daily metrics for the period
+                period_daily_metrics = [
+                    daily_metrics.get(day)
+                    for day in self._iterate_dates(period.start, period.end)
+                    if day in daily_metrics
+                ]
+                
+                if period_daily_metrics:
+                    # Use last day of week for CTL/ATL/TSB (most representative)
+                    last_day_metric = period_daily_metrics[-1]
+                    serialized["ct_load"] = last_day_metric.ctl if last_day_metric else None
+                    serialized["acute_load"] = last_day_metric.atl if last_day_metric else None
+                    serialized["training_stress_balance"] = last_day_metric.tsb if last_day_metric else None
+                
+                result.append(serialized)
+            
+            return result
 
         activities = self._fetch_activities(user_id=user_id, start=start_date, end=end_date, sport=sport)
         daily_metrics = self._fetch_daily_performance_metrics(user_id=user_id, start=start_date, end=end_date)
