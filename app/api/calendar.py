@@ -9,7 +9,8 @@ from app.schemas.calendar import (
     CalendarEventCreate, CalendarEventUpdate, CalendarEventResponse,
     DragDropRequest, CalendarMonthRequest
 )
-from app.models.workout import Workout, WorkoutPlan, WorkoutSession
+from app.models.workout import Workout, WorkoutPlan, WorkoutSession, WorkoutStatus
+from app.models.strava import StravaActivity, StravaAccount
 from app.services.workout_service import WorkoutService
 from app.api.auth import get_current_user
 
@@ -112,6 +113,8 @@ async def get_calendar_month(year: int, month: int,
     
     # Get workouts completed in the month (via WorkoutSession.actual_date)
     # This includes standalone workouts that were done but not scheduled for this month
+    # Note: We don't use DISTINCT here because PostgreSQL can't handle DISTINCT on JSON columns.
+    # Deduplication is handled in Python below.
     workouts_from_sessions = db.execute(
         select(Workout)
         .join(WorkoutSession, Workout.id == WorkoutSession.workout_id)
@@ -127,16 +130,100 @@ async def get_calendar_month(year: int, month: int,
                 )
             )
         )
-        .distinct()
     ).scalars().all()
     
-    # Combine both lists and remove duplicates
-    all_workouts = list(scheduled_workouts) + list(workouts_from_sessions)
+    # Get Strava activities for the month that don't belong to any plan
+    # (workout_id is NULL or workout is standalone)
+    strava_account_ids = db.execute(
+        select(StravaAccount.id)
+        .where(StravaAccount.user_id == user_id)
+    ).scalars().all()
+    
+    strava_activities = []
+    if strava_account_ids:
+        # Get Strava activities in the month
+        strava_activities_query = (
+            select(StravaActivity)
+            .where(
+                and_(
+                    StravaActivity.strava_account_id.in_(strava_account_ids),
+                    StravaActivity.start_date >= start_datetime,
+                    StravaActivity.start_date <= end_datetime
+                )
+            )
+        )
+        
+        all_strava_activities = db.execute(strava_activities_query).scalars().all()
+        
+        # Filter to only include activities that don't have a workout_id (NULL)
+        # Activities with workout_id are already included via workouts_from_sessions
+        for activity in all_strava_activities:
+            if activity.workout_id is None:
+                # Activity not linked to any workout - include it
+                strava_activities.append(activity)
+    
+    # Convert Strava activities to Workout objects (virtual workouts)
+    def strava_to_workout(activity: StravaActivity) -> Workout:
+        """Convert StravaActivity to a Workout object for calendar display"""
+        # Calculate duration in minutes
+        duration_minutes = int(activity.moving_time / 60) if activity.moving_time else 0
+        
+        # Determine workout type from Strava type
+        type_mapping = {
+            "Run": "run",
+            "Ride": "ride",
+            "VirtualRide": "ride",
+            "Swim": "swim",
+            "Walk": "run",
+            "Hike": "run",
+        }
+        workout_type = type_mapping.get(activity.type, activity.type.lower())
+        
+        # Use the activity start_date_local for the date
+        activity_date = activity.start_date_local.date() if activity.start_date_local else activity.start_date.date()
+        
+        # Create a Workout-like object
+        # We'll use a special approach: create a temporary Workout object
+        # with negative ID to distinguish from real workouts
+        workout = Workout(
+            id=-activity.id,  # Negative ID to distinguish from real workouts
+            plan_id=None,
+            user_id=user_id,
+            title=activity.name,
+            type=workout_type,
+            day_number=None,
+            scheduled_date=activity_date,
+            duration_minutes=duration_minutes,
+            intensity=None,
+            zone=None,
+            structure_json=None,
+            status=WorkoutStatus.COMPLETED,  # Strava activities are always completed
+            notes=None,
+            created_at=activity.created_at if activity.created_at else datetime.now(),
+            updated_at=activity.updated_at if activity.updated_at else datetime.now()
+        )
+        return workout
+    
+    # Convert Strava activities to workouts
+    strava_workouts = [strava_to_workout(activity) for activity in strava_activities]
+    
+    # Combine all workouts and remove duplicates
+    all_workouts = list(scheduled_workouts) + list(workouts_from_sessions) + strava_workouts
     unique_workouts = {}
+    seen_strava_activities = set()  # Track Strava activities by date to avoid duplicates
+    
     for workout in all_workouts:
-        # Filter out workouts from inactive plans
-        if workout.id not in inactive_plan_workout_ids:
+        # For Strava-based workouts (negative IDs), check if we've already seen this date/type
+        if workout.id < 0:
+            key = (workout.scheduled_date, workout.type)
+            if key in seen_strava_activities:
+                continue
+            seen_strava_activities.add(key)
             unique_workouts[workout.id] = workout
+        else:
+            # Filter out workouts from inactive plans
+            if workout.id not in inactive_plan_workout_ids:
+                unique_workouts[workout.id] = workout
     
     # Sort by scheduled_date (use actual_date from session if scheduled_date is None or different)
     def get_display_date(w):
@@ -144,19 +231,20 @@ async def get_calendar_month(year: int, month: int,
         if w.scheduled_date and start_date <= w.scheduled_date <= end_date:
             return w.scheduled_date
         # Otherwise, try to get actual_date from the first session in the month
-        sessions_in_month = db.execute(
-            select(WorkoutSession)
-            .where(
-                and_(
-                    WorkoutSession.workout_id == w.id,
-                    WorkoutSession.actual_date >= start_datetime,
-                    WorkoutSession.actual_date <= end_datetime
+        if w.id > 0:  # Only for real workouts
+            sessions_in_month = db.execute(
+                select(WorkoutSession)
+                .where(
+                    and_(
+                        WorkoutSession.workout_id == w.id,
+                        WorkoutSession.actual_date >= start_datetime,
+                        WorkoutSession.actual_date <= end_datetime
+                    )
                 )
-            )
-            .order_by(WorkoutSession.actual_date.asc())
-        ).scalars().first()
-        if sessions_in_month:
-            return sessions_in_month.actual_date.date()
+                .order_by(WorkoutSession.actual_date.asc())
+            ).scalars().first()
+            if sessions_in_month:
+                return sessions_in_month.actual_date.date()
         return w.scheduled_date or date.min
     
     filtered_workouts = list(unique_workouts.values())
