@@ -109,6 +109,47 @@ L'endpoint include **tutti** i seguenti tipi di allenamenti:
    - `type`: mappato dal tipo Strava (es. "Run" → "run", "Ride" → "ride")
    - **`strava_activity`**: presente con tutti i dati dell'attività Strava (distanza, FC, pace, potenza, etc.)
 
+### 🎯 Workout Abbinati a Attività Strava
+
+**IMPORTANTE**: Quando un workout viene abbinato a un'attività Strava (tramite matching automatico o manuale via `/strava/match`):
+
+1. **Il workout ha `status: "completed"`** - L'abbinnamento cambia automaticamente lo status a "completed"
+2. **Il workout include `strava_activity` con tutti i dati** - Il campo `strava_activity` non è più `null`, ma contiene tutti i dati dell'attività Strava
+3. **L'attività Strava non appare come standalone** - Se un'attività Strava è abbinata a un workout, non appare più come attività standalone (con ID negativo) nel calendario
+4. **Il workout mantiene i suoi dati originali** - Il workout conserva `title`, `structure_json`, `intensity`, `zone`, etc. del piano originale
+
+**Come identificare un workout abbinato:**
+```typescript
+function isWorkoutMatchedWithStrava(workout: CalendarWorkoutResponse): boolean {
+  // Un workout è abbinato se ha sia ID positivo che strava_activity presente
+  return workout.id > 0 && workout.strava_activity !== null;
+}
+```
+
+**Esempio di workout abbinato:**
+```json
+{
+  "id": 123,                    // ✅ ID positivo = workout reale
+  "plan_id": 5,                 // Può avere plan_id (se fa parte di un piano)
+  "title": "Long Run",          // Titolo originale del workout
+  "status": "completed",        // ✅ Status automaticamente completato
+  "structure_json": {...},      // Struttura originale del workout
+  "strava_activity": {          // ✅ Dati Strava presenti = abbinato!
+    "id": 49,
+    "strava_activity_id": 16466562481,
+    "distance": 8236.3,
+    "tss": 45.2,
+    "metrics_calculated": true,
+    // ... altri dati Strava
+  }
+}
+```
+
+**Frontend: Mostra entrambi i dati**
+Quando un workout è abbinato, puoi mostrare:
+- **Dati del workout originale**: Titolo, struttura, zone pianificate (`structure_json`)
+- **Dati Strava**: Metriche reali, distanza effettiva, FC, TSS, zone effettive (`strava_activity`)
+
 ### Identificazione Allenamenti Standalone
 
 ```typescript
@@ -120,12 +161,19 @@ function isStandaloneWorkout(workout: CalendarWorkoutResponse): boolean {
 ### Identificazione Attività Strava
 
 ```typescript
-function isStravaActivity(workout: CalendarWorkoutResponse): boolean {
-  // Metodo 1: Campo strava_activity presente (MIGLIORE)
+// Identifica attività Strava standalone (ID negativo)
+function isStravaActivityStandalone(workout: CalendarWorkoutResponse): boolean {
+  return workout.id < 0 && workout.strava_activity !== null;
+}
+
+// Identifica workout abbinato a attività Strava (ID positivo + strava_activity presente)
+function isWorkoutMatchedWithStrava(workout: CalendarWorkoutResponse): boolean {
+  return workout.id > 0 && workout.strava_activity !== null;
+}
+
+// Identifica qualsiasi attività con dati Strava (standalone o abbinata)
+function hasStravaData(workout: CalendarWorkoutResponse): boolean {
   return workout.strava_activity !== null;
-  
-  // Metodo 2: ID negativo (alternativo)
-  // return workout.id < 0;
 }
 ```
 
@@ -502,7 +550,7 @@ function formatDuration(seconds: number): string {
 | `status` | "scheduled" o "completed" | Sempre "completed" | "scheduled" o "completed" |
 | `type` | Come nel piano | Mappato da tipo Strava | Definito nel piano |
 | `duration_minutes` | Come nel piano | Calcolato da `moving_time` | Come nel piano |
-| `strava_activity` | Sempre `null` | **Presente con dati completi** | Sempre `null` |
+| `strava_activity` | `null` o presente (se abbinato) | **Presente con dati completi** | `null` o presente (se abbinato) |
 
 ### Note per lo Sviluppo Frontend
 
@@ -510,10 +558,14 @@ function formatDuration(seconds: number): string {
 2. **Deduplicazione**: Il backend rimuove automaticamente i duplicati se un workout appare sia come scheduled che come completed
 3. **Filtri**: Gli allenamenti da piani inattivi sono già esclusi
 4. **Stato**: Controlla sempre `status` per determinare se l'allenamento è completato o schedulato
-5. **Dati Strava**: Per attività Strava, usa `strava_activity` per mostrare distanza, FC, pace, potenza, etc. invece di `structure_json`
-6. **Visualizzazione**: Distingui tra workout strutturati (`structure_json`) e attività Strava (`strava_activity`) per mostrare i dati appropriati
-7. **Training Metrics**: Le metriche (TSS, IF, TRIMP) sono disponibili solo se `metrics_calculated === true`. Se `false` o `null`, chiama `/strava/recalculate-metrics` per calcolarle
-8. **Zone Distribution**: Usa `zone_distribution` per mostrare grafici a torta o barre del tempo trascorso in ogni zona. Distingui tra zone FC (running) e zone potenza (ciclismo) in base al tipo di attività
+5. **Workout Abbinati**: Quando `status === "completed"` e `strava_activity !== null` e `id > 0`, il workout è stato abbinato a un'attività Strava. Mostra sia i dati del workout originale che quelli Strava
+6. **Dati Strava**: Per attività Strava, usa `strava_activity` per mostrare distanza, FC, pace, potenza, etc. invece di `structure_json`
+7. **Visualizzazione**: 
+   - **Workout non abbinato**: Mostra `structure_json` e dati workout
+   - **Workout abbinato**: Mostra `strava_activity` (metriche reali) + opzionalmente `structure_json` (piano originale)
+   - **Attività Strava standalone**: Mostra solo `strava_activity`
+8. **Training Metrics**: Le metriche (TSS, IF, TRIMP) sono disponibili solo se `metrics_calculated === true`. Se `false` o `null`, chiama `/strava/recalculate-metrics` per calcolarle
+9. **Zone Distribution**: Usa `zone_distribution` per mostrare grafici a torta o barre del tempo trascorso in ogni zona. Distingui tra zone FC (running) e zone potenza (ciclismo) in base al tipo di attività
 
 ### Validazione Frontend
 
