@@ -14,6 +14,7 @@ from app.models.workout import Workout, WorkoutPlan, WorkoutSession, WorkoutStat
 from app.models.strava import StravaActivity, StravaAccount
 from app.services.workout_service import WorkoutService
 from app.api.auth import get_current_user
+from loguru import logger
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
@@ -347,10 +348,25 @@ async def get_calendar_month(year: int, month: int,
     # Convert regular workouts to dict format
     def workout_to_dict(workout: Workout) -> dict:
         """Convert Workout to dict format, including Strava data if matched"""
-        # Check if workout has associated Strava activity
         strava_data = None
-        if workout.strava_activity:
-            activity = workout.strava_activity
+        
+        # Try to access strava_activity - the relationship should already be loaded
+        # from the pre-loading step above
+        try:
+            # Access the relationship directly - it should be loaded
+            activity = workout.strava_activity if hasattr(workout, 'strava_activity') else None
+            
+            # Debug logging
+            if workout.id == 5:  # Debug for the specific workout
+                logger.info(f"[CALENDAR] Workout 5 - has strava_activity attr: {hasattr(workout, 'strava_activity')}, value: {activity}, type: {type(activity)}")
+                if activity:
+                    logger.info(f"[CALENDAR] Workout 5 - Strava activity ID: {activity.id}, name: {activity.name}")
+        except Exception as e:
+            # If there's any error accessing the relationship, log and continue
+            logger.warning(f"Error accessing strava_activity for workout {workout.id}: {e}", exc_info=True)
+            activity = None
+        
+        if activity:
             strava_data = {
                 "id": activity.id,
                 "strava_activity_id": activity.strava_activity_id,
@@ -386,6 +402,14 @@ async def get_calendar_month(year: int, month: int,
                 "metrics_calculated": activity.metrics_calculated,
             }
         
+        # Validate structure_json - se non è nel formato corretto, impostalo a None
+        structure_json = workout.structure_json
+        if structure_json and isinstance(structure_json, dict):
+            # Verifica che abbia i campi minimi richiesti (sport e segments)
+            if "sport" not in structure_json or "segments" not in structure_json:
+                logger.warning(f"[CALENDAR] Workout {workout.id} has invalid structure_json, setting to None")
+                structure_json = None
+        
         workout_dict = {
             "id": workout.id,
             "plan_id": workout.plan_id,
@@ -397,7 +421,7 @@ async def get_calendar_month(year: int, month: int,
             "duration_minutes": workout.duration_minutes,
             "intensity": workout.intensity,
             "zone": workout.zone,
-            "structure_json": workout.structure_json,
+            "structure_json": structure_json,  # Validated structure_json
             "status": workout.status.value if isinstance(workout.status, WorkoutStatus) else workout.status,
             "notes": workout.notes,
             "created_at": workout.created_at,
@@ -430,16 +454,76 @@ async def get_calendar_month(year: int, month: int,
     all_workouts = list(scheduled_workouts) + list(workouts_from_sessions)
     unique_workouts = {}
     
+    # Get all workout IDs that are in the month (both scheduled and from sessions)
+    # BEFORE filtering inactive plans, so we can check all workouts for strava_activities
+    all_workout_ids_in_month = set()
     for workout in all_workouts:
-        # Filter out workouts from inactive plans
-        if workout.id not in inactive_plan_workout_ids:
+        all_workout_ids_in_month.add(workout.id)
+    
+    logger.info(f"[CALENDAR] Total workouts found in month: {len(all_workout_ids_in_month)}")
+    
+    # Pre-load all strava_activities for workouts in the month that might have them
+    # Check ALL workouts in the month, not just the filtered ones
+    # This ensures we don't miss any workout with strava_activity
+    workouts_with_strava_ids = set()
+    if all_workout_ids_in_month:
+        # First, check which workouts in the month actually have strava_activities in DB
+        workouts_with_strava_ids_list = db.execute(
+            select(StravaActivity.workout_id)
+            .where(
+                and_(
+                    StravaActivity.workout_id.in_(all_workout_ids_in_month),
+                    StravaActivity.workout_id.isnot(None)
+                )
+            )
+            .distinct()
+        ).scalars().all()
+        
+        workouts_with_strava_ids = set(workouts_with_strava_ids_list)
+        logger.info(f"[CALENDAR] Found {len(workouts_with_strava_ids)} workouts with Strava activities: {list(workouts_with_strava_ids)}")
+    
+    # Filter workouts: include workouts from active plans OR workouts with Strava activities (even if from inactive plans)
+    for workout in all_workouts:
+        # Include workout if:
+        # 1. It's not from an inactive plan, OR
+        # 2. It has a Strava activity (completed workout, even if from inactive plan)
+        if workout.id not in inactive_plan_workout_ids or workout.id in workouts_with_strava_ids:
             unique_workouts[workout.id] = workout
+    
+    logger.info(f"[CALENDAR] Workouts after filtering (active plans + completed with Strava): {len(unique_workouts)}")
+    
+    # Reload workouts with Strava activities to ensure relationship is loaded
+    if workouts_with_strava_ids:
+        # Reload only workouts that have strava_activities and are in unique_workouts
+        workouts_to_reload = [wid for wid in workouts_with_strava_ids if wid in unique_workouts]
+        
+        if workouts_to_reload:
+            workouts_with_strava = db.execute(
+                select(Workout)
+                .options(joinedload(Workout.strava_activity))
+                .where(Workout.id.in_(workouts_to_reload))
+            ).unique().scalars().all()
+            
+            logger.info(f"[CALENDAR] Reloaded {len(workouts_with_strava)} workouts with Strava relationship")
+            
+            # Update unique_workouts with refreshed workouts that have strava_activity loaded
+            for refreshed_workout in workouts_with_strava:
+                if refreshed_workout.id in unique_workouts:
+                    logger.info(f"[CALENDAR] Updating workout {refreshed_workout.id} with Strava activity: {refreshed_workout.strava_activity.id if refreshed_workout.strava_activity else 'None'}")
+                    unique_workouts[refreshed_workout.id] = refreshed_workout
     
     # Convert Strava activities to workout dicts
     strava_workouts_dicts = [strava_to_workout_dict(activity) for activity in strava_activities]
     
     # Convert regular workouts to dicts
     regular_workouts_dicts = [workout_to_dict(w) for w in unique_workouts.values()]
+    
+    # Debug: Check if workout 5 has strava_activity in the dict
+    workout_5_dict = next((w for w in regular_workouts_dicts if w.get("id") == 5), None)
+    if workout_5_dict:
+        logger.info(f"[CALENDAR] Workout 5 dict - has strava_activity: {workout_5_dict.get('strava_activity') is not None}")
+        if workout_5_dict.get('strava_activity'):
+            logger.info(f"[CALENDAR] Workout 5 dict - strava_activity id: {workout_5_dict['strava_activity'].get('id')}")
     
     # Combine and sort
     all_workouts_dicts = regular_workouts_dicts + strava_workouts_dicts

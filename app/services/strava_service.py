@@ -825,7 +825,9 @@ class StravaService:
         return updated
     
     def match_activities_with_workouts(self, user_id: int) -> Dict[str, Any]:
-        """Match Strava activities with scheduled workouts"""
+        """Match Strava activities with scheduled workouts from active plans only"""
+        from app.models.workout import WorkoutPlan
+        
         # Get user's Strava account
         strava_account = self.db.execute(
             select(StravaAccount)
@@ -844,15 +846,29 @@ class StravaService:
             ))
         ).scalars().all()
         
-        # Get scheduled workouts for the user
+        # Get scheduled workouts for the user FROM ACTIVE PLANS ONLY
+        # Include:
+        # 1. Standalone workouts (plan_id is NULL)
+        # 2. Workouts from active plans (status == "active")
         scheduled_workouts = self.db.execute(
             select(Workout)
-            .where(and_(
-                Workout.user_id == user_id,
-                Workout.status == WorkoutStatus.SCHEDULED,
-                Workout.scheduled_date.isnot(None)
-            ))
+            .outerjoin(WorkoutPlan, Workout.plan_id == WorkoutPlan.id)
+            .where(
+                and_(
+                    Workout.user_id == user_id,
+                    Workout.status == WorkoutStatus.SCHEDULED,
+                    Workout.scheduled_date.isnot(None),
+                    # Only include workouts from active plans or standalone workouts
+                    or_(
+                        Workout.plan_id.is_(None),  # Standalone workouts
+                        WorkoutPlan.status == "active"  # Workouts from active plans only
+                    )
+                )
+            )
         ).scalars().all()
+        
+        logger.info(f"[STRAVA_MATCH] Found {len(unmatched_activities)} unmatched activities")
+        logger.info(f"[STRAVA_MATCH] Found {len(scheduled_workouts)} scheduled workouts from active plans (or standalone)")
         
         matched_count = 0
         matches = []

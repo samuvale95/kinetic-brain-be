@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, or_, func
 from sqlalchemy.orm import Session
 
 from loguru import logger
@@ -316,7 +316,7 @@ async def sync_strava_activities(
 @router.post("/match", response_model=StravaMatchResponse)
 async def match_activities_with_workouts(current_user: dict = Depends(get_current_user),
                                         db: Session = Depends(get_db)):
-    """Match Strava activities with scheduled workouts"""
+    """Match Strava activities with scheduled workouts from active plans only"""
     try:
         strava_service = StravaService(db)
         result = strava_service.match_activities_with_workouts(
@@ -329,6 +329,86 @@ async def match_activities_with_workouts(current_user: dict = Depends(get_curren
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to match activities: {str(e)}"
         )
+
+
+@router.post("/unmatch-inactive-plan-workouts")
+async def unmatch_inactive_plan_workouts(current_user: dict = Depends(get_current_user),
+                                       db: Session = Depends(get_db)):
+    """Dissocia attività Strava abbin這裡ate a workout di piani inattivi"""
+    from app.models.strava import StravaActivity
+    from app.models.workout import Workout, WorkoutPlan, WorkoutStatus
+    from app.models.workout import WorkoutSession
+    
+    user_id = current_user["user_id"]
+    
+    # Trova tutte le attività Strava abbin這裡ate a workout di piani inattivi
+    # Un piano è inattivo se status != "active"
+    # outerjoin perché il piano potrebbe non esistere più (plan_id non null ma piano cancellato)
+    matched_activities_inactive_plans = db.execute(
+        select(StravaActivity)
+        .join(Workout, StravaActivity.workout_id == Workout.id)
+        .outerjoin(WorkoutPlan, and_(
+            Workout.plan_id == WorkoutPlan.id,
+            WorkoutPlan.user_id == user_id
+        ))
+        .where(
+            and_(
+                Workout.user_id == user_id,
+                StravaActivity.workout_id.isnot(None),
+                Workout.plan_id.isnot(None),  # Solo workout con piano (non standalone)
+                # Piano inattivo (status != "active") o piano non esiste più
+                or_(
+                    WorkoutPlan.status != "active",  # Piano inattivo
+                    WorkoutPlan.id.is_(None)  # Piano non esiste più (cancellato)
+                )
+            )
+        )
+    ).scalars().all()
+    
+    logger.info(f"[STRAVA_UNMATCH] Found {len(matched_activities_inactive_plans)} activities matched to inactive plan workouts")
+    
+    unmatched_count = 0
+    workouts_reset_to_scheduled = 0
+    
+    for activity in matched_activities_inactive_plans:
+        workout_id = activity.workout_id  # Salva prima di resettare
+        
+        # Dissocia l'attività
+        activity.workout_id = None
+        activity.is_synced = False
+        activity.sync_status = "pending"
+        
+        unmatched_count += 1
+        
+        # Reset workout status se era completato solo per questo abbinamento
+        if workout_id:
+            workout = db.execute(
+                select(Workout).where(Workout.id == workout_id)
+            ).scalar_one_or_none()
+            
+            if workout and workout.status == WorkoutStatus.COMPLETED:
+                # Reset solo se non ci sono sessioni per questo workout
+                session_exists = db.execute(
+                    select(WorkoutSession)
+                    .where(WorkoutSession.workout_id == workout.id)
+                    .limit(1)
+                ).scalar_one_or_none()
+                
+                if not session_exists:
+                    workout.status = WorkoutStatus.SCHEDULED
+                    workouts_reset_to_scheduled += 1
+                    logger.info(f"[STRAVA_UNMATCH] Reset workout {workout.id} to scheduled (no sessions)")
+    
+    db.commit()
+    
+    logger.info(f"[STRAVA_UNMATCH] Unmatched {unmatched_count} activities, reset {workouts_reset_to_scheduled} workouts to scheduled")
+    
+    return {
+        "success": True,
+        "unmatched_count": unmatched_count,
+        "workouts_reset_to_scheduled": workouts_reset_to_scheduled,
+        "message": f"Dissociate {unmatched_count} activities from inactive plan workouts"
+    }
 
 
 @router.get("/sync/jobs/latest", response_model=StravaSyncJobListResponse)
