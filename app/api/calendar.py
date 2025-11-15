@@ -9,6 +9,7 @@ from app.schemas.calendar import (
     CalendarEventCreate, CalendarEventUpdate, CalendarEventResponse,
     DragDropRequest, CalendarMonthRequest
 )
+from app.schemas.workout import CalendarWorkoutResponse, StravaActivitySummary
 from app.models.workout import Workout, WorkoutPlan, WorkoutSession, WorkoutStatus
 from app.models.strava import StravaActivity, StravaAccount
 from app.services.workout_service import WorkoutService
@@ -55,7 +56,7 @@ async def get_calendar_events(start_date: Optional[date] = Query(None),
     return events
 
 
-@router.get("/{year}/{month}")
+@router.get("/{year}/{month}", response_model=List[CalendarWorkoutResponse])
 async def get_calendar_month(year: int, month: int,
                             current_user: dict = Depends(get_current_user),
                             db: Session = Depends(get_db)):
@@ -162,13 +163,11 @@ async def get_calendar_month(year: int, month: int,
                 # Activity not linked to any workout - include it
                 strava_activities.append(activity)
     
-    # Convert Strava activities to Workout objects (virtual workouts)
-    def strava_to_workout(activity: StravaActivity) -> Workout:
-        """Convert StravaActivity to a Workout object for calendar display"""
-        # Calculate duration in minutes
+    # Convert Strava activities to Workout dicts with Strava data
+    def strava_to_workout_dict(activity: StravaActivity) -> dict:
+        """Convert StravaActivity to a Workout dict with Strava data"""
         duration_minutes = int(activity.moving_time / 60) if activity.moving_time else 0
         
-        # Determine workout type from Strava type
         type_mapping = {
             "Run": "run",
             "Ride": "ride",
@@ -179,64 +178,81 @@ async def get_calendar_month(year: int, month: int,
         }
         workout_type = type_mapping.get(activity.type, activity.type.lower())
         
-        # Use the activity start_date_local for the date
         activity_date = activity.start_date_local.date() if activity.start_date_local else activity.start_date.date()
         
-        # Create a Workout-like object
-        # We'll use a special approach: create a temporary Workout object
-        # with negative ID to distinguish from real workouts
-        workout = Workout(
-            id=-activity.id,  # Negative ID to distinguish from real workouts
-            plan_id=None,
-            user_id=user_id,
-            title=activity.name,
-            type=workout_type,
-            day_number=None,
-            scheduled_date=activity_date,
-            duration_minutes=duration_minutes,
-            intensity=None,
-            zone=None,
-            structure_json=None,
-            status=WorkoutStatus.COMPLETED,  # Strava activities are always completed
-            notes=None,
-            created_at=activity.created_at if activity.created_at else datetime.now(),
-            updated_at=activity.updated_at if activity.updated_at else datetime.now()
-        )
-        return workout
+        # Create workout dict with Strava data
+        workout_dict = {
+            "id": -activity.id,  # Negative ID to distinguish
+            "plan_id": None,
+            "user_id": user_id,
+            "title": activity.name,
+            "type": workout_type,
+            "day_number": None,
+            "scheduled_date": activity_date,
+            "duration_minutes": duration_minutes,
+            "intensity": None,
+            "zone": None,
+            "structure_json": None,
+            "status": WorkoutStatus.COMPLETED.value,
+            "notes": None,
+            "created_at": activity.created_at if activity.created_at else datetime.now(),
+            "updated_at": activity.updated_at if activity.updated_at else datetime.now(),
+            # Include Strava data
+            "strava_activity": {
+                "id": activity.id,
+                "strava_activity_id": activity.strava_activity_id,
+                "distance": activity.distance,
+                "moving_time": activity.moving_time,
+                "elapsed_time": activity.elapsed_time,
+                "total_elevation_gain": activity.total_elevation_gain,
+                "average_speed": activity.average_speed,
+                "max_speed": activity.max_speed,
+                "average_heartrate": activity.average_heartrate,
+                "max_heartrate": activity.max_heartrate,
+                "average_watts": activity.average_watts,
+                "max_watts": activity.max_watts,
+                "average_cadence": activity.average_cadence,
+                "temperature": activity.temperature,
+                "calories": activity.calories,
+                "start_date": activity.start_date,
+                "start_date_local": activity.start_date_local,
+            }
+        }
+        return workout_dict
     
-    # Convert Strava activities to workouts
-    strava_workouts = [strava_to_workout(activity) for activity in strava_activities]
+    # Convert regular workouts to dict format
+    def workout_to_dict(workout: Workout) -> dict:
+        """Convert Workout to dict format"""
+        workout_dict = {
+            "id": workout.id,
+            "plan_id": workout.plan_id,
+            "user_id": workout.user_id,
+            "title": workout.title,
+            "type": workout.type,
+            "day_number": workout.day_number,
+            "scheduled_date": workout.scheduled_date,
+            "duration_minutes": workout.duration_minutes,
+            "intensity": workout.intensity,
+            "zone": workout.zone,
+            "structure_json": workout.structure_json,
+            "status": workout.status.value if isinstance(workout.status, WorkoutStatus) else workout.status,
+            "notes": workout.notes,
+            "created_at": workout.created_at,
+            "updated_at": workout.updated_at,
+            "strava_activity": None  # No Strava data for regular workouts
+        }
+        return workout_dict
     
-    # Combine all workouts and remove duplicates
-    all_workouts = list(scheduled_workouts) + list(workouts_from_sessions) + strava_workouts
-    unique_workouts = {}
-    seen_strava_activities = set()  # Track Strava activities by date to avoid duplicates
-    
-    for workout in all_workouts:
-        # For Strava-based workouts (negative IDs), check if we've already seen this date/type
-        if workout.id < 0:
-            key = (workout.scheduled_date, workout.type)
-            if key in seen_strava_activities:
-                continue
-            seen_strava_activities.add(key)
-            unique_workouts[workout.id] = workout
-        else:
-            # Filter out workouts from inactive plans
-            if workout.id not in inactive_plan_workout_ids:
-                unique_workouts[workout.id] = workout
-    
-    # Sort by scheduled_date (use actual_date from session if scheduled_date is None or different)
-    def get_display_date(w):
-        # If workout has scheduled_date in the month, use it
-        if w.scheduled_date and start_date <= w.scheduled_date <= end_date:
-            return w.scheduled_date
-        # Otherwise, try to get actual_date from the first session in the month
-        if w.id > 0:  # Only for real workouts
+    # Helper to get display date from dict
+    def get_display_date_from_dict(w: dict) -> date:
+        if w.get("scheduled_date") and start_date <= w["scheduled_date"] <= end_date:
+            return w["scheduled_date"]
+        if w.get("id", 0) > 0:  # Only for real workouts
             sessions_in_month = db.execute(
                 select(WorkoutSession)
                 .where(
                     and_(
-                        WorkoutSession.workout_id == w.id,
+                        WorkoutSession.workout_id == w["id"],
                         WorkoutSession.actual_date >= start_datetime,
                         WorkoutSession.actual_date <= end_datetime
                     )
@@ -245,12 +261,49 @@ async def get_calendar_month(year: int, month: int,
             ).scalars().first()
             if sessions_in_month:
                 return sessions_in_month.actual_date.date()
-        return w.scheduled_date or date.min
+        return w.get("scheduled_date") or date.min
     
-    filtered_workouts = list(unique_workouts.values())
-    filtered_workouts.sort(key=lambda w: (get_display_date(w), w.duration_minutes or 0))
+    # Combine all workouts and remove duplicates
+    all_workouts = list(scheduled_workouts) + list(workouts_from_sessions)
+    unique_workouts = {}
     
-    return filtered_workouts
+    for workout in all_workouts:
+        # Filter out workouts from inactive plans
+        if workout.id not in inactive_plan_workout_ids:
+            unique_workouts[workout.id] = workout
+    
+    # Convert Strava activities to workout dicts
+    strava_workouts_dicts = [strava_to_workout_dict(activity) for activity in strava_activities]
+    
+    # Convert regular workouts to dicts
+    regular_workouts_dicts = [workout_to_dict(w) for w in unique_workouts.values()]
+    
+    # Combine and sort
+    all_workouts_dicts = regular_workouts_dicts + strava_workouts_dicts
+    
+    # Remove duplicates by ID (for Strava activities, use date+type as key)
+    seen_strava_activities = set()
+    final_workouts_dicts = []
+    seen_ids = set()
+    
+    for w in all_workouts_dicts:
+        if w["id"] < 0:
+            # Strava activity - check by date/type to avoid duplicates
+            key = (w["scheduled_date"], w["type"])
+            if key not in seen_strava_activities:
+                seen_strava_activities.add(key)
+                final_workouts_dicts.append(w)
+        else:
+            # Regular workout - check by ID
+            if w["id"] not in seen_ids:
+                seen_ids.add(w["id"])
+                final_workouts_dicts.append(w)
+    
+    # Sort
+    final_workouts_dicts.sort(key=lambda w: (get_display_date_from_dict(w), w.get("duration_minutes", 0)))
+    
+    # Return as CalendarWorkoutResponse objects
+    return [CalendarWorkoutResponse(**w) for w in final_workouts_dicts]
 
 
 @router.post("/events", response_model=CalendarEventResponse, status_code=status.HTTP_201_CREATED)

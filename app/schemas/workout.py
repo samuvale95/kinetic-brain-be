@@ -100,6 +100,38 @@ class WorkoutResponse(BaseModel):
         from_attributes = True
 
 
+class StravaActivitySummary(BaseModel):
+    """Riepilogo dati Strava per attività senza workout"""
+    id: int
+    strava_activity_id: int
+    distance: Optional[float] = None  # metri
+    moving_time: Optional[int] = None  # secondi
+    elapsed_time: Optional[int] = None  # secondi
+    total_elevation_gain: Optional[float] = None  # metri
+    average_speed: Optional[float] = None  # m/s
+    max_speed: Optional[float] = None  # m/s
+    average_heartrate: Optional[float] = None  # bpm
+    max_heartrate: Optional[float] = None  # bpm
+    average_watts: Optional[float] = None  # watt
+    max_watts: Optional[float] = None  # watt
+    average_cadence: Optional[float] = None  # rpm
+    temperature: Optional[float] = None  # celsius
+    calories: Optional[float] = None
+    start_date: datetime
+    start_date_local: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class CalendarWorkoutResponse(WorkoutResponse):
+    """Workout response per calendario con supporto attività Strava"""
+    strava_activity: Optional[StravaActivitySummary] = None  # Dati Strava se presente
+    
+    class Config:
+        from_attributes = True
+
+
 class WorkoutSessionCreate(BaseModel):
     workout_id: int
     actual_date: datetime
