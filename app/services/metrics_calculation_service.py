@@ -7,6 +7,7 @@ import math
 from typing import Dict, Any, Optional, List
 from datetime import date, datetime, timedelta
 import numpy as np
+from loguru import logger
 
 
 class MetricsCalculationService:
@@ -190,16 +191,22 @@ class MetricsCalculationService:
     
     def calculate_time_in_zones(self,
                                hr_data: Optional[List[float]] = None,
+                               time_data: Optional[List[float]] = None,
                                zones: Dict[str, Dict[str, float]] = None,
                                duration_seconds: int = 0,
                                avg_hr: Optional[float] = None) -> Dict[str, int]:
         """
         Calculate time spent in each training zone
         
+        Uses real time data from Strava streams when available for accurate calculation.
+        Sezioni i dati raggruppando punti consecutivi nella stessa zona per calcolare
+        il tempo reale trascorso.
+        
         Args:
             hr_data: List of heart rate values
+            time_data: List of time values (seconds from start) - MUST be same length as hr_data
             zones: Zone definitions with min/max for each zone
-            duration_seconds: Total duration
+            duration_seconds: Total duration (used as fallback if time_data not available)
             avg_hr: Average heart rate (used if hr_data not available)
         
         Returns:
@@ -219,14 +226,69 @@ class MetricsCalculationService:
         
         duration_minutes = duration_seconds / 60.0
         
-        # If we have detailed HR data
-        if hr_data and len(hr_data) > 0:
+        # If we have detailed HR data with time data - use accurate calculation
+        if hr_data and len(hr_data) > 0 and time_data and len(time_data) == len(hr_data):
+            # Sezionare i dati: raggruppare punti consecutivi nella stessa zona
+            # per calcolare il tempo reale trascorso
+            # Ogni punto rappresenta un intervallo di tempo fino al punto successivo
+            # (o fino alla fine per l'ultimo punto)
+            
+            for idx, hr_value in enumerate(hr_data):
+                current_time = time_data[idx]
+                current_zone = None
+                
+                # Find which zone this HR value belongs to
+                for zone_idx in range(1, 6):
+                    zone_key = f"z{zone_idx}"
+                    if zone_key in zones:
+                        zone_def = zones[zone_key]
+                        if not isinstance(zone_def, dict):
+                            continue
+                        zone_min = zone_def.get('min', 0)
+                        zone_max = zone_def.get('max', 999)
+                        
+                        if zone_min <= hr_value <= zone_max:
+                            current_zone = zone_key
+                            break
+                
+                # Calculate time interval for this point
+                # Each point represents the time from this point to the next
+                if idx < len(hr_data) - 1:
+                    # Time until next point
+                    next_time = time_data[idx + 1]
+                    interval_duration = next_time - current_time
+                else:
+                    # Last point: use remaining time or assume same interval as previous
+                    if idx > 0:
+                        # Use same interval as previous point
+                        prev_interval = time_data[idx] - time_data[idx - 1]
+                        interval_duration = prev_interval
+                    else:
+                        # Only one point - use total duration
+                        interval_duration = duration_seconds
+                
+                # Add time to the appropriate zone
+                if current_zone is not None and interval_duration > 0:
+                    result[current_zone] += interval_duration / 60.0  # Convert to minutes
+            
+            # Convert to integers (minutes)
+            result = {k: int(round(v)) for k, v in result.items()}
+            logger.debug(f"[METRICS] Calculated time in zones using real time data: {result}")
+            
+        # Fallback: if we have HR data but no time data, use equal distribution
+        elif hr_data and len(hr_data) > 0:
+            logger.debug(f"[METRICS] Using fallback calculation (no time data available)")
             for hr_value in hr_data:
                 for zone_idx in range(1, 6):
                     zone_key = f"z{zone_idx}"
                     if zone_key in zones:
-                        zone_min = zones[zone_key].get('min', 0)
-                        zone_max = zones[zone_key].get('max', 999)
+                        zone_def = zones[zone_key]
+                        # Safety check: ensure zone_def is a dict
+                        if not isinstance(zone_def, dict):
+                            logger.warning(f"[METRICS] Zone {zone_key} is not a dict (type: {type(zone_def)}), skipping")
+                            continue
+                        zone_min = zone_def.get('min', 0)
+                        zone_max = zone_def.get('max', 999)
                         
                         if zone_min <= hr_value <= zone_max:
                             # Increment time for this zone
@@ -234,21 +296,29 @@ class MetricsCalculationService:
                             increment = duration_minutes / len(hr_data)
                             result[zone_key] += increment
                             break
+            
+            result = {k: int(round(v)) for k, v in result.items()}
         
         # Fallback: estimate based on average HR
         elif avg_hr is not None and zones:
+            logger.debug(f"[METRICS] Using average HR fallback calculation")
             for zone_idx in range(1, 6):
                 zone_key = f"z{zone_idx}"
                 if zone_key in zones:
-                    zone_min = zones[zone_key].get('min', 0)
-                    zone_max = zones[zone_key].get('max', 999)
+                    zone_def = zones[zone_key]
+                    # Safety check: ensure zone_def is a dict
+                    if not isinstance(zone_def, dict):
+                        logger.warning(f"[METRICS] Zone {zone_key} is not a dict (type: {type(zone_def)}), skipping")
+                        continue
+                    zone_min = zone_def.get('min', 0)
+                    zone_max = zone_def.get('max', 999)
                     
                     if zone_min <= avg_hr <= zone_max:
                         # Assume all time in this zone
                         result[zone_key] = int(duration_minutes)
                         break
         
-        return {k: int(v) for k, v in result.items()}
+        return result
     
     def calculate_ctl_atl_tsb(self,
                               daily_tss: List[float],

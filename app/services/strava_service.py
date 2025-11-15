@@ -137,6 +137,72 @@ class StravaService:
                 return None
         return None
     
+    def _parse_hr_zones(self, hr_zones: Any) -> Optional[Dict[str, Dict[str, float]]]:
+        """
+        Parse HR zones from various formats into the standard format.
+        
+        Handles:
+        1. Dict with zone keys and dict values: {'z1': {'min': 139, 'max': 153}, ...}
+        2. Dict with zone keys and string values: {'z1': '139-153', ...}
+        3. JSON string: '{"z1": {"min": 139, "max": 153}, ...}'
+        4. JSON string with string values: '{"z1": "139-153", ...}'
+        
+        Returns:
+            Dict in format {'z1': {'min': float, 'max': float}, ...} or None
+        """
+        if hr_zones is None:
+            return None
+        
+        # First try to parse as JSON if it's a string
+        if isinstance(hr_zones, str):
+            parsed = self._parse_json_field(hr_zones)
+            if parsed is not None:
+                hr_zones = parsed
+            else:
+                return None
+        
+        # If not a dict, return None
+        if not isinstance(hr_zones, dict):
+            return None
+        
+        # Convert zone format
+        result = {}
+        for zone_key in ['z1', 'z2', 'z3', 'z4', 'z5']:
+            if zone_key not in hr_zones:
+                continue
+            
+            zone_value = hr_zones[zone_key]
+            
+            # If already in correct format {'min': X, 'max': Y}
+            if isinstance(zone_value, dict) and 'min' in zone_value and 'max' in zone_value:
+                min_val = float(zone_value['min'])
+                max_val = float(zone_value['max'])
+                # Check for inverted range (min > max)
+                if min_val > max_val:
+                    logger.warning(f"[METRICS] Inverted range in zone {zone_key}: min={min_val} > max={max_val}. Swapping values.")
+                    min_val, max_val = max_val, min_val
+                result[zone_key] = {'min': min_val, 'max': max_val}
+            # If in string format '139-153'
+            elif isinstance(zone_value, str):
+                try:
+                    parts = zone_value.split('-')
+                    if len(parts) == 2:
+                        min_val = float(parts[0].strip())
+                        max_val = float(parts[1].strip())
+                        # Check for inverted range (min > max)
+                        if min_val > max_val:
+                            logger.warning(f"[METRICS] Inverted range in zone {zone_key}: '{zone_value}' (min={min_val} > max={max_val}). Swapping values.")
+                            min_val, max_val = max_val, min_val
+                        result[zone_key] = {'min': min_val, 'max': max_val}
+                    else:
+                        logger.warning(f"[METRICS] Invalid zone format '{zone_value}' for {zone_key}, expected 'min-max'")
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"[METRICS] Failed to parse zone {zone_key} value '{zone_value}': {e}")
+            else:
+                logger.warning(f"[METRICS] Unexpected zone format for {zone_key}: {type(zone_value)}")
+        
+        return result if result else None
+    
     def get_auth_url(self, user_id: int) -> str:
         """Generate Strava OAuth authorization URL"""
         params = {
@@ -1068,14 +1134,14 @@ class StravaService:
             logger.debug(f"[METRICS] No performance metrics found for user {user_id}, using defaults")
         
         # Extract zones from PerformanceMetrics if available
-        # Safely parse hr_zones in case it's stored as a JSON string
+        # Parse hr_zones from various formats (JSON string, dict with strings, dict with dicts)
         hr_zones = None
         if latest_metrics and latest_metrics.hr_zones:
-            hr_zones = self._parse_json_field(latest_metrics.hr_zones)
+            hr_zones = self._parse_hr_zones(latest_metrics.hr_zones)
             if hr_zones:
-                logger.debug(f"[METRICS] Using HR zones from performance metrics")
+                logger.debug(f"[METRICS] Using HR zones from performance metrics: {hr_zones}")
             else:
-                logger.debug(f"[METRICS] Failed to parse HR zones from performance metrics")
+                logger.debug(f"[METRICS] Failed to parse HR zones from performance metrics (raw: {latest_metrics.hr_zones})")
         
         # Get threshold values
         threshold_hr = latest_metrics.threshold_hr if latest_metrics else None
@@ -1138,29 +1204,42 @@ class StravaService:
         # Calculate time in zones using real HR data from Strava streams
         time_in_zones = {}
         hr_data = None
+        time_data = None
         
         # Try to fetch detailed HR data from Strava streams
-        # Skip during bulk recalculation to avoid blocking (can be slow with many activities)
-        hr_data = None
+        # Always fetch streams when fetch_streams=True for accurate zone calculation
         if fetch_streams and strava_activity.strava_account:
             logger.debug(f"[METRICS] Fetching HR streams for activity {strava_activity.strava_activity_id}...")
             try:
                 streams = self.fetch_activity_streams(
                     strava_account=strava_activity.strava_account,
                     activity_id=strava_activity.strava_activity_id,
-                    stream_types=['heartrate', 'time'],
-                    timeout=3  # Short timeout to avoid blocking
+                    stream_types=['heartrate', 'time'],  # Always include 'time' for accurate calculation
+                    timeout=5  # Increased timeout for reliability
                 )
                 
                 if 'heartrate' in streams and streams['heartrate'].get('data'):
                     hr_data = streams['heartrate']['data']
                     logger.debug(f"[METRICS] Fetched {len(hr_data)} HR data points for activity {strava_activity.id}")
+                    
+                    # Get time data if available (required for accurate zone calculation)
+                    if 'time' in streams and streams['time'].get('data'):
+                        time_data = streams['time']['data']
+                        logger.debug(f"[METRICS] Fetched {len(time_data)} time data points for activity {strava_activity.id}")
+                        
+                        # Verify that time_data and hr_data have the same length
+                        if len(time_data) != len(hr_data):
+                            logger.warning(f"[METRICS] Time data length ({len(time_data)}) != HR data length ({len(hr_data)}), using fallback calculation")
+                            time_data = None
+                    else:
+                        logger.warning(f"[METRICS] No time data in streams for activity {strava_activity.id}, will use fallback calculation")
                 else:
                     logger.debug(f"[METRICS] No HR data in streams response for activity {strava_activity.id}")
             except Exception as e:
                 # Log but don't fail - we can still calculate zones with average HR
-                logger.debug(f"[METRICS] Failed to fetch HR streams for activity {strava_activity.id}: {e}")
+                logger.warning(f"[METRICS] Failed to fetch HR streams for activity {strava_activity.id}: {e}")
                 hr_data = None
+                time_data = None
         elif not fetch_streams:
             logger.debug(f"[METRICS] Skipping HR streams fetch (fetch_streams=False) for activity {strava_activity.id}")
         elif not strava_activity.strava_account:
@@ -1168,9 +1247,22 @@ class StravaService:
         
         # Calculate zones with real HR data or fallback to average HR
         if strava_activity.average_heartrate:
-            logger.debug(f"[METRICS] Calculating time in zones (avg_hr={strava_activity.average_heartrate}, duration={duration_seconds}s)")
+            if hr_zones is None:
+                logger.warning(
+                    f"[METRICS] Cannot calculate zones for activity {strava_activity.id}: "
+                    f"No HR zones configured. User needs to set threshold_hr, hr_max, or hr_zones in profile. "
+                    f"(avg_hr={strava_activity.average_heartrate}, threshold_hr={threshold_hr}, hr_max={max_hr})"
+                )
+            else:
+                logger.debug(
+                    f"[METRICS] Calculating time in zones (avg_hr={strava_activity.average_heartrate}, "
+                    f"duration={duration_seconds}s, zones={hr_zones}, hr_data_points={len(hr_data) if hr_data else 0}, "
+                    f"time_data_points={len(time_data) if time_data else 0})"
+                )
+            
             time_in_zones = self.metrics_service.calculate_time_in_zones(
                 hr_data=hr_data,
+                time_data=time_data,  # Pass time data for accurate calculation
                 zones=hr_zones,
                 duration_seconds=duration_seconds,
                 avg_hr=strava_activity.average_heartrate
@@ -1179,7 +1271,20 @@ class StravaService:
             if not isinstance(time_in_zones, dict):
                 logger.warning(f"[METRICS] time_in_zones is not a dict (type: {type(time_in_zones)}), using defaults")
                 time_in_zones = {'z1': 0, 'z2': 0, 'z3': 0, 'z4': 0, 'z5': 0}
-            logger.debug(f"[METRICS] Time in zones calculated: {time_in_zones}")
+            
+            zones_sum = sum([time_in_zones.get(f'z{i}', 0) for i in range(1, 6)])
+            if zones_sum == 0 and hr_zones is None:
+                logger.warning(
+                    f"[METRICS] Zones are all zero because hr_zones is None. "
+                    f"User {user_id} needs to configure HR zones (threshold_hr or hr_max) in profile."
+                )
+            elif zones_sum == 0 and hr_zones is not None:
+                logger.warning(
+                    f"[METRICS] Zones are all zero but hr_zones is configured: {hr_zones}. "
+                    f"This might indicate an issue with zone calculation or HR data."
+                )
+            else:
+                logger.debug(f"[METRICS] Time in zones calculated: {time_in_zones} (total={zones_sum} minutes)")
         else:
             logger.debug(f"[METRICS] No average HR available, skipping zone calculation")
             time_in_zones = {'z1': 0, 'z2': 0, 'z3': 0, 'z4': 0, 'z5': 0}
@@ -1472,11 +1577,22 @@ class StravaService:
                 unique_dates.add(activity_date)
         
         # Update daily metrics for each date (skip advanced metrics and propagation for speed)
-        logger.info(f"[RECALC] Updating daily metrics for {len(unique_dates)} unique dates...")
+        sorted_dates = sorted(unique_dates)
+        total_dates = len(sorted_dates)
+        logger.info(f"[RECALC] Updating daily metrics for {total_dates} unique dates...")
+        
+        if job and total_dates > 0:
+            self._update_sync_job(
+                job,
+                status_message=f"Updating daily metrics (0/{total_dates})...",
+            )
+        
         daily_metrics_updated = 0
-        for idx, activity_date in enumerate(sorted(unique_dates), 1):
+        last_progress_update = 0
+        
+        for idx, activity_date in enumerate(sorted_dates, 1):
             try:
-                logger.debug(f"[RECALC] Updating daily metrics for date {activity_date} ({idx}/{len(unique_dates)})")
+                logger.debug(f"[RECALC] Updating daily metrics for date {activity_date} ({idx}/{total_dates})")
                 # Skip advanced metrics and propagation during bulk update - will do at end
                 daily_metrics_service.update_daily_metrics(
                     user_id, 
@@ -1486,12 +1602,16 @@ class StravaService:
                 )
                 daily_metrics_updated += 1
                 
-                # Update job progress periodically
-                if job and idx % 10 == 0:
+                # Update job progress more frequently (every 3 dates or every 5%, whichever is smaller)
+                progress_percent = (idx * 100) // total_dates if total_dates > 0 else 0
+                update_interval = max(1, min(3, total_dates // 30))  # Update every 3 dates or ~30 times total
+                
+                if job and (idx % update_interval == 0 or idx == total_dates or progress_percent - last_progress_update >= 5):
                     self._update_sync_job(
                         job,
-                        status_message=f"Updating daily metrics ({idx}/{len(unique_dates)})...",
+                        status_message=f"Updating daily metrics ({idx}/{total_dates}, {progress_percent}%)...",
                     )
+                    last_progress_update = progress_percent
             except Exception as e:
                 logger.warning(f"[RECALC] Failed to update daily metrics for {activity_date}: {e}")
         

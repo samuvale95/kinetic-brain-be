@@ -839,3 +839,224 @@ async def debug_hr_streams(activity_id: int,
     except Exception as e:
         return {"error": str(e)}
 
+
+@router.post("/debug/recalculate-day")
+async def debug_recalculate_day(
+    target_date: str = Query(..., description="Date in YYYY-MM-DD format"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    DEBUG endpoint to recalculate metrics for all activities on a specific day.
+    Useful for testing zone calculations and metrics recalculation.
+    
+    This endpoint:
+    1. Finds all Strava activities for the specified date
+    2. Recalculates metrics for each activity (WITH stream data fetch)
+    3. Updates daily metrics for that date
+    4. Returns a detailed report
+    
+    Args:
+        target_date: Date in YYYY-MM-DD format (e.g., "2025-11-11")
+    
+    Returns:
+        Report with details about recalculated activities and metrics
+    """
+    from datetime import datetime, date
+    from app.models.strava import StravaActivity, StravaAccount
+    from app.services.daily_metrics_service import DailyMetricsService
+    from sqlalchemy import select, and_, func
+    
+    try:
+        # Parse date
+        try:
+            parsed_date = datetime.strptime(target_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid date format. Use YYYY-MM-DD format. Got: {target_date}"
+            )
+        
+        user_id = current_user["user_id"]
+        
+        # Get user's Strava account
+        strava_account = db.execute(
+            select(StravaAccount)
+            .where(StravaAccount.user_id == user_id)
+        ).scalar_one_or_none()
+        
+        if not strava_account:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No Strava account connected"
+            )
+        
+        # Find all activities for the specified date
+        # Convert date to datetime for comparison (start of day and end of day)
+        start_datetime = datetime.combine(parsed_date, datetime.min.time())
+        end_datetime = datetime.combine(parsed_date, datetime.max.time())
+        
+        activities = db.execute(
+            select(StravaActivity)
+            .where(
+                and_(
+                    StravaActivity.strava_account_id == strava_account.id,
+                    func.date(StravaActivity.start_date) == parsed_date
+                )
+            )
+            .order_by(StravaActivity.start_date)
+        ).scalars().all()
+        
+        if not activities:
+            return {
+                "success": True,
+                "message": f"No activities found for date {target_date}",
+                "date": target_date,
+                "activities_processed": 0,
+                "activities": []
+            }
+        
+        logger.info(f"[DEBUG][RECALC_DAY] Recalculating metrics for {len(activities)} activities on {target_date}")
+        
+        strava_service = StravaService(db)
+        results = []
+        errors = []
+        
+        # Get user's performance metrics to check zone configuration
+        from app.models.user import PerformanceMetrics
+        from sqlalchemy import desc
+        latest_metrics = db.execute(
+            select(PerformanceMetrics)
+            .where(PerformanceMetrics.user_id == user_id)
+            .order_by(desc(PerformanceMetrics.test_date))
+        ).scalar_one_or_none()
+        
+        # Check zone configuration
+        has_zones_config = False
+        zones_info = {}
+        if latest_metrics:
+            if latest_metrics.hr_zones:
+                parsed_zones = strava_service._parse_json_field(latest_metrics.hr_zones)
+                has_zones_config = parsed_zones is not None
+                zones_info["has_hr_zones"] = has_zones_config
+                zones_info["hr_zones"] = parsed_zones
+            zones_info["threshold_hr"] = latest_metrics.threshold_hr
+            zones_info["hr_max"] = latest_metrics.hr_max
+            zones_info["hr_rest"] = latest_metrics.hr_rest
+            has_zones_config = has_zones_config or latest_metrics.threshold_hr or latest_metrics.hr_max
+        else:
+            zones_info["error"] = "No performance metrics found for user"
+        
+        # Recalculate metrics for each activity (WITH stream fetch for accurate zones)
+        for activity in activities:
+            try:
+                logger.debug(f"[DEBUG][RECALC_DAY] Processing activity {activity.id}: {activity.name}")
+                
+                # Recalculate with stream fetch enabled
+                training_metrics = strava_service.calculate_activity_metrics(
+                    strava_activity=activity,
+                    user_id=user_id,
+                    fetch_streams=True,  # Always fetch streams for accurate zone calculation
+                    skip_daily_update=True  # Skip individual updates, do batch at end
+                )
+                
+                # Flush changes to database to ensure they're saved
+                db.flush()
+                
+                # Use values directly from activity (which were just updated) or training_metrics
+                # The activity object has the denormalized values, training_metrics has the normalized ones
+                # Both should have the same zone values, but use activity as it's the source of truth for display
+                time_in_zone_1 = activity.time_in_zone_1 if activity.time_in_zone_1 is not None else (training_metrics.time_in_zone_1 or 0)
+                time_in_zone_2 = activity.time_in_zone_2 if activity.time_in_zone_2 is not None else (training_metrics.time_in_zone_2 or 0)
+                time_in_zone_3 = activity.time_in_zone_3 if activity.time_in_zone_3 is not None else (training_metrics.time_in_zone_3 or 0)
+                time_in_zone_4 = activity.time_in_zone_4 if activity.time_in_zone_4 is not None else (training_metrics.time_in_zone_4 or 0)
+                time_in_zone_5 = activity.time_in_zone_5 if activity.time_in_zone_5 is not None else (training_metrics.time_in_zone_5 or 0)
+                
+                results.append({
+                    "activity_id": activity.id,
+                    "strava_activity_id": activity.strava_activity_id,
+                    "name": activity.name,
+                    "start_date": activity.start_date.isoformat() if activity.start_date else None,
+                    "average_heartrate": activity.average_heartrate,
+                    "max_heartrate": activity.max_heartrate,
+                    "tss": activity.tss if activity.tss is not None else training_metrics.tss,
+                    "trimp": activity.trimp if activity.trimp is not None else training_metrics.trimp,
+                    "intensity_factor": activity.intensity_factor if activity.intensity_factor is not None else training_metrics.intensity_factor,
+                    "time_in_zone_1": time_in_zone_1,
+                    "time_in_zone_2": time_in_zone_2,
+                    "time_in_zone_3": time_in_zone_3,
+                    "time_in_zone_4": time_in_zone_4,
+                    "time_in_zone_5": time_in_zone_5,
+                    "zone_distribution": activity.zone_distribution if activity.zone_distribution else training_metrics.zone_distribution,
+                    "metrics_calculated": activity.metrics_calculated,
+                    "zones_sum": time_in_zone_1 + time_in_zone_2 + time_in_zone_3 + time_in_zone_4 + time_in_zone_5,
+                    "moving_time_minutes": (activity.moving_time or 0) // 60 if activity.moving_time else 0
+                })
+                
+            except Exception as e:
+                logger.error(f"[DEBUG][RECALC_DAY] Error processing activity {activity.id}: {e}", exc_info=True)
+                errors.append({
+                    "activity_id": activity.id,
+                    "strava_activity_id": activity.strava_activity_id,
+                    "name": activity.name,
+                    "error": str(e)
+                })
+        
+        # Commit all metric changes
+        db.commit()
+        logger.info(f"[DEBUG][RECALC_DAY] Committed metrics for {len(results)} activities")
+        
+        # Update daily metrics for the target date
+        daily_metrics_updated = False
+        try:
+            logger.debug(f"[DEBUG][RECALC_DAY] Updating daily metrics for date {parsed_date}")
+            daily_metrics_service = DailyMetricsService(db)
+            daily_metrics_service.update_daily_metrics(user_id, parsed_date)
+            db.commit()
+            daily_metrics_updated = True
+            logger.info(f"[DEBUG][RECALC_DAY] Updated daily metrics for date {parsed_date}")
+        except Exception as e:
+            logger.warning(f"[DEBUG][RECALC_DAY] Failed to update daily metrics for {parsed_date}: {e}")
+        
+        # Calculate summary statistics
+        total_zones_time = sum([
+            result["time_in_zone_1"] + result["time_in_zone_2"] + result["time_in_zone_3"] + 
+            result["time_in_zone_4"] + result["time_in_zone_5"]
+            for result in results
+        ])
+        total_moving_time = sum([result["moving_time_minutes"] for result in results])
+        
+        return {
+            "success": True,
+            "message": f"Recalculated metrics for {len(results)} activities on {target_date}",
+            "date": target_date,
+            "activities_processed": len(results),
+            "activities_with_errors": len(errors),
+            "daily_metrics_updated": daily_metrics_updated,
+            "zone_configuration": {
+                "has_zones_configured": has_zones_config,
+                "details": zones_info,
+                "diagnostic": "Zones are configured" if has_zones_config else "WARNING: No HR zones configured. Configure threshold_hr or hr_max in user profile."
+            },
+            "summary": {
+                "total_activities": len(activities),
+                "successful_recalculations": len(results),
+                "failed_recalculations": len(errors),
+                "total_zone_time_minutes": total_zones_time,
+                "total_moving_time_minutes": total_moving_time,
+                "activities_with_zones_calculated": len([r for r in results if r["zones_sum"] > 0]),
+                "activities_with_no_zones": len([r for r in results if r["zones_sum"] == 0 and r["average_heartrate"]])
+            },
+            "activities": results,
+            "errors": errors if errors else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[DEBUG][RECALC_DAY] Error in recalculate_day endpoint: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to recalculate metrics for day: {str(e)}"
+        )
+
