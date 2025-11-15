@@ -5,8 +5,9 @@ from sqlalchemy import func, and_, select, or_
 from typing import Dict, Any, List
 from datetime import date, datetime, timedelta
 from app.database import get_db
-from app.models.workout import Workout, WorkoutSession, WorkoutPlan
+from app.models.workout import Workout, WorkoutSession, WorkoutPlan, WorkoutStatus
 from app.models.calendar import CalendarEvent
+from app.schemas.workout import CalendarWorkoutResponse
 from app.api.auth import get_current_user
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -42,17 +43,24 @@ async def options_today_workouts():
     return Response(status_code=200)
 
 
-@router.get("/today-workouts")
+@router.get("/today-workouts", response_model=List[CalendarWorkoutResponse])
 async def get_today_workouts(current_user: dict = Depends(get_current_user),
                              db: Session = Depends(get_db)):
-    """Get today's scheduled workouts from active plans and standalone workouts"""
+    """
+    Get today's scheduled workouts from active plans and standalone workouts.
+    Returns full workout structure including Strava activities and plan data.
+    """
+    from sqlalchemy.orm import joinedload
+    from app.models.strava import StravaActivity, StravaAccount
+    
     user_id = current_user["user_id"]
     today = date.today()
     
-    # Get workouts from active plans
+    # Get workouts from active plans (with Strava activity relationship loaded)
     workouts_from_active_plans = db.execute(
         select(Workout)
         .join(WorkoutPlan, Workout.plan_id == WorkoutPlan.id)
+        .options(joinedload(Workout.strava_activity))
         .where(
             and_(
                 Workout.user_id == user_id,
@@ -62,11 +70,12 @@ async def get_today_workouts(current_user: dict = Depends(get_current_user),
                 Workout.status.in_(["scheduled", "completed"])
             )
         )
-    ).scalars().all()
+    ).unique().scalars().all()
     
-    # Get standalone workouts (without plan_id)
+    # Get standalone workouts (without plan_id, with Strava activity relationship loaded)
     standalone_workouts = db.execute(
         select(Workout)
+        .options(joinedload(Workout.strava_activity))
         .where(
             and_(
                 Workout.user_id == user_id,
@@ -75,7 +84,7 @@ async def get_today_workouts(current_user: dict = Depends(get_current_user),
                 Workout.status.in_(["scheduled", "completed"])
             )
         )
-    ).scalars().all()
+    ).unique().scalars().all()
     
     # Combine both lists
     workouts = list(workouts_from_active_plans) + list(standalone_workouts)
@@ -111,36 +120,176 @@ async def get_today_workouts(current_user: dict = Depends(get_current_user),
                 deduplicated_workouts[index] = workout
                 seen_workouts[key] = workout
     
-    # Format response
-    result = []
-    for workout in deduplicated_workouts:
-        # Determine emoji based on type
-        emoji_map = {
-            "run": "🏃",
-            "ride": "🚴", 
-            "swim": "🏊",
-            "strength": "💪",
-            "rest": "😴",
-            "yoga": "🧘"
-        }
-        
-        emoji = emoji_map.get(workout.type.lower(), "🏃")
-        
-        # Check if completed
-        completed = workout.status == "completed"
-        
-        result.append({
-            "id": workout.id,
-            "title": workout.title,
-            "duration": f"{workout.duration_minutes} min",
-            "zone": workout.zone or "Z2",
-            "emoji": emoji,
-            "type": workout.type,
-            "scheduled_date": workout.scheduled_date.isoformat() if workout.scheduled_date else None,
-            "completed": completed
-        })
+    # Get Strava activities for today that don't belong to any workout
+    strava_account_ids = db.execute(
+        select(StravaAccount.id)
+        .where(StravaAccount.user_id == user_id)
+    ).scalars().all()
     
-    return result
+    strava_activities = []
+    if strava_account_ids:
+        from datetime import datetime, timedelta
+        start_datetime = datetime.combine(today, datetime.min.time())
+        end_datetime = datetime.combine(today, datetime.max.time())
+        
+        # Get Strava activities for today without workout_id
+        strava_activities = db.execute(
+            select(StravaActivity)
+            .where(
+                and_(
+                    StravaActivity.strava_account_id.in_(strava_account_ids),
+                    StravaActivity.start_date >= start_datetime,
+                    StravaActivity.start_date <= end_datetime,
+                    StravaActivity.workout_id.is_(None)  # Only standalone activities
+                )
+            )
+        ).scalars().all()
+    
+    # Convert workouts to CalendarWorkoutResponse format (same as calendar endpoint)
+    def workout_to_dict(workout: Workout) -> dict:
+        """Convert Workout to dict format, including Strava data if matched"""
+        strava_data = None
+        
+        if workout.strava_activity:
+            activity = workout.strava_activity
+            strava_data = {
+                "id": activity.id,
+                "strava_activity_id": activity.strava_activity_id,
+                "distance": activity.distance,
+                "moving_time": activity.moving_time,
+                "elapsed_time": activity.elapsed_time,
+                "total_elevation_gain": activity.total_elevation_gain,
+                "average_speed": activity.average_speed,
+                "max_speed": activity.max_speed,
+                "average_heartrate": activity.average_heartrate,
+                "max_heartrate": activity.max_heartrate,
+                "average_watts": activity.average_watts,
+                "max_watts": activity.max_watts,
+                "weighted_average_watts": activity.weighted_average_watts,
+                "average_cadence": activity.average_cadence,
+                "temperature": activity.temperature,
+                "calories": activity.calories,
+                "start_date": activity.start_date,
+                "start_date_local": activity.start_date_local,
+                "tss": activity.tss,
+                "normalized_power": activity.normalized_power,
+                "intensity_factor": activity.intensity_factor,
+                "trimp": activity.trimp,
+                "time_in_zone_1": activity.time_in_zone_1,
+                "time_in_zone_2": activity.time_in_zone_2,
+                "time_in_zone_3": activity.time_in_zone_3,
+                "time_in_zone_4": activity.time_in_zone_4,
+                "time_in_zone_5": activity.time_in_zone_5,
+                "zone_distribution": activity.zone_distribution,
+                "metrics_calculated": activity.metrics_calculated,
+            }
+        
+        # Validate structure_json
+        structure_json = workout.structure_json
+        if structure_json and isinstance(structure_json, dict):
+            if "sport" not in structure_json or "segments" not in structure_json:
+                logger.warning(f"[DASHBOARD] Workout {workout.id} has invalid structure_json, setting to None")
+                structure_json = None
+        
+        workout_dict = {
+            "id": workout.id,
+            "plan_id": workout.plan_id,
+            "user_id": workout.user_id,
+            "title": workout.title,
+            "type": workout.type,
+            "day_number": workout.day_number,
+            "scheduled_date": workout.scheduled_date,
+            "duration_minutes": workout.duration_minutes,
+            "intensity": workout.intensity,
+            "zone": workout.zone,
+            "structure_json": structure_json,
+            "status": workout.status.value if isinstance(workout.status, WorkoutStatus) else workout.status,
+            "notes": workout.notes,
+            "created_at": workout.created_at,
+            "updated_at": workout.updated_at,
+            "strava_activity": strava_data
+        }
+        return workout_dict
+    
+    # Convert Strava activities to workout dicts
+    def strava_to_workout_dict(activity: StravaActivity) -> dict:
+        """Convert StravaActivity to a Workout dict with Strava data"""
+        duration_minutes = int(activity.moving_time / 60) if activity.moving_time else 0
+        
+        type_mapping = {
+            "Run": "run",
+            "Ride": "ride",
+            "VirtualRide": "ride",
+            "Swim": "swim",
+            "Walk": "run",
+            "Hike": "run",
+        }
+        workout_type = type_mapping.get(activity.type, activity.type.lower())
+        
+        activity_date = activity.start_date_local.date() if activity.start_date_local else activity.start_date.date()
+        
+        workout_dict = {
+            "id": -activity.id,  # Negative ID to distinguish
+            "plan_id": None,
+            "user_id": user_id,
+            "title": activity.name,
+            "type": workout_type,
+            "day_number": None,
+            "scheduled_date": activity_date,
+            "duration_minutes": duration_minutes,
+            "intensity": None,
+            "zone": None,
+            "structure_json": None,
+            "status": WorkoutStatus.COMPLETED.value,
+            "notes": None,
+            "created_at": activity.created_at if activity.created_at else datetime.now(),
+            "updated_at": activity.updated_at if activity.updated_at else datetime.now(),
+            "strava_activity": {
+                "id": activity.id,
+                "strava_activity_id": activity.strava_activity_id,
+                "distance": activity.distance,
+                "moving_time": activity.moving_time,
+                "elapsed_time": activity.elapsed_time,
+                "total_elevation_gain": activity.total_elevation_gain,
+                "average_speed": activity.average_speed,
+                "max_speed": activity.max_speed,
+                "average_heartrate": activity.average_heartrate,
+                "max_heartrate": activity.max_heartrate,
+                "average_watts": activity.average_watts,
+                "max_watts": activity.max_watts,
+                "weighted_average_watts": activity.weighted_average_watts,
+                "average_cadence": activity.average_cadence,
+                "temperature": activity.temperature,
+                "calories": activity.calories,
+                "start_date": activity.start_date,
+                "start_date_local": activity.start_date_local,
+                "tss": activity.tss,
+                "normalized_power": activity.normalized_power,
+                "intensity_factor": activity.intensity_factor,
+                "trimp": activity.trimp,
+                "time_in_zone_1": activity.time_in_zone_1,
+                "time_in_zone_2": activity.time_in_zone_2,
+                "time_in_zone_3": activity.time_in_zone_3,
+                "time_in_zone_4": activity.time_in_zone_4,
+                "time_in_zone_5": activity.time_in_zone_5,
+                "zone_distribution": activity.zone_distribution,
+                "metrics_calculated": activity.metrics_calculated,
+            }
+        }
+        return workout_dict
+    
+    # Convert workouts to dicts
+    workout_dicts = [workout_to_dict(w) for w in deduplicated_workouts]
+    
+    # Convert Strava activities to dicts
+    strava_workout_dicts = [strava_to_workout_dict(a) for a in strava_activities]
+    
+    # Combine and sort
+    all_workouts = workout_dicts + strava_workout_dicts
+    all_workouts.sort(key=lambda w: (w.get("scheduled_date") or date.min, w.get("duration_minutes", 0)))
+    
+    # Return as CalendarWorkoutResponse objects
+    return [CalendarWorkoutResponse(**w) for w in all_workouts]
 
 
 @router.get("/stats")
