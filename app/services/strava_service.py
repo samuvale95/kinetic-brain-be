@@ -388,9 +388,9 @@ class StravaService:
             logger.error(f"Request error fetching activity details: {e}")
             raise Exception(f"Failed to fetch activity details: {str(e)}")
     
-    def _calculate_lthr_zones(self, lthr: float) -> Dict[str, Dict[str, float]]:
+    def _calculate_lthr_zones_old(self, lthr: float) -> Dict[str, Dict[str, float]]:
         """
-        Calculate HR zones based on LTHR using Joe Friel's formula
+        Calculate HR zones based on LTHR using Joe Friel's formula (OLD - kept for reference)
         
         Joe Friel's zones (Training Bible):
         - Zone 1: 65-80% of LTHR
@@ -411,6 +411,51 @@ class StravaService:
             'z3': {'min': round(lthr * 0.91), 'max': round(lthr * 1.00)},
             'z4': {'min': round(lthr * 1.01), 'max': round(lthr * 1.05)},
             'z5': {'min': round(lthr * 1.06), 'max': round(lthr * 1.25)}
+        }
+    
+    def _calculate_lthr_zones(self, lthr: float) -> Dict[str, Dict[str, float]]:
+        """
+        Calculate HR zones based on LTHR (Lactate Threshold Heart Rate)
+        
+        New algorithm:
+        - Zone 1 (recupero): < 85% × FC soglia (50% - 85%)
+        - Zone 2 (resistenza aerobica leggera): 85% - 89% × FC soglia
+        - Zone 3 (resistenza aerobica intensa): 90% - 94% × FC soglia
+        - Zone 4 (soglia anaerobica): 95% - 99% × FC soglia
+        - Zone 5 (massimale/intervalli ad alta intensità): ≥ 100% × FC soglia (100% - 115%)
+        
+        Args:
+            lthr: Lactate Threshold Heart Rate (FC soglia)
+            
+        Returns:
+            Dictionary with zone boundaries
+        """
+        # Zona 1: da 50% a 85% (usiamo 50% come minimo ragionevole per "< 85%")
+        z1_min = round(lthr * 0.50)
+        z1_max = round(lthr * 0.85)
+        
+        # Zona 2: 85% - 89%
+        z2_min = round(lthr * 0.85)
+        z2_max = round(lthr * 0.89)
+        
+        # Zona 3: 90% - 94%
+        z3_min = round(lthr * 0.90)
+        z3_max = round(lthr * 0.94)
+        
+        # Zona 4: 95% - 99%
+        z4_min = round(lthr * 0.95)
+        z4_max = round(lthr * 0.99)
+        
+        # Zona 5: ≥ 100% (usiamo 115% come massimo ragionevole)
+        z5_min = round(lthr * 1.00)
+        z5_max = round(lthr * 1.15)
+        
+        return {
+            'z1': {'min': z1_min, 'max': z1_max},
+            'z2': {'min': z2_min, 'max': z2_max},
+            'z3': {'min': z3_min, 'max': z3_max},
+            'z4': {'min': z4_min, 'max': z4_max},
+            'z5': {'min': z5_min, 'max': z5_max}
         }
     
     def _calculate_maxhr_zones(self, max_hr: float) -> Dict[str, Dict[str, float]]:
@@ -1149,18 +1194,9 @@ class StravaService:
         max_hr = latest_metrics.hr_max if latest_metrics else None
         resting_hr = latest_metrics.hr_rest if latest_metrics else None
         
-        # If no zones provided, try to calculate them
-        # Priority: LTHR > Max HR > skip (will use fallback in calculate_time_in_zones)
-        if hr_zones is None and threshold_hr:
-            # Use LTHR-based zones (Joe Friel's formula)
-            hr_zones = self._calculate_lthr_zones(threshold_hr)
-            logger.debug(f"[METRICS] Calculated LTHR-based zones (threshold_hr={threshold_hr})")
-        elif hr_zones is None and max_hr:
-            # Fallback to max HR-based zones if LTHR not available
-            hr_zones = self._calculate_maxhr_zones(max_hr)
-            logger.debug(f"[METRICS] Calculated Max HR-based zones (max_hr={max_hr})")
-        elif hr_zones is None:
-            logger.debug(f"[METRICS] No HR zones available, will use fallback in calculate_time_in_zones")
+        # Use only zones from profile - no automatic calculation
+        if hr_zones is None:
+            logger.warning(f"[METRICS] No HR zones found in profile for user {user_id}. Cannot calculate time in zones. Zones must be set in profile by frontend.")
         
         # Calculate duration
         duration_seconds = strava_activity.moving_time or strava_activity.elapsed_time or 0

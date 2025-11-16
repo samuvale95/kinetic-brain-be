@@ -132,55 +132,18 @@ async def create_performance_metrics(metrics_data: PerformanceMetricsCreate,
     """Create performance metrics"""
     update_data = metrics_data.dict(exclude_unset=True, exclude_none=True)
     
-    # Auto-calculate zones if needed based on source
-    # HR zones
-    if metrics_data.hr_zones_source == "auto" or (metrics_data.hr_zones_source is None and metrics_data.threshold_hr):
-        try:
-            if metrics_data.threshold_hr:
-                hr_zones_data = CalculationService.calculate_zones_string_format(
-                    metric_type="hr",
-                    threshold_hr=metrics_data.threshold_hr,
-                    hr_max=metrics_data.hr_max,
-                    hr_rest=metrics_data.hr_rest
-                )
-                update_data.update(hr_zones_data)
-                
-                # Calculate HRR if we have both values
-                if metrics_data.hr_max and metrics_data.hr_rest:
-                    update_data['hrr'] = metrics_data.hr_max - metrics_data.hr_rest
-        except (ValueError, TypeError):
-            pass  # Skip if insufficient data
+    # Calculate HRR if we have both values (simple calculation, not zone calculation)
+    if metrics_data.hr_max and metrics_data.hr_rest:
+        update_data['hrr'] = metrics_data.hr_max - metrics_data.hr_rest
     
-    # Pace zones
-    if metrics_data.pace_zones_source == "auto" or (metrics_data.pace_zones_source is None and metrics_data.threshold_pace):
-        try:
-            pace_zones_data = CalculationService.calculate_zones_string_format(
-                metric_type="pace",
-                threshold_pace=metrics_data.threshold_pace
-            )
-            update_data.update(pace_zones_data)
-        except (ValueError, TypeError):
-            pass  # Skip if insufficient data
-    
-    # Power zones
-    if metrics_data.power_zones_source == "auto" or (metrics_data.power_zones_source is None and metrics_data.ftp):
-        try:
-            power_zones_data = CalculationService.calculate_zones_string_format(
-                metric_type="power",
-                ftp=metrics_data.ftp
-            )
-            update_data.update(power_zones_data)
-            
-            # Calculate wkg if FTP and weight are available
-            if metrics_data.ftp:
-                profile = db.query(UserProfile).filter(
-                    UserProfile.user_id == current_user["user_id"]
-                ).first()
-                if profile and profile.weight:
-                    from app.utils.calculations import calculate_wkg
-                    update_data["wkg"] = calculate_wkg(metrics_data.ftp, profile.weight)
-        except (ValueError, TypeError):
-            pass  # Skip if insufficient data
+    # Calculate wkg if FTP and weight are available (simple calculation, not zone calculation)
+    if metrics_data.ftp:
+        profile = db.query(UserProfile).filter(
+            UserProfile.user_id == current_user["user_id"]
+        ).first()
+        if profile and profile.weight:
+            from app.utils.calculations import calculate_wkg
+            update_data["wkg"] = calculate_wkg(metrics_data.ftp, profile.weight)
     
     metrics = PerformanceMetrics(
         user_id=current_user["user_id"],
@@ -207,65 +170,20 @@ async def update_performance_metrics(metrics_data: PerformanceMetricsUpdate,
     
     update_data = metrics_data.dict(exclude_unset=True, exclude_none=True)
     
-    # Auto-calculate zones if source is "auto" or not set and threshold values provided
-    # HR zones
-    if (metrics_data.hr_zones_source == "auto" or 
-        (metrics_data.hr_zones_source is None and (metrics_data.threshold_hr or (metrics and metrics.threshold_hr)))):
-        try:
-            threshold_hr = metrics_data.threshold_hr or (metrics.threshold_hr if metrics else None)
-            hr_max = metrics_data.hr_max or (metrics.hr_max if metrics else None)
-            hr_rest = metrics_data.hr_rest or (metrics.hr_rest if metrics else None)
-            
-            if threshold_hr:
-                hr_zones_data = CalculationService.calculate_zones_string_format(
-                    metric_type="hr",
-                    threshold_hr=threshold_hr,
-                    hr_max=hr_max,
-                    hr_rest=hr_rest
-                )
-                update_data.update(hr_zones_data)
-                
-                # Calculate HRR if we have both values
-                if (metrics_data.hr_max or (metrics and metrics.hr_max)) and (metrics_data.hr_rest or (metrics and metrics.hr_rest)):
-                    hr_max_val = metrics_data.hr_max or (metrics.hr_max if metrics else None)
-                    hr_rest_val = metrics_data.hr_rest or (metrics.hr_rest if metrics else None)
-                    if hr_max_val and hr_rest_val:
-                        update_data['hrr'] = hr_max_val - hr_rest_val
-        except (ValueError, TypeError, AttributeError):
-            pass  # Skip if insufficient data
+    # Calculate HRR if we have both values (simple calculation, not zone calculation)
+    hr_max_val = metrics_data.hr_max or (metrics.hr_max if metrics else None)
+    hr_rest_val = metrics_data.hr_rest or (metrics.hr_rest if metrics else None)
+    if hr_max_val and hr_rest_val:
+        update_data['hrr'] = hr_max_val - hr_rest_val
     
-    # Pace zones
-    if (metrics_data.pace_zones_source == "auto" or 
-        (metrics_data.pace_zones_source is None and metrics_data.threshold_pace)):
-        try:
-            pace_zones_data = CalculationService.calculate_zones_string_format(
-                metric_type="pace",
-                threshold_pace=metrics_data.threshold_pace
-            )
-            update_data.update(pace_zones_data)
-        except (ValueError, TypeError):
-            pass  # Skip if insufficient data
-    
-    # Power zones
-    if (metrics_data.power_zones_source == "auto" or 
-        (metrics_data.power_zones_source is None and metrics_data.ftp)):
-        try:
-            power_zones_data = CalculationService.calculate_zones_string_format(
-                metric_type="power",
-                ftp=metrics_data.ftp
-            )
-            update_data.update(power_zones_data)
-            
-            # Calculate wkg if FTP and weight are available
-            if metrics_data.ftp:
-                profile = db.query(UserProfile).filter(
-                    UserProfile.user_id == current_user["user_id"]
-                ).first()
-                if profile and profile.weight:
-                    from app.utils.calculations import calculate_wkg
-                    update_data["wkg"] = calculate_wkg(metrics_data.ftp, profile.weight)
-        except (ValueError, TypeError):
-            pass  # Skip if insufficient data
+    # Calculate wkg if FTP and weight are available (simple calculation, not zone calculation)
+    if metrics_data.ftp:
+        profile = db.query(UserProfile).filter(
+            UserProfile.user_id == current_user["user_id"]
+        ).first()
+        if profile and profile.weight:
+            from app.utils.calculations import calculate_wkg
+            update_data["wkg"] = calculate_wkg(metrics_data.ftp, profile.weight)
     
     if metrics:
         # Update existing metrics
