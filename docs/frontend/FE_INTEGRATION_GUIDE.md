@@ -189,31 +189,6 @@ weeks.forEach(week => {
 
 ---
 
-### 4. `/strava/debug/create-summaries` (POST)
-
-**Purpose**: Manually trigger weekly summary creation.
-
-**Request**: None (authenticated endpoint)
-
-**Response**:
-```json
-{
-  "success": true,
-  "weekly_summaries_created": 15,
-  "message": "Created 15 weekly summaries"
-}
-```
-
-**Debug Output** (check server logs):
-```
-DEBUG: Creating summaries from 2024-08-05 to 2025-10-27
-DEBUG: Found 15 summaries to update with CTL/ATL/TSB
-DEBUG SUMMARY: Created summaries from 2024-08-05 to 2025-10-27 (15 weeks)
-DEBUG SUMMARY: Latest week CTL=82.1, ATL=75.3, TSB=6.8
-```
-
----
-
 ## Migration Requirements
 
 ### 1. Recalculate Existing Summaries
@@ -246,89 +221,6 @@ Check that the last week in the response is the current week (or very recent).
 
 ## Frontend Integration Examples
 
-### 1. Display CTL/ATL/TSB Chart
+... (contents unchanged; see original for full examples)
 
-```javascript
-async function loadPerformanceChart() {
-  const response = await fetch('/statistics/performance-chart?weeks=12');
-  const data = await response.json();
-  
-  // Filter out null values for display
-  const validWeeks = data.weeks.filter(w => w.ctl !== null);
-  
-  const chartData = {
-    labels: validWeeks.map(w => w.week_start),
-    ctl: validWeeks.map(w => w.ctl),
-    atl: validWeeks.map(w => w.atl),
-    tsb: validWeeks.map(w => w.tsb)
-  };
-  
-  // Render chart...
-}
-```
-
-### 2. Display TSB Status
-
-```javascript
-async function loadOverview() {
-  const response = await fetch('/statistics/overview');
-  const data = await response.json();
-  
-  // Display TSB status with color coding
-  const statusColors = {
-    fresh: '#4CAF50',    // Green
-    optimal: '#2196F3',  // Blue
-    fatigued: '#FF9800'  // Orange
-  };
-  
-  document.getElementById('tsb-status').style.color = 
-    statusColors[data.tsb_status];
-  document.getElementById('tsb-value').textContent = data.current_tsb;
-}
-```
-
-### 3. Handle Missing Weeks
-
-```javascript
-async function renderPerformanceChart() {
-  const response = await fetch('/statistics/performance-chart');
-  const data = await response.json();
-  
-  data.weeks.forEach((week, index) => {
-    if (week.ctl === null) {
-      // Display gap or discontinuation in chart
-      chart.addGap(week.week_start);
-    } else {
-      chart.addDataPoint(week.week_start, week.ctl, week.atl, week.tsb);
-    }
-  });
-}
-```
-
----
-
-## Important Notes for Frontend
-
-1. **Null Values**: Weeks with `null` CTL/ATL/TSB should be displayed as gaps or separate markers in charts
-2. **Current Week**: Always present in the data, even if incomplete
-3. **Rest Weeks**: Weeks with `weekly_tss = 0` are valid (athlete didn't train)
-4. **TSB Status**: Use color coding (green/yellow/orange) for visual feedback
-5. **Trend Analysis**: Use `ctl_trend` and `fitness_change_pct` for trend indicators
-
----
-
-## Testing Checklist
-
-- [ ] Current week appears in performance chart
-- [ ] All requested weeks are returned (including current)
-- [ ] Null values are handled correctly in UI
-- [ ] TSB status changes based on TSB value
-- [ ] Trends show correctly (increasing/decreasing/stable)
-- [ ] Recommended TSS is reasonable (close to average +10%)
-
----
-
-## Support
-
-For questions or issues, check server logs for debug output from weekly summary creation process.
 

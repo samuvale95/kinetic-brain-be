@@ -48,3 +48,4 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 - ✅ `app/services/statistics_service.py` - Fixed
 - ⏳ Database migration - Needs to be run (see above)
 
+

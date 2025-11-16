@@ -95,3 +95,5 @@ PUT  /profile/                          ✅ MODIFICATO (supporta city)
 - I piani inattivi NON vengono più mostrati nel calendario
 - Weather usa Open-Meteo di default (gratis, nessuna configurazione)
 - Campo `city` opzionale nel profilo utente
+
+

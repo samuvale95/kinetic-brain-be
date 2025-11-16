@@ -164,3 +164,4 @@ The frontend integration guide is in `advanced-training-metrics.plan.md` startin
 - UI/UX recommendations
 - Chart configurations
 
+

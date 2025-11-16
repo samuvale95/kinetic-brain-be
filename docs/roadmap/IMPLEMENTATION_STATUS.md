@@ -86,3 +86,4 @@
 5. Test with real Strava data
 6. Update AI prompts with metrics
 
+
