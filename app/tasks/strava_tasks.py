@@ -5,6 +5,7 @@ from loguru import logger
 from app.database import SessionLocal
 from app.models.strava import StravaSyncJobStatus
 from app.services.strava_service import StravaService
+from app.services.metrics_orchestrator import process_metrics_jobs
 
 
 def run_strava_sync_job(job_id: int, days_back: int = 30) -> None:
@@ -94,6 +95,21 @@ def run_recalculate_metrics_job(job_id: int, months_back: int = 12) -> None:
                 logger.error(
                     f"[RECALC][JOB] Failed to update status for job {job_id}: {update_exc}"
                 )
+        db.rollback()
+    finally:
+        db.close()
+
+
+def run_metrics_jobs_once(limit: int = 3) -> None:
+    """
+    Esegue una singola scansione/processing della coda metrics senza bloccare la request.
+    Da usare con FastAPI BackgroundTasks dopo un enqueue per garantire latenza bassa.
+    """
+    db = SessionLocal()
+    try:
+        process_metrics_jobs(db, limit=limit)
+    except Exception as exc:
+        logger.exception(f\"[ADV_METRICS][JOB] Processing failed: {exc}\")
         db.rollback()
     finally:
         db.close()

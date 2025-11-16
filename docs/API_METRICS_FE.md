@@ -134,6 +134,66 @@ Authorization: Bearer <token>
 
 ---
 
+### POST `/metrics/diary`
+Crea/aggiorna la voce di diario giornaliera (readiness) e calcola l'indice di recupero.
+
+Body (qualsiasi campo è opzionale; `date` default oggi):
+```json
+{
+  "date": "2025-02-03",
+  "hrv_value": 74.5,
+  "rhr_value": 48,
+  "sleep_hours": 7.2,
+  "sleep_quality_score": 0.82,
+  "epoc": 18,
+  "hydration_status": "ok",
+  "hydration_score": 0.75,
+  "nutrition_score": 0.8,
+  "weight_delta_kg": -0.2,
+  "perceived_exertion": 6,
+  "notes": "Leggera corsa serale"
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "date": "2025-02-03",
+  "readiness_state": "ready",
+  "recovery_index": 1.02
+}
+```
+
+---
+
+### POST `/metrics/recompute-today`
+Enqueue non bloccante del calcolo CTL/ATL/TSB per oggi (o per la data indicata).
+
+Query opzionale:
+- `target_date=YYYY-MM-DD` (default: oggi)
+
+Response:
+```json
+{
+  "success": true,
+  "job_id": 123,
+  "job_type": "daily_performance",
+  "status": "pending",
+  "metric_date": "2025-02-03"
+}
+```
+
+---
+
+### Lazy compute (non bloccante)
+- Alla prima chiamata a `GET /metrics/load` o `GET /metrics/readiness` della giornata, se non esiste un record `daily_performance_metrics` per oggi, il backend crea automaticamente un job `daily_performance` e restituisce subito la risposta (senza attendere il calcolo).
+- Il frontend può:
+  - riprovare dopo pochi secondi (polling), oppure
+  - chiamare esplicitamente `POST /metrics/recompute-today` e osservare lo stato del job in UI.
+
+---
+
 ### Handling grouping extensibility
 The backend accepts additional grouping enum values transparently:
 - existing responses always include `period_start` / `period_end` → charts can plot any granularity.
