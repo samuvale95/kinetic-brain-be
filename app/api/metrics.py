@@ -10,8 +10,8 @@ from app.schemas.metrics import (
     GroupingGranularity,
     LoadMetricsResponse,
     ReadinessMetricsResponse,
-    # DiaryEntryRequest,  # Temporarily disabled due to recursion
-    # DiaryEntryResponse,
+    DiaryEntryRequest,
+    DiaryEntryResponse,
 )
 from app.services.metrics_api_service import MetricsApiService
 from app.services.metrics_orchestrator import enqueue_daily_performance_job
@@ -121,18 +121,26 @@ def get_readiness_metrics(
     }
 
 
-# TEMPORARY FIX: Endpoint disabled due to recursion in DiaryEntryRequest
-# @router.post("/diary", response_model=DiaryEntryResponse)
-# def post_diary_entry(
-#     payload: DiaryEntryRequest,
-#     current_user: dict = Depends(get_current_user),
-#     db: Session = Depends(get_db),
-# ) -> DiaryEntryResponse:
-#     """Inserisce/aggiorna una voce di diario per la giornata e calcola readiness."""
+@router.post("/diary", response_model=DiaryEntryResponse)
+def post_diary_entry(
+    payload: DiaryEntryRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DiaryEntryResponse:
+    """Inserisce/aggiorna una voce di diario per la giornata e calcola readiness."""
     from datetime import date as _date
     from app.services.diary_service import DiaryService
+    from fastapi import HTTPException
 
-    metric_date = payload.date or _date.today()
+    # Convert string date to date object if provided
+    if payload.date:
+        try:
+            metric_date = _date.fromisoformat(payload.date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    else:
+        metric_date = _date.today()
+    
     inputs = {
         "hrv_value": payload.hrv_value,
         "rhr_value": payload.rhr_value,
@@ -155,13 +163,12 @@ def get_readiness_metrics(
         notes=payload.notes,
         perceived_exertion=payload.perceived_exertion,
     )
-    # TEMPORARY FIX: Return dict instead of DiaryEntryResponse
-    return {
-        "success": True,
-        "date": metric_date,
-        "readiness_state": rec.readiness_state,
-        "recovery_index": rec.recovery_index,
-    }
+    return DiaryEntryResponse(
+        success=True,
+        date=metric_date,
+        readiness_state=rec.readiness_state,
+        recovery_index=rec.recovery_index,
+    )
 
 
 @router.post("/recompute-today")
