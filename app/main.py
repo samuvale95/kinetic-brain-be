@@ -7,12 +7,6 @@ from loguru import logger
 import sys
 import os
 
-from app.config import settings
-from app.database import engine, Base
-from app.api import auth, profile, workouts, calendar, ai, dashboard, strava, weather, statistics, metrics, plan_versions
-from app.middleware.auth_middleware import AuthMiddleware
-from app.middleware.logging_middleware import RequestResponseLoggingMiddleware
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -30,14 +24,22 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Kinetic Brain API...")
 
 
+# Read minimal flags early from env to avoid importing pydantic Settings at startup if requested
+minimal_startup = os.getenv("MINIMAL_STARTUP", "false").lower() == "true"
+disable_openapi_env = os.getenv("DISABLE_OPENAPI", "false").lower() == "true"
+
 # Configure logging
 logger.remove()
 
 # Create logs directory if it doesn't exist
 os.makedirs("logs", exist_ok=True)
 
-# Get log level from settings (default to INFO)
-log_level = settings.log_level.upper()
+# Get log level from env or settings (default to INFO)
+if not minimal_startup:
+    from app.config import settings
+    log_level = settings.log_level.upper()
+else:
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # Log format for console (with colors)
 console_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
@@ -64,30 +66,51 @@ logger.add(
     encoding="utf-8"
 )
 
+# If not in minimal mode, load full settings
+if not minimal_startup:
+    from app.config import settings
+    from app.database import engine, Base  # import DB only in non-minimal mode
+    app_title = settings.app_name
+    app_version = settings.app_version
+    disable_openapi = settings.disable_openapi
+else:
+    app_title = "Kinetic Brain API"
+    app_version = "1.0.0"
+    disable_openapi = disable_openapi_env
+
 # Create FastAPI app
 app = FastAPI(
-    title=settings.app_name,
-    version=settings.app_version,
+    title=app_title,
+    version=app_version,
     description="Backend API for Kinetic Brain - Sports Training Management",
-    lifespan=lifespan
+    lifespan=lifespan,
+    openapi_url=None if disable_openapi else "/openapi.json",
+    docs_url=None if disable_openapi else "/docs",
+    redoc_url=None if disable_openapi else "/redoc",
 )
 
-# Centralized request/response logging
-app.add_middleware(RequestResponseLoggingMiddleware)
-
-# Add authentication middleware (before CORS)
-@app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    return await AuthMiddleware.authenticate_request(request, call_next)
-
-# Configure CORS (after auth middleware)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if not minimal_startup:
+    # Import middleware only when not in minimal mode
+    from app.middleware.auth_middleware import AuthMiddleware
+    from app.middleware.logging_middleware import RequestResponseLoggingMiddleware
+    
+    # Centralized request/response logging
+    app.add_middleware(RequestResponseLoggingMiddleware)
+    
+    # Add authentication middleware (before CORS)
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        return await AuthMiddleware.authenticate_request(request, call_next)
+    
+    # Configure CORS (after auth middleware)
+    from app.config import settings as _settings_for_cors
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_settings_for_cors.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 # Global exception handler
@@ -104,25 +127,35 @@ async def global_exception_handler(request, exc):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "app_name": settings.app_name,
-        "version": settings.app_version
-    }
+    if minimal_startup:
+        return {
+            "status": "healthy",
+            "app_name": app_title,
+            "version": app_version
+        }
+    else:
+        from app.config import settings
+        return {
+            "status": "healthy",
+            "app_name": settings.app_name,
+            "version": settings.app_version
+        }
 
 
-# Include API routers
-app.include_router(auth.router)
-app.include_router(profile.router)
-app.include_router(workouts.router)
-app.include_router(calendar.router)
-app.include_router(ai.router)
-app.include_router(dashboard.router)
-app.include_router(strava.router)
-app.include_router(weather.router)
-app.include_router(statistics.router)
-app.include_router(metrics.router)
-app.include_router(plan_versions.router)
+if not minimal_startup:
+    # Include API routers
+    from app.api import auth, profile, workouts, calendar, ai, dashboard, strava, weather, statistics, metrics, plan_versions
+    app.include_router(auth.router)
+    app.include_router(profile.router)
+    app.include_router(workouts.router)
+    app.include_router(calendar.router)
+    app.include_router(ai.router)
+    app.include_router(dashboard.router)
+    app.include_router(strava.router)
+    app.include_router(weather.router)
+    app.include_router(statistics.router)
+    app.include_router(metrics.router)
+    app.include_router(plan_versions.router)
 
 
 # Root endpoint
@@ -131,17 +164,21 @@ async def root():
     """Root endpoint with API information"""
     return {
         "message": "Welcome to Kinetic Brain API",
-        "version": settings.app_version,
-        "docs": "/docs",
+        "version": app_version,
+        "docs": "/docs" if not disable_openapi else None,
         "health": "/health"
     }
 
 
 if __name__ == "__main__":
+    reload_mode = False
+    if not minimal_startup:
+        from app.config import settings
+        reload_mode = settings.debug
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
         port=8000,
-        reload=settings.debug,
+        reload=reload_mode,
         log_level="info"
     )

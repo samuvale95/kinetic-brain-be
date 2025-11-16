@@ -10,8 +10,8 @@ from app.schemas.metrics import (
     GroupingGranularity,
     LoadMetricsResponse,
     ReadinessMetricsResponse,
-    DiaryEntryRequest,
-    DiaryEntryResponse,
+    # DiaryEntryRequest,  # Temporarily disabled due to recursion
+    # DiaryEntryResponse,
 )
 from app.services.metrics_api_service import MetricsApiService
 from app.services.metrics_orchestrator import enqueue_daily_performance_job
@@ -30,7 +30,7 @@ def _default_end_date() -> date:
     return date.today()
 
 
-@router.get("/load", response_model=LoadMetricsResponse)
+@router.get("/load")
 def get_load_metrics(
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
@@ -66,18 +66,18 @@ def get_load_metrics(
         sport=sport if sport and sport != "all" else None,
     )
 
-    return LoadMetricsResponse(
-        metadata={
+    return {
+        "metadata": {
             "grouping": grouping,
             "start_date": start_date,
             "end_date": end_date,
             "sport": sport or "all",
         },
-        series=series,
-    )
+        "series": series,
+    }
 
 
-@router.get("/readiness", response_model=ReadinessMetricsResponse)
+@router.get("/readiness")
 def get_readiness_metrics(
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
@@ -111,23 +111,24 @@ def get_readiness_metrics(
         grouping=grouping,
     )
 
-    return ReadinessMetricsResponse(
-        metadata={
+    return {
+        "metadata": {
             "grouping": grouping,
             "start_date": start_date,
             "end_date": end_date,
         },
-        series=series,
-    )
+        "series": series,
+    }
 
 
-@router.post("/diary", response_model=DiaryEntryResponse)
-def post_diary_entry(
-    payload: DiaryEntryRequest,
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> DiaryEntryResponse:
-    """Inserisce/aggiorna una voce di diario per la giornata e calcola readiness."""
+# TEMPORARY FIX: Endpoint disabled due to recursion in DiaryEntryRequest
+# @router.post("/diary", response_model=DiaryEntryResponse)
+# def post_diary_entry(
+#     payload: DiaryEntryRequest,
+#     current_user: dict = Depends(get_current_user),
+#     db: Session = Depends(get_db),
+# ) -> DiaryEntryResponse:
+#     """Inserisce/aggiorna una voce di diario per la giornata e calcola readiness."""
     from datetime import date as _date
     from app.services.diary_service import DiaryService
 
@@ -154,12 +155,13 @@ def post_diary_entry(
         notes=payload.notes,
         perceived_exertion=payload.perceived_exertion,
     )
-    return DiaryEntryResponse(
-        success=True,
-        date=metric_date,
-        readiness_state=rec.readiness_state,
-        recovery_index=rec.recovery_index,
-    )
+    # TEMPORARY FIX: Return dict instead of DiaryEntryResponse
+    return {
+        "success": True,
+        "date": metric_date,
+        "readiness_state": rec.readiness_state,
+        "recovery_index": rec.recovery_index,
+    }
 
 
 @router.post("/recompute-today")

@@ -22,7 +22,12 @@ class RequestResponseLoggingMiddleware(BaseHTTPMiddleware):
         request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         start_time = time.perf_counter()
 
+        # Read and cache request body, then rebuild Request with cached receive so downstream can read it
         body_bytes = await request.body()
+        if body_bytes is not None:
+            async def _receive():
+                return {"type": "http.request", "body": body_bytes, "more_body": False}
+            request = Request(request.scope, receive=_receive)
         body_text = ""
         if body_bytes:
             content_type = request.headers.get("content-type", "")

@@ -109,7 +109,7 @@ def run_metrics_jobs_once(limit: int = 3) -> None:
     try:
         process_metrics_jobs(db, limit=limit)
     except Exception as exc:
-        logger.exception(f\"[ADV_METRICS][JOB] Processing failed: {exc}\")
+        logger.exception(f"[ADV_METRICS][JOB] Processing failed: {exc}")
         db.rollback()
     finally:
         db.close()

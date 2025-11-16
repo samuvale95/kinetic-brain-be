@@ -1,7 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
-from app.schemas.workout import WorkoutStatus, WorkoutStructure
+from app.schemas.workout import WorkoutStatus
+# WorkoutStructure temporarily removed to prevent recursion
 
 
 class StravaActivityDetail(BaseModel):
@@ -72,7 +73,10 @@ class WorkoutDetail(BaseModel):
     duration_minutes: int
     intensity: Optional[str] = None
     zone: Optional[str] = None
-    structure_json: Optional[WorkoutStructure] = None
+    structure_json: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Workout structure (WorkoutStructure) - stored as JSON to avoid recursion"
+    )
     status: WorkoutStatus
     notes: Optional[str] = None
     created_at: datetime

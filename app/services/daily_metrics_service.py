@@ -8,11 +8,12 @@ from sqlalchemy.orm import Session
 from app.models.daily_metrics import DailyPerformanceMetrics
 from app.models.strava import StravaAccount, StravaActivity
 from app.services.metrics_calculation_service import MetricsCalculationService
-from app.services.metrics_orchestrator import (
-    enqueue_daily_readiness_job,
-    enqueue_weekly_summary_job,
-    process_metrics_jobs,
-)
+# Import locally to avoid circular import
+# from app.services.metrics_orchestrator import (
+#     enqueue_daily_readiness_job,
+#     enqueue_weekly_summary_job,
+#     process_metrics_jobs,
+# )
 
 
 class DailyMetricsService:
@@ -145,6 +146,8 @@ class DailyMetricsService:
         # Skip advanced metrics calculation during bulk operations for performance
         if not skip_advanced_metrics:
             try:
+                # Import locally to avoid circular import
+                from app.services.metrics_orchestrator import enqueue_daily_readiness_job
                 enqueue_daily_readiness_job(
                     self.db,
                     user_id=user_id,

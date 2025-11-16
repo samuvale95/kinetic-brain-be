@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import enum
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -13,13 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.daily_metrics import DailyPerformanceMetrics, DailyReadinessMetrics
 from app.models.strava import StravaAccount, StravaActivity
 from app.models.training_metrics import WeeklyTrainingSummary
-
-
-class GroupingGranularity(str, enum.Enum):
-    day = "day"
-    week = "week"
-    month = "month"
-    year = "year"
+from app.schemas.metrics import GroupingGranularity
 
 
 @dataclass(frozen=True)

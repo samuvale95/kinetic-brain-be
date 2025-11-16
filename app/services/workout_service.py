@@ -13,9 +13,7 @@ from app.schemas.workout import (
     WorkoutCreate,
     WorkoutUpdate,
     WorkoutSessionCreate,
-    WorkoutStructure,
-    WorkoutSegment,
-    WorkoutSegmentStep,
+    # WorkoutStructure, WorkoutSegment, WorkoutSegmentStep temporarily removed to prevent recursion
     WorkoutDuration,
     WorkoutTarget,
 )
@@ -115,10 +113,11 @@ class WorkoutService:
             if metadata.get("rpe_target") is not None and metadata["rpe_target"] < 1:
                 metadata["rpe_target"] = None
             payload["metadata"] = metadata or None
+            # TEMPORARY FIX: WorkoutStructure validation disabled to prevent recursion
+            # Just return the payload as-is (it's already a dict)
             try:
-                validated = WorkoutStructure(**payload)
                 enriched = self._ensure_structure_segments(
-                    validated,
+                    payload,  # Pass dict instead of WorkoutStructure
                     normalized_sport=normalized_sport,
                     duration_minutes=workout_data.get("duration_minutes", 60),
                 )
@@ -232,10 +231,11 @@ class WorkoutService:
 
         self._normalize_structure_targets(structure_payload)
 
+        # TEMPORARY FIX: WorkoutStructure validation disabled to prevent recursion
+        # Just return the structure_payload as-is (it's already a dict)
         try:
-            validated = WorkoutStructure(**structure_payload)
             enriched = self._ensure_structure_segments(
-                validated,
+                structure_payload,  # Pass dict instead of WorkoutStructure
                 normalized_sport=normalized_sport,
                 duration_minutes=duration_minutes,
             )
@@ -246,55 +246,56 @@ class WorkoutService:
 
     def _ensure_structure_segments(
         self,
-        structure: WorkoutStructure,
+        structure: Dict[str, Any],  # Changed from WorkoutStructure to Dict[str, Any]
         *,
         normalized_sport: str,
         duration_minutes: int,
     ) -> Dict[str, Any]:
-        segments = list(structure.segments)
-        has_warmup = any(seg.segment_type == "warmup" for seg in segments)
-        has_cooldown = any(seg.segment_type == "cooldown" for seg in segments)
+        # TEMPORARY FIX: Work with dict instead of WorkoutStructure model
+        segments = list(structure.get("segments", []))
+        has_warmup = any(seg.get("segment_type") == "warmup" for seg in segments)
+        has_cooldown = any(seg.get("segment_type") == "cooldown" for seg in segments)
 
         if has_warmup and has_cooldown:
-            return structure.dict()
+            return structure
 
         total_seconds = max(int(duration_minutes * 60), 300)
         warmup_seconds = min(600, max(total_seconds // 10, 180))
         cooldown_seconds = min(600, max(total_seconds // 10, 180))
         zone_easy = "Z1" if normalized_sport not in {"bike", "cycling"} else "Z1"
 
-        def make_step(seconds: int, note: str) -> WorkoutSegmentStep:
-            return WorkoutSegmentStep(
-                step_type="steady",
-                duration=WorkoutDuration(type="time", seconds=seconds),
-                target=WorkoutTarget(type="zone", zone=zone_easy),
-                notes=note,
-                name=None,
-            )
+        def make_step(seconds: int, note: str) -> Dict[str, Any]:
+            return {
+                "step_type": "steady",
+                "duration": {"type": "time", "seconds": seconds},
+                "target": {"type": "zone", "zone": zone_easy},
+                "notes": note,
+                "name": None,
+            }
 
         if not has_warmup:
-            warmup_segment = WorkoutSegment(
-                segment_type="warmup",
-                name="Warm-up",
-                steps=[make_step(warmup_seconds, "Gradual warm-up")],
-            )
+            warmup_segment = {
+                "segment_type": "warmup",
+                "name": "Warm-up",
+                "steps": [make_step(warmup_seconds, "Gradual warm-up")],
+            }
             segments.insert(0, warmup_segment)
 
         if not has_cooldown:
-            cooldown_segment = WorkoutSegment(
-                segment_type="cooldown",
-                name="Cool-down",
-                steps=[make_step(cooldown_seconds, "Gradual cool-down")],
-            )
+            cooldown_segment = {
+                "segment_type": "cooldown",
+                "name": "Cool-down",
+                "steps": [make_step(cooldown_seconds, "Gradual cool-down")],
+            }
             segments.append(cooldown_segment)
 
-        updated_structure = WorkoutStructure(
-            sport=structure.sport,
-            segments=segments,
-            metadata=structure.metadata,
-            equipment=structure.equipment,
-        )
-        return updated_structure.dict()
+        updated_structure = {
+            "sport": structure.get("sport"),
+            "segments": segments,
+            "metadata": structure.get("metadata"),
+            "equipment": structure.get("equipment"),
+        }
+        return updated_structure
 
     @staticmethod
     def _normalize_structure_targets(structure: Dict[str, Any]) -> None:
