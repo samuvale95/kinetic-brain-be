@@ -143,36 +143,49 @@ class DailyMetricsService:
         self.db.commit()
         self.db.refresh(record)
         
-        # Skip advanced metrics calculation during bulk operations for performance
-        if not skip_advanced_metrics:
-            try:
-                # Import locally to avoid circular import
-                from app.services.metrics_orchestrator import enqueue_daily_readiness_job
-                enqueue_daily_readiness_job(
-                    self.db,
-                    user_id=user_id,
-                    metric_date=activity_date,
-                    inputs={
-                        "ctl": metrics.get("ctl"),
-                        "atl": metrics.get("atl"),
-                        "tsb": metrics.get("tsb"),
-                    },
-                )
+        # Always enqueue readiness job when CTL/ATL/TSB change
+        # This ensures recovery_index and readiness_state stay in sync with daily metrics
+        # Even when skip_advanced_metrics=True, we need to update readiness because
+        # it depends on CTL/ATL/TSB which just changed
+        try:
+            # Import locally to avoid circular import
+            from app.services.metrics_orchestrator import (
+                enqueue_daily_readiness_job,
+                enqueue_weekly_summary_job,
+                process_metrics_jobs,
+            )
+            
+            # Enqueue readiness job with appropriate priority
+            priority = 0 if skip_advanced_metrics else 1
+            enqueue_daily_readiness_job(
+                self.db,
+                user_id=user_id,
+                metric_date=activity_date,
+                inputs={
+                    "ctl": metrics.get("ctl"),
+                    "atl": metrics.get("atl"),
+                    "tsb": metrics.get("tsb"),
+                },
+                priority=priority,
+            )
+            
+            # Process jobs immediately only if not skipping advanced metrics
+            if not skip_advanced_metrics:
                 week_start = activity_date - timedelta(days=activity_date.weekday())
                 enqueue_weekly_summary_job(self.db, user_id=user_id, week_start=week_start)
                 process_metrics_jobs(self.db, limit=2)
-            except Exception as exc:
-                logger.warning(
-                    "[DAILY_METRICS] Failed to enqueue/process advanced metric jobs for user=%s date=%s: %s",
-                    user_id,
-                    activity_date,
-                    exc,
-                )
+        except Exception as exc:
+            logger.warning(
+                "[DAILY_METRICS] Failed to enqueue readiness job for user=%s date=%s: %s",
+                user_id,
+                activity_date,
+                exc,
+            )
 
         # 5. Propaga aggiornamento ai giorni successivi fino a oggi (solo se richiesto)
         # Questo assicura che tutti i giorni successivi siano aggiornati
         if propagate:
-            self._propagate_metrics_forward(user_id, activity_date, date.today())
+            self._propagate_metrics_forward(user_id, activity_date, date.today(), skip_advanced_metrics=skip_advanced_metrics)
             
             return record
         
@@ -202,12 +215,17 @@ class DailyMetricsService:
                 break
             
             # Ricalcola questo giorno (skip advanced metrics during bulk propagation)
-            self.update_daily_metrics(
+            updated_record = self.update_daily_metrics(
                 user_id, 
                 current_date, 
                 propagate=False, 
                 skip_advanced_metrics=skip_advanced_metrics
             )
+            
+            # Even if skip_advanced_metrics=True, the readiness job was already enqueued
+            # in update_daily_metrics, so we don't need to do anything else here
+            # The job will be processed asynchronously
+            
             current_date += timedelta(days=1)
         
         logger.bind(
