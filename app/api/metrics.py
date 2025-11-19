@@ -12,6 +12,8 @@ from app.schemas.metrics import (
     ReadinessMetricsResponse,
     DiaryEntryRequest,
     DiaryEntryResponse,
+    DiaryEntryDetailResponse,
+    DiaryEntriesResponse,
 )
 from app.services.metrics_api_service import MetricsApiService
 from app.services.metrics_orchestrator import enqueue_daily_performance_job
@@ -127,10 +129,13 @@ def post_diary_entry(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DiaryEntryResponse:
-    """Inserisce/aggiorna una voce di diario per la giornata e calcola readiness."""
+    """
+    Inserisce/aggiorna una voce di diario per la giornata e calcola readiness.
+    IMPORTANTE: Solo il giorno di oggi può essere modificato. I giorni passati sono in sola lettura.
+    """
     from datetime import date as _date
     from app.services.diary_service import DiaryService
-    from fastapi import HTTPException
+    from fastapi import HTTPException, status
 
     # Convert string date to date object if provided
     if payload.date:
@@ -140,6 +145,14 @@ def post_diary_entry(
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     else:
         metric_date = _date.today()
+    
+    # Verifica che non si stia cercando di modificare un giorno passato
+    today = _date.today()
+    if metric_date < today:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Cannot modify diary entries for past dates. Only today ({today}) can be edited."
+        )
     
     inputs = {
         "hrv_value": payload.hrv_value,
@@ -169,6 +182,112 @@ def post_diary_entry(
         readiness_state=rec.readiness_state,
         recovery_index=rec.recovery_index,
     )
+
+
+@router.get("/diary", response_model=DiaryEntriesResponse)
+def get_diary_entries(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DiaryEntriesResponse:
+    """
+    Recupera TUTTI i record del diario compilati (solo giorni con dati inseriti).
+    I record sono ordinati dal più recente al più vecchio per permettere lo scorrimento come un diario.
+    Solo il record di oggi (se presente) è modificabile, gli altri sono in sola lettura.
+    """
+    from app.services.diary_service import DiaryService
+    
+    service = DiaryService(db)
+    today = date.today()
+    
+    # Recupera tutti i record del diario (senza filtri di data, solo quelli compilati)
+    records = service.get_all_diary_entries(user_id=current_user["user_id"])
+    
+    # Converti i record in response models, estraendo perceived_exertion dalle note
+    # e aggiungendo il nome del giorno e il flag di editabilità
+    entries = []
+    for record in records:
+        is_today = record.metric_date == today
+        perceived_exertion = DiaryService.extract_perceived_exertion(record.notes)
+        day_name = DiaryService.format_day_name(record.metric_date)
+        
+        entry_dict = {
+            "date": record.metric_date,
+            "day_name": day_name,
+            "is_editable": is_today,
+            "hrv_value": record.hrv_value,
+            "hrv_baseline": record.hrv_baseline,
+            "hrv_delta": record.hrv_delta,
+            "rhr_value": record.rhr_value,
+            "rhr_baseline": record.rhr_baseline,
+            "rhr_delta": record.rhr_delta,
+            "sleep_hours": record.sleep_hours,
+            "sleep_quality_score": record.sleep_quality_score,
+            "epoc": record.epoc,
+            "hydration_status": record.hydration_status,
+            "hydration_score": record.hydration_score,
+            "nutrition_score": record.nutrition_score,
+            "weight_delta_kg": record.weight_delta_kg,
+            "perceived_exertion": perceived_exertion,
+            "notes": record.notes,
+            "recovery_index": record.recovery_index,
+            "readiness_state": record.readiness_state,
+        }
+        entries.append(DiaryEntryDetailResponse(**entry_dict))
+    
+    return DiaryEntriesResponse(
+        entries=entries,
+        total_entries=len(entries),
+    )
+
+
+@router.get("/diary/{target_date}", response_model=DiaryEntryDetailResponse)
+def get_diary_entry(
+    target_date: date,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DiaryEntryDetailResponse:
+    """Recupera un singolo record del diario per una data specifica."""
+    from app.services.diary_service import DiaryService
+    
+    service = DiaryService(db)
+    record = service.get_diary_entry(
+        user_id=current_user["user_id"],
+        metric_date=target_date,
+    )
+    
+    if not record:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"No diary entry found for date {target_date}")
+    
+    today = date.today()
+    is_today = record.metric_date == today
+    perceived_exertion = DiaryService.extract_perceived_exertion(record.notes)
+    day_name = DiaryService.format_day_name(record.metric_date)
+    
+    entry_dict = {
+        "date": record.metric_date,
+        "day_name": day_name,
+        "is_editable": is_today,
+        "hrv_value": record.hrv_value,
+        "hrv_baseline": record.hrv_baseline,
+        "hrv_delta": record.hrv_delta,
+        "rhr_value": record.rhr_value,
+        "rhr_baseline": record.rhr_baseline,
+        "rhr_delta": record.rhr_delta,
+        "sleep_hours": record.sleep_hours,
+        "sleep_quality_score": record.sleep_quality_score,
+        "epoc": record.epoc,
+        "hydration_status": record.hydration_status,
+        "hydration_score": record.hydration_score,
+        "nutrition_score": record.nutrition_score,
+        "weight_delta_kg": record.weight_delta_kg,
+        "perceived_exertion": perceived_exertion,
+        "notes": record.notes,
+        "recovery_index": record.recovery_index,
+        "readiness_state": record.readiness_state,
+    }
+    
+    return DiaryEntryDetailResponse(**entry_dict)
 
 
 @router.post("/recompute-today")

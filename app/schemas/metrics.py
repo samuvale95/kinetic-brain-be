@@ -140,3 +140,36 @@ class DiaryEntryResponse(BaseModel):
     readiness_state: Optional[str] = None
     recovery_index: Optional[float] = None
 
+
+class DiaryEntryDetailResponse(BaseModel):
+    """Risposta completa per un record del diario con tutti i dettagli."""
+    date: date
+    day_name: str  # Nome del giorno (es. "Lunedì 16 Novembre 2025")
+    is_editable: bool  # True solo se è oggi (modificabile), False per giorni passati (sola lettura)
+    hrv_value: Optional[float] = None
+    hrv_baseline: Optional[float] = None
+    hrv_delta: Optional[float] = None
+    rhr_value: Optional[float] = None
+    rhr_baseline: Optional[float] = None
+    rhr_delta: Optional[float] = None
+    sleep_hours: Optional[float] = None
+    sleep_quality_score: Optional[float] = None
+    epoc: Optional[float] = None
+    hydration_status: Optional[str] = None
+    hydration_score: Optional[float] = None
+    nutrition_score: Optional[float] = None
+    weight_delta_kg: Optional[float] = None
+    perceived_exertion: Optional[int] = None  # Estraibile dalle note se presente
+    notes: Optional[str] = None
+    recovery_index: Optional[float] = None
+    readiness_state: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+
+class DiaryEntriesResponse(BaseModel):
+    """Risposta per lista di record del diario (solo giorni compilati)."""
+    entries: List[DiaryEntryDetailResponse]
+    total_entries: int  # Numero totale di record compilati
+

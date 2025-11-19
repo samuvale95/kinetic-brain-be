@@ -2,11 +2,24 @@
 
 Questa guida spiega come implementare l'integrazione con l'API del diario per la gestione dei dati di readiness giornalieri.
 
-## Endpoint
+## Endpoint Disponibili
 
-**POST** `/metrics/diary`
+### POST `/metrics/diary`
+Endpoint per creare o aggiornare una voce di diario giornaliero. **Solo il giorno di oggi può essere modificato**. I giorni passati sono in sola lettura.
+
+### GET `/metrics/diary`
+Endpoint per recuperare **tutti i record del diario compilati** (solo giorni con dati inseriti e completati). I record sono ordinati dal più recente al più vecchio per permettere la visualizzazione come lista. Un record è considerato "completato" se ha almeno un dato inserito (es. hrv_value, rhr_value, sleep_hours, notes, ecc.).
+
+### GET `/metrics/diary/{target_date}`
+Endpoint per recuperare un singolo record del diario per una data specifica.
+
+---
+
+## POST `/metrics/diary`
 
 Endpoint per creare o aggiornare una voce di diario giornaliero. Se esiste già una voce per la data specificata (o per oggi se non specificata), viene aggiornata; altrimenti viene creata una nuova voce.
+
+**⚠️ IMPORTANTE**: Solo il giorno di oggi può essere modificato. Tentare di modificare un giorno passato restituirà un errore 403 Forbidden.
 
 ### Autenticazione
 
@@ -95,6 +108,13 @@ Il campo `recovery_index` è un valore numerico tra 0 e 100 che indica il livell
 ```json
 {
   "detail": "Missing or invalid authorization header"
+}
+```
+
+#### 403 Forbidden - Tentativo di modificare un giorno passato
+```json
+{
+  "detail": "Cannot modify diary entries for past dates. Only today (2025-11-17) can be edited."
 }
 ```
 
@@ -221,19 +241,137 @@ try {
 }
 ```
 
-## Comportamento dell'Endpoint
+## GET `/metrics/diary`
+
+Endpoint per recuperare tutti i record del diario compilati (solo giorni con dati inseriti e completati). I record sono ordinati dal più recente al più vecchio, permettendo la visualizzazione come lista. 
+
+**⚠️ IMPORTANTE**: Vengono mostrati solo i giorni per i quali è stato completato il diario (almeno un dato inserito). I giorni senza dati non vengono inclusi nella lista.
+
+### Autenticazione
+
+Richiede autenticazione Bearer token. Includere l'header:
+```
+Authorization: Bearer <token>
+```
+
+### Response
+
+```typescript
+interface DiaryEntriesResponse {
+  entries: DiaryEntryDetailResponse[];
+  total_entries: number;  // Numero totale di record compilati
+}
+
+interface DiaryEntryDetailResponse {
+  date: string;              // YYYY-MM-DD
+  day_name: string;          // Nome del giorno (es. "Lunedì 16 Novembre 2025")
+  is_editable: boolean;      // True solo se è oggi (modificabile), False per giorni passati (sola lettura)
+  hrv_value?: number;
+  hrv_baseline?: number;
+  hrv_delta?: number;
+  rhr_value?: number;
+  rhr_baseline?: number;
+  rhr_delta?: number;
+  sleep_hours?: number;
+  sleep_quality_score?: number;
+  epoc?: number;
+  hydration_status?: string;
+  hydration_score?: number;
+  nutrition_score?: number;
+  weight_delta_kg?: number;
+  perceived_exertion?: number;  // 1-10
+  notes?: string;
+  recovery_index?: number;
+  readiness_state?: string;     // "ready", "caution", "rest"
+}
+```
+
+### Esempio di Utilizzo
+
+```typescript
+const response = await fetch('http://localhost:8000/metrics/diary', {
+  method: 'GET',
+  headers: {
+    'Authorization': `Bearer ${token}`
+  }
+});
+
+const data: DiaryEntriesResponse = await response.json();
+
+// I record sono già ordinati dal più recente al più vecchio
+data.entries.forEach(entry => {
+  console.log(`${entry.day_name} - ${entry.is_editable ? 'Modificabile' : 'Sola lettura'}`);
+  console.log(`Recovery Index: ${entry.recovery_index}`);
+  console.log(`Readiness State: ${entry.readiness_state}`);
+});
+```
+
+### Comportamento
+
+1. **Solo giorni completati**: L'endpoint restituisce solo i giorni in cui è stato completato il diario. Un record è considerato "completato" se ha almeno uno dei seguenti campi compilati:
+   - `hrv_value`, `rhr_value`, `sleep_hours`, `sleep_quality_score`, `epoc`
+   - `hydration_status`, `hydration_score`, `nutrition_score`, `weight_delta_kg`
+   - `notes`
+   I giorni senza dati inseriti non vengono inclusi nella lista.
+
+2. **Ordinamento**: I record sono ordinati dal più recente al più vecchio (`metric_date DESC`), permettendo la visualizzazione come lista semplice.
+
+3. **Flag `is_editable`**: 
+   - `true` se il record è per il giorno di oggi (modificabile)
+   - `false` se il record è per un giorno passato (sola lettura)
+
+4. **Nome del giorno**: Il campo `day_name` contiene il nome completo del giorno in italiano (es. "Lunedì 16 Novembre 2025").
+
+## GET `/metrics/diary/{target_date}`
+
+Endpoint per recuperare un singolo record del diario per una data specifica.
+
+### Autenticazione
+
+Richiede autenticazione Bearer token.
+
+### Parametri Path
+
+- `target_date`: Data in formato `YYYY-MM-DD` (es. `2025-11-17`)
+
+### Response
+
+Restituisce un singolo `DiaryEntryDetailResponse` o un errore 404 se il record non esiste.
+
+### Esempio di Utilizzo
+
+```typescript
+const targetDate = '2025-11-17';
+const response = await fetch(`http://localhost:8000/metrics/diary/${targetDate}`, {
+  method: 'GET',
+  headers: {
+    'Authorization': `Bearer ${token}`
+  }
+});
+
+if (response.status === 404) {
+  console.log('Record non trovato per questa data');
+} else {
+  const entry: DiaryEntryDetailResponse = await response.json();
+  console.log(entry);
+}
+```
+
+## Comportamento dell'Endpoint POST
 
 1. **Creazione vs Aggiornamento**: L'endpoint crea una nuova voce se non esiste per la data specificata, altrimenti aggiorna quella esistente (upsert).
 
 2. **Data di default**: Se il campo `date` non viene fornito, viene utilizzata la data odierna del server.
 
-3. **Campi opzionali**: Tutti i campi sono opzionali. Puoi inviare solo i campi che vuoi aggiornare.
+3. **Solo oggi modificabile**: Tentare di modificare un giorno passato restituirà un errore 403 Forbidden. Solo il giorno di oggi può essere modificato.
 
-4. **Calcolo automatico**: Dopo il salvataggio, il sistema calcola automaticamente:
+4. **Campi opzionali**: Tutti i campi sono opzionali. Puoi inviare solo i campi che vuoi aggiornare.
+
+5. **Calcolo automatico**: Dopo il salvataggio, il sistema calcola automaticamente:
    - `readiness_state`: Stato di readiness basato sui dati inseriti
    - `recovery_index`: Indice di recupero (0-100)
 
-5. **Validazione**: 
+6. **Validazione**: 
    - Il formato della data deve essere `YYYY-MM-DD`
    - `perceived_exertion` deve essere tra 1 e 10 (se fornito)
 
@@ -456,11 +594,23 @@ Dopo aver salvato una voce nel diario, i dati di readiness vengono ricalcolati a
 
 2. **Fuso Orario**: La data viene interpretata nel fuso orario del server. Se non specifichi una data, viene usata la data odierna del server.
 
-3. **Campi Null vs Undefined**: 
+3. **Sola Lettura per Giorni Passati**: 
+   - Solo il giorno di oggi può essere modificato tramite POST `/metrics/diary`
+   - I giorni passati sono visualizzabili in sola lettura tramite GET `/metrics/diary` o GET `/metrics/diary/{date}`
+   - Tentare di modificare un giorno passato restituirà un errore 403 Forbidden
+
+4. **Visualizzazione del Diario**:
+   - GET `/metrics/diary` restituisce solo i giorni **completati** (con almeno un dato inserito)
+   - I giorni senza dati inseriti non vengono mostrati nella lista
+   - I record sono ordinati dal più recente al più vecchio per permettere la visualizzazione come lista semplice
+   - Ogni record include `day_name` (nome completo del giorno) e `is_editable` (flag per indicare se è modificabile)
+   - La lista è semplice, senza frecce o navigazione aggiuntiva
+
+5. **Campi Null vs Undefined**: 
    - I campi `undefined` non vengono inviati al server
    - I campi `null` vengono inviati come `null` (potrebbero sovrascrivere valori esistenti)
 
-4. **Upsert**: L'endpoint fa un "upsert" (update or insert), quindi puoi chiamarlo più volte per la stessa data senza creare duplicati.
+6. **Upsert**: L'endpoint POST fa un "upsert" (update or insert), quindi puoi chiamarlo più volte per la stessa data senza creare duplicati (solo se la data è oggi).
 
 ## Esempio Completo React
 
