@@ -4,6 +4,17 @@ import os
 
 
 class Settings(BaseSettings):
+    # AWS Secrets Manager
+    aws_secret_name: Optional[str] = None
+    aws_region: str = "eu-north-1"
+    # AWS Credentials (optional - can also use ~/.aws/credentials or IAM role)
+    aws_access_key_id: Optional[str] = None
+    aws_secret_access_key: Optional[str] = None
+    # Database connection details (optional - can be in secret or here)
+    db_host: Optional[str] = None
+    db_name: Optional[str] = None
+    db_port: Optional[int] = None
+    
     # Database
     database_url: str = "postgresql://user:password@localhost/kinetic_brain"
     database_url_async: str = "postgresql+asyncpg://user:password@localhost/kinetic_brain"
@@ -61,6 +72,83 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # If AWS secret name is provided, use it to get database credentials
+        # Import here to avoid circular import issues
+        # Import directly from file to avoid loading utils/__init__.py which imports security
+        if self.aws_secret_name:
+            try:
+                import importlib.util
+                import sys
+                # Get the path to aws_secrets.py
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                aws_secrets_path = os.path.join(current_dir, "utils", "aws_secrets.py")
+                # Load the module directly without going through __init__.py
+                spec = importlib.util.spec_from_file_location("aws_secrets", aws_secrets_path)
+                aws_secrets_module = importlib.util.module_from_spec(spec)
+                # Add to sys.modules with a unique name to avoid conflicts
+                module_name = f"app_config_aws_secrets_{id(self)}"
+                sys.modules[module_name] = aws_secrets_module
+                spec.loader.exec_module(aws_secrets_module)
+                self.database_url, self.database_url_async = aws_secrets_module.get_database_url_from_secret(
+                    secret_name=self.aws_secret_name,
+                    region_name=self.aws_region,
+                    access_key_id=self.aws_access_key_id,
+                    secret_access_key=self.aws_secret_access_key,
+                    db_host=self.db_host,
+                    db_name=self.db_name,
+                    db_port=self.db_port
+                )
+            except Exception as e:
+                # Log error but don't fail - allow fallback to env vars
+                from loguru import logger
+                from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError
+                
+                # Check if it's an AWS authentication error (common in local development)
+                error_msg = str(e)
+                error_type = type(e).__name__
+                
+                # Check for various AWS credential errors
+                is_no_credentials = (
+                    isinstance(e, NoCredentialsError) or
+                    isinstance(e, PartialCredentialsError) or
+                    "NoCredentialsError" in error_msg or
+                    "CredentialsError" in error_msg
+                )
+                
+                is_invalid_credentials = (
+                    "UnrecognizedClientException" in error_msg or
+                    "InvalidClientTokenId" in error_msg or
+                    "The security token included in the request is invalid" in error_msg
+                )
+                
+                if is_no_credentials:
+                    # Use INFO level when credentials are not configured (normal in local dev)
+                    logger.info(
+                        "AWS Secrets Manager not available (AWS credentials not configured). "
+                        "Using database credentials from environment variables (DATABASE_URL)"
+                    )
+                elif is_invalid_credentials:
+                    # Use WARNING when credentials are configured but invalid
+                    logger.warning(
+                        f"AWS Secrets Manager authentication failed (invalid credentials): {error_msg}. "
+                        "Please check your AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. "
+                        "Falling back to environment variables (DATABASE_URL)"
+                    )
+                elif isinstance(e, ClientError):
+                    # ClientError from boto3 - log the full error code
+                    error_code = getattr(e, 'response', {}).get('Error', {}).get('Code', 'Unknown')
+                    logger.warning(
+                        f"Failed to get database credentials from AWS Secrets Manager "
+                        f"(Error: {error_code}): {error_msg}"
+                    )
+                    logger.warning("Falling back to environment variables or defaults")
+                else:
+                    # Use WARNING for other errors
+                    logger.warning(f"Failed to get database credentials from AWS Secrets Manager: {e}")
+                    logger.warning("Falling back to environment variables or defaults")
 
 
 settings = Settings()
