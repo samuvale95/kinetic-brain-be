@@ -37,24 +37,40 @@ class AdvancedMetricsService:
         """Compute the daily readiness entry for a user and persist it."""
         inputs = inputs or {}
 
+        # Recupera il record esistente (se presente) per preservare i valori non aggiornati
+        record = (
+            self.db.query(DailyReadinessMetrics)
+            .filter(
+                DailyReadinessMetrics.user_id == user_id,
+                DailyReadinessMetrics.metric_date == metric_date,
+            )
+            .one_or_none()
+        )
+
+        if record is None:
+            record = DailyReadinessMetrics(user_id=user_id, metric_date=metric_date)
+
+        # Usa i valori esistenti del record se non sono stati passati nuovi valori
+        # Questo permette di fare update parziali preservando i dati esistenti
+        hrv_value = self._ensure_float(inputs.get("hrv_value")) if "hrv_value" in inputs else record.hrv_value
+        rhr_value = self._ensure_float(inputs.get("rhr_value")) if "rhr_value" in inputs else record.rhr_value
+        sleep_hours = self._ensure_float(inputs.get("sleep_hours")) if "sleep_hours" in inputs else record.sleep_hours
+        sleep_quality_score = self._ensure_float(inputs.get("sleep_quality_score")) if "sleep_quality_score" in inputs else record.sleep_quality_score
+        epoc = self._ensure_float(inputs.get("epoc")) if "epoc" in inputs else record.epoc
+        hydration_score = self._ensure_float(inputs.get("hydration_score")) if "hydration_score" in inputs else record.hydration_score
+        nutrition_score = self._ensure_float(inputs.get("nutrition_score")) if "nutrition_score" in inputs else record.nutrition_score
+        weight_delta_kg = self._ensure_float(inputs.get("weight_delta_kg")) if "weight_delta_kg" in inputs else record.weight_delta_kg
+
         historical = self._fetch_recent_readiness(user_id=user_id, before_date=metric_date, days=7)
         baseline_hrv = self._resolve_baseline(inputs.get("hrv_baseline"), [entry.hrv_value for entry in historical])
         baseline_rhr = self._resolve_baseline(inputs.get("rhr_baseline"), [entry.rhr_value for entry in historical])
-
-        hrv_value = self._ensure_float(inputs.get("hrv_value"))
-        rhr_value = self._ensure_float(inputs.get("rhr_value"))
-        sleep_hours = self._ensure_float(inputs.get("sleep_hours"))
-        sleep_quality_score = self._ensure_float(inputs.get("sleep_quality_score"))
-        epoc = self._ensure_float(inputs.get("epoc"))
-        hydration_score = self._ensure_float(inputs.get("hydration_score"))
-        nutrition_score = self._ensure_float(inputs.get("nutrition_score"))
-        weight_delta_kg = self._ensure_float(inputs.get("weight_delta_kg"))
 
         hrv_delta = self._safe_delta(hrv_value, baseline_hrv)
         rhr_delta = self._safe_delta(rhr_value, baseline_rhr)
 
         ctl, atl, tsb = self._fetch_daily_performance_load(user_id, metric_date)
 
+        # Ricalcola recovery_index usando tutti i valori disponibili (esistenti + nuovi)
         recovery_index = self._calculate_recovery_index(
             hrv_value=hrv_value,
             baseline_hrv=baseline_hrv,
@@ -69,38 +85,47 @@ class AdvancedMetricsService:
         )
         readiness_state = self._classify_readiness(recovery_index)
 
-        record = (
-            self.db.query(DailyReadinessMetrics)
-            .filter(
-                DailyReadinessMetrics.user_id == user_id,
-                DailyReadinessMetrics.metric_date == metric_date,
-            )
-            .one_or_none()
-        )
+        # Aggiorna solo i campi che sono stati effettivamente passati nell'input
+        # per preservare i valori esistenti quando si fa un update parziale
+        if "hrv_value" in inputs:
+            record.hrv_baseline = baseline_hrv
+            record.hrv_value = hrv_value
+            record.hrv_delta = hrv_delta
+        elif record.hrv_value is not None:
+            # Se hrv_value esiste già, ricalcola baseline e delta
+            record.hrv_baseline = baseline_hrv
+            record.hrv_delta = self._safe_delta(record.hrv_value, baseline_hrv)
 
-        if record is None:
-            record = DailyReadinessMetrics(user_id=user_id, metric_date=metric_date)
+        if "rhr_value" in inputs:
+            record.rhr_baseline = baseline_rhr
+            record.rhr_value = rhr_value
+            record.rhr_delta = rhr_delta
+        elif record.rhr_value is not None:
+            # Se rhr_value esiste già, ricalcola baseline e delta
+            record.rhr_baseline = baseline_rhr
+            record.rhr_delta = self._safe_delta(record.rhr_value, baseline_rhr)
 
-        record.hrv_baseline = baseline_hrv
-        record.hrv_value = hrv_value
-        record.hrv_delta = hrv_delta
+        if "sleep_hours" in inputs:
+            record.sleep_hours = sleep_hours
+        if "sleep_quality_score" in inputs:
+            record.sleep_quality_score = sleep_quality_score
+        if "epoc" in inputs:
+            record.epoc = epoc
 
-        record.rhr_baseline = baseline_rhr
-        record.rhr_value = rhr_value
-        record.rhr_delta = rhr_delta
-
-        record.sleep_hours = sleep_hours
-        record.sleep_quality_score = sleep_quality_score
-        record.epoc = epoc
-
+        # recovery_index e readiness_state vengono sempre ricalcolati
+        # perché dipendono da tutti i valori (anche quelli esistenti)
         record.recovery_index = recovery_index
         record.readiness_state = readiness_state
 
-        record.hydration_status = inputs.get("hydration_status")
-        record.hydration_score = hydration_score
-        record.nutrition_score = nutrition_score
-        record.weight_delta_kg = weight_delta_kg
-        record.notes = inputs.get("notes")
+        if "hydration_status" in inputs:
+            record.hydration_status = inputs.get("hydration_status")
+        if "hydration_score" in inputs:
+            record.hydration_score = hydration_score
+        if "nutrition_score" in inputs:
+            record.nutrition_score = nutrition_score
+        if "weight_delta_kg" in inputs:
+            record.weight_delta_kg = weight_delta_kg
+        # Note non vengono aggiornate qui, vengono gestite in DiaryService
 
         self.db.add(record)
         self.db.commit()

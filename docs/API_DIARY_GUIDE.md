@@ -5,7 +5,7 @@ Questa guida spiega come implementare l'integrazione con l'API del diario per la
 ## Endpoint Disponibili
 
 ### POST `/metrics/diary`
-Endpoint per creare o aggiornare una voce di diario giornaliero. **Solo il giorno di oggi può essere modificato**. I giorni passati sono in sola lettura.
+Endpoint per creare o aggiornare una voce di diario giornaliero. **Solo il giorno di oggi e quello di ieri possono essere modificati**. I giorni precedenti sono in sola lettura.
 
 ### GET `/metrics/diary`
 Endpoint per recuperare **tutti i record del diario compilati** (solo giorni con dati inseriti e completati). I record sono ordinati dal più recente al più vecchio per permettere la visualizzazione come lista. Un record è considerato "completato" se ha almeno un dato inserito (es. hrv_value, rhr_value, sleep_hours, notes, ecc.).
@@ -19,7 +19,7 @@ Endpoint per recuperare un singolo record del diario per una data specifica.
 
 Endpoint per creare o aggiornare una voce di diario giornaliero. Se esiste già una voce per la data specificata (o per oggi se non specificata), viene aggiornata; altrimenti viene creata una nuova voce.
 
-**⚠️ IMPORTANTE**: Solo il giorno di oggi può essere modificato. Tentare di modificare un giorno passato restituirà un errore 403 Forbidden.
+**⚠️ IMPORTANTE**: Solo il giorno di oggi e quello di ieri possono essere modificati. Tentare di modificare un giorno precedente restituirà un errore 403 Forbidden.
 
 ### Autenticazione
 
@@ -111,10 +111,10 @@ Il campo `recovery_index` è un valore numerico tra 0 e 100 che indica il livell
 }
 ```
 
-#### 403 Forbidden - Tentativo di modificare un giorno passato
+#### 403 Forbidden - Tentativo di modificare un giorno troppo passato
 ```json
 {
-  "detail": "Cannot modify diary entries for past dates. Only today (2025-11-17) can be edited."
+  "detail": "Cannot modify diary entries for dates before yesterday. Only today (2025-11-17) and yesterday (2025-11-16) can be edited."
 }
 ```
 
@@ -317,8 +317,8 @@ data.entries.forEach(entry => {
 2. **Ordinamento**: I record sono ordinati dal più recente al più vecchio (`metric_date DESC`), permettendo la visualizzazione come lista semplice.
 
 3. **Flag `is_editable`**: 
-   - `true` se il record è per il giorno di oggi (modificabile)
-   - `false` se il record è per un giorno passato (sola lettura)
+   - `true` se il record è per il giorno di oggi o di ieri (modificabile)
+   - `false` se il record è per un giorno precedente (sola lettura)
 
 4. **Nome del giorno**: Il campo `day_name` contiene il nome completo del giorno in italiano (es. "Lunedì 16 Novembre 2025").
 
@@ -363,7 +363,7 @@ if (response.status === 404) {
 
 2. **Data di default**: Se il campo `date` non viene fornito, viene utilizzata la data odierna del server.
 
-3. **Solo oggi modificabile**: Tentare di modificare un giorno passato restituirà un errore 403 Forbidden. Solo il giorno di oggi può essere modificato.
+3. **Modificabilità limitata**: Tentare di modificare un giorno precedente a ieri restituirà un errore 403 Forbidden. Solo il giorno di oggi e quello di ieri possono essere modificati.
 
 4. **Campi opzionali**: Tutti i campi sono opzionali. Puoi inviare solo i campi che vuoi aggiornare.
 
@@ -594,10 +594,10 @@ Dopo aver salvato una voce nel diario, i dati di readiness vengono ricalcolati a
 
 2. **Fuso Orario**: La data viene interpretata nel fuso orario del server. Se non specifichi una data, viene usata la data odierna del server.
 
-3. **Sola Lettura per Giorni Passati**: 
-   - Solo il giorno di oggi può essere modificato tramite POST `/metrics/diary`
-   - I giorni passati sono visualizzabili in sola lettura tramite GET `/metrics/diary` o GET `/metrics/diary/{date}`
-   - Tentare di modificare un giorno passato restituirà un errore 403 Forbidden
+3. **Modificabilità dei Record**: 
+   - Solo il giorno di oggi e quello di ieri possono essere modificati tramite POST `/metrics/diary`
+   - I giorni precedenti sono visualizzabili in sola lettura tramite GET `/metrics/diary` o GET `/metrics/diary/{date}`
+   - Tentare di modificare un giorno precedente a ieri restituirà un errore 403 Forbidden
 
 4. **Visualizzazione del Diario**:
    - GET `/metrics/diary` restituisce solo i giorni **completati** (con almeno un dato inserito)

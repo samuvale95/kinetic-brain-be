@@ -131,9 +131,9 @@ def post_diary_entry(
 ) -> DiaryEntryResponse:
     """
     Inserisce/aggiorna una voce di diario per la giornata e calcola readiness.
-    IMPORTANTE: Solo il giorno di oggi può essere modificato. I giorni passati sono in sola lettura.
+    IMPORTANTE: Solo il giorno di oggi e quello di ieri possono essere modificati. I giorni precedenti sono in sola lettura.
     """
-    from datetime import date as _date
+    from datetime import date as _date, timedelta
     from app.services.diary_service import DiaryService
     from fastapi import HTTPException, status
 
@@ -146,12 +146,14 @@ def post_diary_entry(
     else:
         metric_date = _date.today()
     
-    # Verifica che non si stia cercando di modificare un giorno passato
+    # Verifica che non si stia cercando di modificare un giorno troppo passato
+    # Permetti solo oggi e ieri
     today = _date.today()
-    if metric_date < today:
+    yesterday = today - timedelta(days=1)
+    if metric_date < yesterday:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Cannot modify diary entries for past dates. Only today ({today}) can be edited."
+            detail=f"Cannot modify diary entries for dates before yesterday. Only today ({today}) and yesterday ({yesterday}) can be edited."
         )
     
     inputs = {
@@ -192,12 +194,14 @@ def get_diary_entries(
     """
     Recupera TUTTI i record del diario compilati (solo giorni con dati inseriti).
     I record sono ordinati dal più recente al più vecchio per permettere lo scorrimento come un diario.
-    Solo il record di oggi (se presente) è modificabile, gli altri sono in sola lettura.
+    Solo i record di oggi e di ieri sono modificabili, gli altri sono in sola lettura.
     """
     from app.services.diary_service import DiaryService
+    from datetime import timedelta
     
     service = DiaryService(db)
     today = date.today()
+    yesterday = today - timedelta(days=1)
     
     # Recupera tutti i record del diario (senza filtri di data, solo quelli compilati)
     records = service.get_all_diary_entries(user_id=current_user["user_id"])
@@ -206,14 +210,15 @@ def get_diary_entries(
     # e aggiungendo il nome del giorno e il flag di editabilità
     entries = []
     for record in records:
-        is_today = record.metric_date == today
+        # Modificabile se è oggi o ieri
+        is_editable = record.metric_date == today or record.metric_date == yesterday
         perceived_exertion = DiaryService.extract_perceived_exertion(record.notes)
         day_name = DiaryService.format_day_name(record.metric_date)
         
         entry_dict = {
             "date": record.metric_date,
             "day_name": day_name,
-            "is_editable": is_today,
+            "is_editable": is_editable,
             "hrv_value": record.hrv_value,
             "hrv_baseline": record.hrv_baseline,
             "hrv_delta": record.hrv_delta,
@@ -248,6 +253,7 @@ def get_diary_entry(
 ) -> DiaryEntryDetailResponse:
     """Recupera un singolo record del diario per una data specifica."""
     from app.services.diary_service import DiaryService
+    from datetime import timedelta
     
     service = DiaryService(db)
     record = service.get_diary_entry(
@@ -260,14 +266,16 @@ def get_diary_entry(
         raise HTTPException(status_code=404, detail=f"No diary entry found for date {target_date}")
     
     today = date.today()
-    is_today = record.metric_date == today
+    yesterday = today - timedelta(days=1)
+    # Modificabile se è oggi o ieri
+    is_editable = record.metric_date == today or record.metric_date == yesterday
     perceived_exertion = DiaryService.extract_perceived_exertion(record.notes)
     day_name = DiaryService.format_day_name(record.metric_date)
     
     entry_dict = {
         "date": record.metric_date,
         "day_name": day_name,
-        "is_editable": is_today,
+        "is_editable": is_editable,
         "hrv_value": record.hrv_value,
         "hrv_baseline": record.hrv_baseline,
         "hrv_delta": record.hrv_delta,
