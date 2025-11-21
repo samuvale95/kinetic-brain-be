@@ -22,6 +22,7 @@ from app.schemas.strava import (
     StravaSyncJobListResponse,
     StravaSyncJobResponse,
     StravaSyncRequest,
+    StravaUnsyncedCheckResponse,
 )
 from app.services.strava_service import StravaService
 from app.tasks.strava_tasks import run_strava_sync_job, run_recalculate_metrics_job
@@ -438,6 +439,38 @@ async def get_sync_job(
             detail="Sync job not found",
         )
     return job
+
+
+@router.get("/check-unsynced", response_model=StravaUnsyncedCheckResponse)
+async def check_unsynced_activities(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Efficiently check for new Strava activities that haven't been synced yet.
+    
+    This endpoint:
+    1. Finds the most recent synced activity in the database
+    2. Fetches only newer activities from Strava API
+    3. Compares to find unsynced ones
+    
+    Returns:
+        - unsynced_count: number of activities on Strava not yet in database
+        - oldest_unsynced_date: date of oldest unsynced activity (ISO format)
+        - last_synced_date: date of most recent synced activity (ISO format)
+    
+    Use this to determine if a sync is needed, then call POST /strava/sync
+    """
+    try:
+        strava_service = StravaService(db)
+        result = strava_service.check_unsynced_activities(current_user["user_id"])
+        return StravaUnsyncedCheckResponse(**result)
+    except Exception as e:
+        logger.exception(f"[CHECK_UNSYNCED] Failed to check unsynced activities: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to check unsynced activities: {str(e)}",
+        )
 
 
 # Activity Management

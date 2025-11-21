@@ -363,6 +363,186 @@ class StravaService:
             logger.error(f"Request error fetching activities: {e}")
             raise Exception(f"Failed to fetch activities: {str(e)}")
     
+    def fetch_all_athlete_activities(self, strava_account: StravaAccount, 
+                                     max_pages: int = 10,
+                                     per_page: int = 200,
+                                     timeout: int = 30) -> List[Dict[str, Any]]:
+        """Fetch all athlete activities from Strava with pagination"""
+        all_activities = []
+        page = 1
+        
+        while page <= max_pages:
+            activities = self.fetch_athlete_activities(
+                strava_account, per_page=per_page, page=page, timeout=timeout
+            )
+            
+            if not activities:
+                break
+            
+            all_activities.extend(activities)
+            
+            # If we got fewer activities than per_page, we've reached the end
+            if len(activities) < per_page:
+                break
+            
+            page += 1
+        
+        return all_activities
+    
+    def check_unsynced_activities(self, user_id: int) -> Dict[str, Any]:
+        """
+        Efficiently check for activities on Strava that haven't been synced yet.
+        
+        Strategy:
+        1. Find the most recent synced activity in database
+        2. Fetch only activities from Strava that are newer than that date
+        3. Compare with database to find unsynced ones
+        
+        Returns:
+            Dict with:
+            - unsynced_count: number of activities not in database
+            - oldest_unsynced_date: date of oldest unsynced activity (ISO format)
+            - last_synced_date: date of most recent synced activity (ISO format)
+        """
+        logger.info(f"[CHECK_UNSYNCED] Checking unsynced activities for user {user_id}")
+        
+        # Get user's Strava account
+        strava_account = self.db.execute(
+            select(StravaAccount)
+            .where(StravaAccount.user_id == user_id)
+        ).scalar_one_or_none()
+        
+        if not strava_account:
+            raise Exception("No Strava account found for user")
+        
+        # Find the most recent synced activity in database
+        last_synced_activity = self.db.execute(
+            select(StravaActivity)
+            .where(StravaActivity.strava_account_id == strava_account.id)
+            .order_by(StravaActivity.start_date.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        
+        last_synced_date = None
+        if last_synced_activity:
+            last_synced_date = last_synced_activity.start_date
+            logger.info(
+                f"[CHECK_UNSYNCED] Last synced activity: {last_synced_activity.strava_activity_id} "
+                f"on {last_synced_date}"
+            )
+        else:
+            logger.info("[CHECK_UNSYNCED] No synced activities found, will check all recent activities")
+        
+        # Fetch activities from Strava (only recent ones, max 5 pages = ~1000 activities)
+        # This is efficient because we only fetch what we need
+        logger.info("[CHECK_UNSYNCED] Fetching recent activities from Strava API")
+        try:
+            all_strava_activities = []
+            page = 1
+            max_pages = 5  # Limit to 5 pages for efficiency (~1000 activities)
+            per_page = 200
+            
+            while page <= max_pages:
+                activities = self.fetch_athlete_activities(
+                    strava_account, per_page=per_page, page=page, timeout=15
+                )
+                
+                if not activities:
+                    break
+                
+                # If we have a last_synced_date, we can stop early if we find older activities
+                if last_synced_date:
+                    # Check if we've gone past the last synced date
+                    oldest_in_page = datetime.fromisoformat(
+                        activities[-1]["start_date"].replace("Z", "+00:00")
+                    )
+                    if oldest_in_page < last_synced_date:
+                        # We've reached activities older than last synced, we can stop
+                        # But include this page to be safe
+                        all_strava_activities.extend(activities)
+                        break
+                
+                all_strava_activities.extend(activities)
+                
+                # If we got fewer than per_page, we've reached the end
+                if len(activities) < per_page:
+                    break
+                
+                page += 1
+                
+        except Exception as e:
+            logger.error(f"[CHECK_UNSYNCED] Failed to fetch activities: {e}")
+            raise Exception(f"Failed to fetch activities from Strava: {str(e)}")
+        
+        logger.info(f"[CHECK_UNSYNCED] Fetched {len(all_strava_activities)} activities from Strava")
+        
+        # Get existing activity IDs from database (only recent ones for efficiency)
+        # We only need to check activities that could be in the fetched range
+        if last_synced_date:
+            # Get activities from the last synced date onwards
+            cutoff_date = last_synced_date - timedelta(days=1)  # Add 1 day buffer
+            existing_activity_ids = set(
+                self.db.execute(
+                    select(StravaActivity.strava_activity_id)
+                    .where(
+                        and_(
+                            StravaActivity.strava_account_id == strava_account.id,
+                            StravaActivity.start_date >= cutoff_date
+                        )
+                    )
+                ).scalars().all()
+            )
+        else:
+            # No synced activities, check all fetched activities
+            existing_activity_ids = set(
+                self.db.execute(
+                    select(StravaActivity.strava_activity_id)
+                    .where(StravaActivity.strava_account_id == strava_account.id)
+                ).scalars().all()
+            )
+        
+        logger.info(f"[CHECK_UNSYNCED] Found {len(existing_activity_ids)} existing activities to check")
+        
+        # Find unsynced activities (only those newer than last synced, or all if none synced)
+        unsynced_activities = []
+        for activity in all_strava_activities:
+            activity_date = datetime.fromisoformat(activity["start_date"].replace("Z", "+00:00"))
+            
+            # If we have a last_synced_date, only consider activities newer than it
+            if last_synced_date and activity_date <= last_synced_date:
+                continue  # Skip older activities, they should already be synced
+            
+            # Check if activity is not in database
+            if activity["id"] not in existing_activity_ids:
+                unsynced_activities.append(activity)
+        
+        # Find oldest unsynced activity date
+        oldest_unsynced_date = None
+        if unsynced_activities:
+            # Sort by start_date to find oldest
+            unsynced_activities_sorted = sorted(
+                unsynced_activities,
+                key=lambda x: datetime.fromisoformat(x["start_date"].replace("Z", "+00:00"))
+            )
+            oldest_activity = unsynced_activities_sorted[0]
+            oldest_unsynced_date = datetime.fromisoformat(
+                oldest_activity["start_date"].replace("Z", "+00:00")
+            )
+        
+        result = {
+            "unsynced_count": len(unsynced_activities),
+            "oldest_unsynced_date": oldest_unsynced_date.isoformat() if oldest_unsynced_date else None,
+            "last_synced_date": last_synced_date.isoformat() if last_synced_date else None,
+        }
+        
+        logger.info(
+            f"[CHECK_UNSYNCED] Found {result['unsynced_count']} unsynced activities. "
+            f"Oldest unsynced: {result['oldest_unsynced_date']}, "
+            f"Last synced: {result['last_synced_date']}"
+        )
+        
+        return result
+    
     def fetch_activity_details(self, strava_account: StravaAccount, 
                              activity_id: int,
                              timeout: int = 10) -> Dict[str, Any]:

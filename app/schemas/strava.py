@@ -124,4 +124,10 @@ class StravaSyncJobListResponse(BaseModel):
     jobs: List[StravaSyncJobResponse]
 
 
+class StravaUnsyncedCheckResponse(BaseModel):
+    unsynced_count: int
+    oldest_unsynced_date: Optional[str] = None
+    last_synced_date: Optional[str] = None
+
+
 
