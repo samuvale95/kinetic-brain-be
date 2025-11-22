@@ -1631,6 +1631,153 @@ class AIService:
                 prompt += f"\n- Triathlon race type: {request.race_type.replace('_', ' ').title()}"
             prompt += "\n- Structure the training phases to peak for this event, aligning long workouts, simulations, and taper accordingly."
         
+        # Stretching periodization
+        if request.include_stretching:
+            prompt += "\n\n=== STRETCHING PERIODIZATION (REQUIRED) ==="
+            prompt += "\nYou MUST include stretching sessions following scientific periodization guidelines:"
+            prompt += "\n\nFREQUENCY & DURATION BY PHASE:"
+            prompt += "\n- Off-Season/Base Phase: 4-5 days/week, 15-20 minutes per session"
+            prompt += "\n- Build Phase: 4 days/week, 10-12 minutes per session"
+            prompt += "\n- Peak Phase: 4 days/week, 8-10 minutes per session"
+            prompt += "\n- Taper Phase: 2-3 days/week, 5-8 minutes per session"
+            prompt += "\n\nTIMING:"
+            prompt += "\n- Post-workout (incorporated in cooldown) OR dedicated morning/evening session"
+            prompt += "\n- Can be BOTH incorporated in cooldown AND as separate workout when appropriate"
+            prompt += "\n\nSPORT-SPECIFIC FOCUS:"
+            sport_lower = request.sport_type.lower()
+            if sport_lower in ["running", "run", "trail", "trail running"]:
+                prompt += "\n- Running/Trail: Focus on hamstrings, calves, hip flexors, glutes, IT band, lower back (8-10 min total)"
+            elif sport_lower in ["cycling", "bike", "bicycle"]:
+                prompt += "\n- Cycling: Focus on quadriceps, hip flexors, hip adductors, lower back, upper back/chest (8-10 min total)"
+            elif sport_lower in ["swimming", "swim"]:
+                prompt += "\n- Swimming: Focus on shoulders (all angles - internal/external rotation), chest, lats, hip flexors (8-10 min total)"
+            elif sport_lower == "triathlon":
+                prompt += "\n- Triathlon: Combine all three sport focuses - hamstrings, calves, quads, hip flexors, shoulders, chest, lats (10-12 min total)"
+            else:
+                prompt += "\n- Full-body comprehensive stretching (10-12 min total)"
+            prompt += "\n\nPROTOCOL:"
+            prompt += "\n- 30 seconds per hold (standard, not longer)"
+            prompt += "\n- 3-4 minutes per major muscle group = 80% of benefits"
+            prompt += "\n- Frequency > Duration: 4-5 days/week short sessions > 1 day long session"
+            prompt += "\n- Daily brief stretching best for ROM maintenance"
+            prompt += "\n\nRACE DAY:"
+            prompt += "\n- Dynamic warm-up ONLY, NO static stretching pre-race (causes strength reduction)"
+            prompt += "\n\nINTEGRATION:"
+            prompt += "\n- Can be incorporated into cooldown segments OR scheduled as separate dedicated workouts"
+            prompt += "\n- When incorporated in cooldown, add stretching steps to the cooldown segment"
+            prompt += "\n- When separate, create dedicated 'Stretching' workout type with appropriate duration"
+        
+        # Strength training periodization
+        if request.include_strength:
+            prompt += "\n\n=== STRENGTH TRAINING PERIODIZATION (REQUIRED) ==="
+            prompt += "\nYou MUST include strength training sessions following scientific periodization based on weeks to target date:"
+            
+            # Calculate weeks to target if target_date is provided
+            weeks_to_target = None
+            if request.target_date:
+                try:
+                    from datetime import datetime
+                    target = datetime.strptime(request.target_date, "%Y-%m-%d")
+                    today = datetime.now()
+                    weeks_to_target = max(0, (target - today).days // 7)
+                except:
+                    pass
+            
+            prompt += "\n\n4 PHASES OF STRENGTH PERIODIZATION:"
+            if weeks_to_target is not None:
+                if weeks_to_target > 12:
+                    phase = "Phase 2: MAX STRENGTH"
+                    prompt += f"\n- CURRENT PHASE ({weeks_to_target} weeks to target): {phase}"
+                    prompt += "\n  - Frequency: 2-3 sessions/week"
+                    prompt += "\n  - Duration: 45-60 minutes per session"
+                    prompt += "\n  - Intensity: Very High (87-93% 1RM)"
+                    prompt += "\n  - Rep Range: 3-5 reps per set"
+                    prompt += "\n  - Rest: 3-5 minutes between sets"
+                    prompt += "\n  - Focus: Max strength development"
+                    prompt += "\n  - Sample exercises: Back Squat, RDL, Rows, Bench Press, Dips"
+                elif weeks_to_target > 8:
+                    phase = "Phase 3: POWER/EXPLOSIVITY"
+                    prompt += f"\n- CURRENT PHASE ({weeks_to_target} weeks to target): {phase}"
+                    prompt += "\n  - Frequency: 1-2 sessions/week"
+                    prompt += "\n  - Duration: 45-50 minutes per session"
+                    prompt += "\n  - Intensity: Very High (70-90% 1RM, explosive movement)"
+                    prompt += "\n  - Movement: Fast, ballistic, plyometric"
+                    prompt += "\n  - Rest: 2-3 minutes"
+                    prompt += "\n  - Focus: Converting strength into sport-specific power"
+                    prompt += "\n  - Sample exercises: Explosive Push-ups, Box Jumps, Medicine Ball Throws, Jump Squats, Lateral Bounds"
+                elif weeks_to_target > 4:
+                    phase = "Phase 3: POWER/EXPLOSIVITY (transitioning to Maintenance)"
+                    prompt += f"\n- CURRENT PHASE ({weeks_to_target} weeks to target): {phase}"
+                    prompt += "\n  - Frequency: 1-2 sessions/week"
+                    prompt += "\n  - Duration: 45-50 minutes per session"
+                    prompt += "\n  - Intensity: High (70-90% 1RM, explosive)"
+                    prompt += "\n  - Focus: Power development"
+                else:
+                    phase = "Phase 4: MAINTENANCE"
+                    prompt += f"\n- CURRENT PHASE ({weeks_to_target} weeks to target): {phase}"
+                    prompt += "\n  - Frequency: 1 session/week"
+                    prompt += "\n  - Duration: 20-40 minutes per session"
+                    prompt += "\n  - Intensity: Moderate (60-80% 1RM)"
+                    prompt += "\n  - Focus: Minimal Effective Dose (MED) - preservation without fatigue"
+                    prompt += "\n  - 'Big 5' approach: Squat, Hinge, Push, Pull, Carry"
+                    prompt += "\n  - Sample: 1×5 @ 80% 1RM for each movement, 2' rest"
+            else:
+                prompt += "\n- Phase 1: ADAPTATION (Post-race, 4-6 weeks): 3 sessions/week, 20-30 min, low intensity (bodyweight, 50-70% 1RM)"
+                prompt += "\n- Phase 2: MAX STRENGTH (8-12 weeks before race): 2-3 sessions/week, 45-60 min, very high intensity (87-93% 1RM, 3-5 reps)"
+                prompt += "\n- Phase 3: POWER/EXPLOSIVITY (4-8 weeks before race): 1-2 sessions/week, 45-50 min, high intensity (70-90% 1RM, explosive/plyometric)"
+                prompt += "\n- Phase 4: MAINTENANCE (2-4 months before race onwards): 1 session/week, 20-40 min, moderate intensity (60-80% 1RM, 'Big 5': squat, hinge, push, pull, carry)"
+            
+            prompt += "\n\nCRITICAL TIMING RULES:"
+            prompt += "\n- Separate days ALWAYS preferred (if possible)"
+            prompt += "\n- If same day: Minimum 90 minutes recovery between (strength FIRST, then endurance)"
+            prompt += "\n- DO NOT schedule hard endurance + strength on the same day"
+            prompt += "\n- Strength should be scheduled on recovery/easy days when possible"
+            
+            prompt += "\n\nTSS QUANTIFICATION:"
+            prompt += "\n- Strength TSS ≈ (Duration (min) × RPE/10 × Movement Complexity) × 0.65"
+            prompt += "\n- Complexity factors: Single muscle group = 1.0, 2-3 compound movements = 2.0, Full-body compound + plyos = 3.0"
+            prompt += "\n- Examples:"
+            prompt += "\n  - 40 min Max Strength (RPE 8, compounds): 40 × 0.8 × 2.5 × 0.65 = 52 TSS"
+            prompt += "\n  - 25 min Big 5 (RPE 5, compounds): 25 × 0.5 × 2.0 × 0.65 = 16 TSS"
+            prompt += "\n  - 45 min Plyos (RPE 7, explosive): 45 × 0.7 × 3.0 × 0.65 = 62 TSS"
+            
+            prompt += "\n\nACWR ADJUSTMENT:"
+            prompt += "\n- ACWR_total = (Endurance_ATL + Strength_ATL × 0.7) / CTL"
+            prompt += "\n- Strength weighted at 70% because it's muscle-specific, not whole-system stress like endurance"
+            
+            prompt += "\n\nTAPER & RACE WEEK:"
+            prompt += "\n- Taper Week: 1×/week bodyweight only or skip"
+            prompt += "\n- Race Week: SKIP completely"
+            
+            prompt += "\n\nWORKOUT STRUCTURE:"
+            prompt += "\n- Always create separate 'Strength' workout type"
+            prompt += "\n- Include specific exercises, sets, reps, intensity (%1RM or RPE), rest periods"
+            prompt += "\n- Focus on compound movements appropriate for the phase"
+        
+        # Day constraints
+        if request.unavailable_days or request.sport_specific_days:
+            prompt += "\n\n=== TRAINING SCHEDULE CONSTRAINTS (MANDATORY) ==="
+            if request.unavailable_days:
+                prompt += f"\n\nUNAVAILABLE DAYS (NO TRAINING ALLOWED):"
+                prompt += f"\n- {', '.join(request.unavailable_days)}"
+                prompt += "\n- DO NOT schedule any workouts on these days"
+                prompt += "\n- These are complete rest days"
+            
+            if request.sport_specific_days:
+                prompt += f"\n\nSPORT-SPECIFIC DAYS (ONLY SPECIFIED SPORT ALLOWED):"
+                for day, sport in request.sport_specific_days.items():
+                    prompt += f"\n- {day}: ONLY {sport} workouts (no other sports)"
+                prompt += "\n- On these days, schedule ONLY the specified sport"
+                prompt += "\n- If a day is both unavailable and sport-specific, the sport-specific constraint PREVAILS"
+            
+            if request.unavailable_days and request.sport_specific_days:
+                # Check for conflicts
+                conflicts = [day for day in request.sport_specific_days.keys() if day in request.unavailable_days]
+                if conflicts:
+                    prompt += f"\n\n⚠️ CONFLICT RESOLUTION:"
+                    prompt += f"\n- Days {', '.join(conflicts)} appear in both unavailable_days and sport_specific_days"
+                    prompt += "\n- SPORT-SPECIFIC CONSTRAINT PREVAILS - schedule only the specified sport on these days"
+        
         prompt += """
         
         Format the response as a JSON object with the following structure:

@@ -113,7 +113,11 @@ async def generate_progressive_workout_plan(
         user_id=current_user["user_id"],
         week_number=1,
         target_date=request.target_date,
-        current_fitness_level=request.user_profile
+        current_fitness_level=request.user_profile,
+        include_stretching=request.include_stretching,
+        include_strength=request.include_strength,
+        unavailable_days=request.unavailable_days,
+        sport_specific_days=request.sport_specific_days
     )
     
     # Crea piano base nel database
@@ -181,7 +185,11 @@ async def generate_weekly_plan(
         week_number=request.week_number,
         target_date=request.target_date,
         previous_week_data=request.previous_week_data,
-        current_fitness_level=request.current_fitness_level
+        current_fitness_level=request.current_fitness_level,
+        include_stretching=request.include_stretching,
+        include_strength=request.include_strength,
+        unavailable_days=request.unavailable_days,
+        sport_specific_days=request.sport_specific_days
     )
     
     logger.info(f"[API] Weekly plan generated successfully - week: {weekly_plan.get('week')}, workouts: {len(weekly_plan.get('workouts', []))}")
@@ -422,7 +430,11 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
             user_id=current_user["user_id"],
             week_number=1,
             target_date=ai_request.target_date,
-            current_fitness_level=ai_request.user_profile
+            current_fitness_level=ai_request.user_profile,
+            include_stretching=getattr(ai_request, 'include_stretching', False),
+            include_strength=getattr(ai_request, 'include_strength', False),
+            unavailable_days=getattr(ai_request, 'unavailable_days', None),
+            sport_specific_days=getattr(ai_request, 'sport_specific_days', None)
         )
         
         # Create base plan in database
@@ -501,7 +513,11 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
             target_date=ai_request.target_date,
             weekly_hours=ai_request.weekly_hours,
             user_profile=ai_request.user_profile,
-            preferences=ai_request.preferences
+            preferences=ai_request.preferences,
+            include_stretching=ai_request.include_stretching,
+            include_strength=ai_request.include_strength,
+            unavailable_days=ai_request.unavailable_days,
+            sport_specific_days=ai_request.sport_specific_days
         )
         
         logger.debug(f"[API] Converted to WorkoutPlanGenerationRequest - has_preferences={workout_plan_request.preferences is not None}")

@@ -357,3 +357,15 @@ class AIWorkoutPlanRequest(BaseModel):
     is_progressive: Optional[bool] = Field(False, description="Se true, crea un piano progressivo")
     target_date: Optional[str] = Field(None, description="Data obiettivo per piano progressivo (YYYY-MM-DD)")
     start_date: Optional[str] = Field(None, description="Data inizio per piano progressivo (YYYY-MM-DD)")
+    # Stretching and Strength flags
+    include_stretching: bool = Field(False, description="Include stretching sessions in the plan")
+    include_strength: bool = Field(False, description="Include strength training sessions in the plan")
+    # Day constraints
+    unavailable_days: Optional[List[str]] = Field(
+        None,
+        description="Days of the week when training is not available (e.g. ['Monday', 'Friday'])"
+    )
+    sport_specific_days: Optional[Dict[str, str]] = Field(
+        None,
+        description="Mapping of days to specific sports (e.g. {'Monday': 'run', 'Wednesday': 'bike'})"
+    )

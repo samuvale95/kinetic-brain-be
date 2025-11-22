@@ -37,6 +37,18 @@ class WorkoutPlanGenerationRequest(BaseModel):
         None,
         description="Tipologia gara triathlon",
     )
+    # Stretching and Strength flags
+    include_stretching: bool = Field(False, description="Include stretching sessions in the plan")
+    include_strength: bool = Field(False, description="Include strength training sessions in the plan")
+    # Day constraints
+    unavailable_days: Optional[List[str]] = Field(
+        None,
+        description="Days of the week when training is not available (e.g. ['Monday', 'Friday'])"
+    )
+    sport_specific_days: Optional[Dict[str, str]] = Field(
+        None,
+        description="Mapping of days to specific sports (e.g. {'Monday': 'run', 'Wednesday': 'bike'})"
+    )
 
     @model_validator(mode="after")
     def validate_race_details(cls, values: "WorkoutPlanGenerationRequest") -> "WorkoutPlanGenerationRequest":
@@ -45,6 +57,57 @@ class WorkoutPlanGenerationRequest(BaseModel):
             raise ValueError("race_type è valido solo per piani triathlon")
         if values.race_distance_km and sport not in {"running", "run", "trail", "trail running"}:
             raise ValueError("race_distance_km è valido solo per piani running o trail")
+        return values
+    
+    @model_validator(mode="after")
+    def validate_day_constraints(cls, values: "WorkoutPlanGenerationRequest") -> "WorkoutPlanGenerationRequest":
+        valid_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        valid_sports = ["run", "running", "bike", "cycling", "swim", "swimming", "triathlon"]
+        
+        # Validate unavailable_days
+        if values.unavailable_days:
+            invalid_days = [
+                day for day in values.unavailable_days 
+                if day.capitalize() not in valid_days
+            ]
+            if invalid_days:
+                raise ValueError(
+                    f"Invalid days in unavailable_days: {invalid_days}. "
+                    f"Valid days are: {', '.join(valid_days)}"
+                )
+            # Normalize to capitalized format
+            values.unavailable_days = [day.capitalize() for day in values.unavailable_days]
+        
+        # Validate sport_specific_days
+        if values.sport_specific_days:
+            invalid_days = [
+                day for day in values.sport_specific_days.keys()
+                if day.capitalize() not in valid_days
+            ]
+            if invalid_days:
+                raise ValueError(
+                    f"Invalid days in sport_specific_days: {invalid_days}. "
+                    f"Valid days are: {', '.join(valid_days)}"
+                )
+            
+            invalid_sports = [
+                (day, sport) for day, sport in values.sport_specific_days.items()
+                if sport.lower() not in valid_sports
+            ]
+            if invalid_sports:
+                invalid_list = [f"{day}: {sport}" for day, sport in invalid_sports]
+                raise ValueError(
+                    f"Invalid sports in sport_specific_days: {', '.join(invalid_list)}. "
+                    f"Valid sports are: {', '.join(valid_sports)}"
+                )
+            
+            # Normalize keys to capitalized format
+            normalized = {
+                day.capitalize(): sport.lower() 
+                for day, sport in values.sport_specific_days.items()
+            }
+            values.sport_specific_days = normalized
+        
         return values
 
 
@@ -78,6 +141,69 @@ class ProgressiveWorkoutPlanRequest(BaseModel):
     weekly_hours: Optional[float] = Field(None, gt=0, le=168, description="Ore settimanali disponibili (indicativo)")
     user_profile: Optional[Dict[str, Any]] = None
     preferences: Optional[Dict[str, Any]] = None
+    # Stretching and Strength flags
+    include_stretching: bool = Field(False, description="Include stretching sessions in the plan")
+    include_strength: bool = Field(False, description="Include strength training sessions in the plan")
+    # Day constraints
+    unavailable_days: Optional[List[str]] = Field(
+        None,
+        description="Days of the week when training is not available (e.g. ['Monday', 'Friday'])"
+    )
+    sport_specific_days: Optional[Dict[str, str]] = Field(
+        None,
+        description="Mapping of days to specific sports (e.g. {'Monday': 'run', 'Wednesday': 'bike'})"
+    )
+
+    @model_validator(mode="after")
+    def validate_day_constraints(cls, values: "ProgressiveWorkoutPlanRequest") -> "ProgressiveWorkoutPlanRequest":
+        valid_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        valid_sports = ["run", "running", "bike", "cycling", "swim", "swimming", "triathlon"]
+        
+        # Validate unavailable_days
+        if values.unavailable_days:
+            invalid_days = [
+                day for day in values.unavailable_days 
+                if day.capitalize() not in valid_days
+            ]
+            if invalid_days:
+                raise ValueError(
+                    f"Invalid days in unavailable_days: {invalid_days}. "
+                    f"Valid days are: {', '.join(valid_days)}"
+                )
+            # Normalize to capitalized format
+            values.unavailable_days = [day.capitalize() for day in values.unavailable_days]
+        
+        # Validate sport_specific_days
+        if values.sport_specific_days:
+            invalid_days = [
+                day for day in values.sport_specific_days.keys()
+                if day.capitalize() not in valid_days
+            ]
+            if invalid_days:
+                raise ValueError(
+                    f"Invalid days in sport_specific_days: {invalid_days}. "
+                    f"Valid days are: {', '.join(valid_days)}"
+                )
+            
+            invalid_sports = [
+                (day, sport) for day, sport in values.sport_specific_days.items()
+                if sport.lower() not in valid_sports
+            ]
+            if invalid_sports:
+                invalid_list = [f"{day}: {sport}" for day, sport in invalid_sports]
+                raise ValueError(
+                    f"Invalid sports in sport_specific_days: {', '.join(invalid_list)}. "
+                    f"Valid sports are: {', '.join(valid_sports)}"
+                )
+            
+            # Normalize keys to capitalized format
+            normalized = {
+                day.capitalize(): sport.lower() 
+                for day, sport in values.sport_specific_days.items()
+            }
+            values.sport_specific_days = normalized
+        
+        return values
 
 
 class WeeklyPlanRequest(BaseModel):
@@ -86,6 +212,69 @@ class WeeklyPlanRequest(BaseModel):
     previous_week_data: Optional[Dict[str, Any]] = None
     current_fitness_level: Optional[Dict[str, Any]] = None
     specific_adaptations: Optional[Dict[str, Any]] = None
+    # Stretching and Strength flags
+    include_stretching: bool = Field(False, description="Include stretching sessions in the plan")
+    include_strength: bool = Field(False, description="Include strength training sessions in the plan")
+    # Day constraints
+    unavailable_days: Optional[List[str]] = Field(
+        None,
+        description="Days of the week when training is not available (e.g. ['Monday', 'Friday'])"
+    )
+    sport_specific_days: Optional[Dict[str, str]] = Field(
+        None,
+        description="Mapping of days to specific sports (e.g. {'Monday': 'run', 'Wednesday': 'bike'})"
+    )
+
+    @model_validator(mode="after")
+    def validate_day_constraints(cls, values: "WeeklyPlanRequest") -> "WeeklyPlanRequest":
+        valid_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        valid_sports = ["run", "running", "bike", "cycling", "swim", "swimming", "triathlon"]
+        
+        # Validate unavailable_days
+        if values.unavailable_days:
+            invalid_days = [
+                day for day in values.unavailable_days 
+                if day.capitalize() not in valid_days
+            ]
+            if invalid_days:
+                raise ValueError(
+                    f"Invalid days in unavailable_days: {invalid_days}. "
+                    f"Valid days are: {', '.join(valid_days)}"
+                )
+            # Normalize to capitalized format
+            values.unavailable_days = [day.capitalize() for day in values.unavailable_days]
+        
+        # Validate sport_specific_days
+        if values.sport_specific_days:
+            invalid_days = [
+                day for day in values.sport_specific_days.keys()
+                if day.capitalize() not in valid_days
+            ]
+            if invalid_days:
+                raise ValueError(
+                    f"Invalid days in sport_specific_days: {invalid_days}. "
+                    f"Valid days are: {', '.join(valid_days)}"
+                )
+            
+            invalid_sports = [
+                (day, sport) for day, sport in values.sport_specific_days.items()
+                if sport.lower() not in valid_sports
+            ]
+            if invalid_sports:
+                invalid_list = [f"{day}: {sport}" for day, sport in invalid_sports]
+                raise ValueError(
+                    f"Invalid sports in sport_specific_days: {', '.join(invalid_list)}. "
+                    f"Valid sports are: {', '.join(valid_sports)}"
+                )
+            
+            # Normalize keys to capitalized format
+            normalized = {
+                day.capitalize(): sport.lower() 
+                for day, sport in values.sport_specific_days.items()
+            }
+            values.sport_specific_days = normalized
+        
+        return values
 
 
 class WeeklyPlanResponse(BaseModel):
