@@ -118,7 +118,11 @@ async def generate_progressive_workout_plan(
         include_strength=request.include_strength,
         unavailable_days=request.unavailable_days,
         sport_specific_days=request.sport_specific_days,
-        start_date=request.start_date
+        start_date=request.start_date,
+        sport_type=request.sport_type,
+        level=request.level,
+        goal=request.goal,
+        weekly_hours=request.weekly_hours
     )
     
     # Crea piano base nel database
@@ -181,6 +185,20 @@ async def generate_weekly_plan(
     
     progressive_service = ProgressiveWorkoutPlanService(db)
     
+    # Recupera piano attivo per ottenere sport_type, level, goal
+    active_plan = db.execute(
+        select(WorkoutPlan)
+        .where(and_(
+            WorkoutPlan.user_id == current_user["user_id"],
+            WorkoutPlan.status == "active"
+        ))
+        .order_by(desc(WorkoutPlan.created_at))
+    ).scalar_one_or_none()
+    
+    sport_type = active_plan.sport_type if active_plan else None
+    level = active_plan.level if active_plan else None
+    goal = active_plan.goal if active_plan else None
+    
     weekly_plan = progressive_service.generate_weekly_plan(
         user_id=current_user["user_id"],
         week_number=request.week_number,
@@ -190,7 +208,11 @@ async def generate_weekly_plan(
         include_stretching=request.include_stretching,
         include_strength=request.include_strength,
         unavailable_days=request.unavailable_days,
-        sport_specific_days=request.sport_specific_days
+        sport_specific_days=request.sport_specific_days,
+        sport_type=sport_type,
+        level=level,
+        goal=goal,
+        weekly_hours=None
     )
     
     logger.info(f"[API] Weekly plan generated successfully - week: {weekly_plan.get('week')}, workouts: {len(weekly_plan.get('workouts', []))}")
@@ -435,7 +457,12 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
             include_stretching=getattr(ai_request, 'include_stretching', False),
             include_strength=getattr(ai_request, 'include_strength', False),
             unavailable_days=getattr(ai_request, 'unavailable_days', None),
-            sport_specific_days=getattr(ai_request, 'sport_specific_days', None)
+            sport_specific_days=getattr(ai_request, 'sport_specific_days', None),
+            start_date=ai_request.start_date,
+            sport_type=ai_request.sport_type,
+            level=ai_request.level,
+            goal=ai_request.goal,
+            weekly_hours=ai_request.weekly_hours
         )
         
         # Create base plan in database

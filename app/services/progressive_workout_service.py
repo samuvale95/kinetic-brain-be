@@ -28,7 +28,11 @@ class ProgressiveWorkoutPlanService:
                            include_strength: bool = False,
                            unavailable_days: Optional[List[str]] = None,
                            sport_specific_days: Optional[Dict[str, str]] = None,
-                           start_date: Optional[str] = None) -> Dict[str, Any]:
+                           start_date: Optional[str] = None,
+                           sport_type: Optional[str] = None,
+                           level: Optional[str] = None,
+                           goal: Optional[str] = None,
+                           weekly_hours: Optional[float] = None) -> Dict[str, Any]:
         """Genera piano per una settimana specifica basato sui dati precedenti"""
         logger.info(f"[PROGRESSIVE] Generating weekly plan - user_id: {user_id}, week_number: {week_number}, target_date: {target_date}, start_date: {start_date}")
         logger.debug(f"[PROGRESSIVE] Input params: user_id={user_id}, week_number={week_number}, target_date={target_date}, start_date={start_date}, has_previous_week={previous_week_data is not None}, has_fitness_level={current_fitness_level is not None}")
@@ -71,7 +75,11 @@ class ProgressiveWorkoutPlanService:
             user_history=user_history,
             performance_trends=performance_trends,
             current_fitness=current_fitness_level,
-            available_days_in_week=available_days_in_week
+            available_days_in_week=available_days_in_week,
+            sport_type=sport_type,
+            level=level,
+            goal=goal,
+            weekly_hours=weekly_hours
         )
         logger.debug(f"[PROGRESSIVE] Prompt built - length: {len(prompt)} characters")
         
@@ -212,6 +220,20 @@ class ProgressiveWorkoutPlanService:
         current_week_data = self.get_current_week_data(user_id)
         current_fitness_level = self.get_current_fitness_level(user_id)
         
+        # Recupera piano attivo per ottenere sport_type, level, goal
+        active_plan = self.db.execute(
+            select(WorkoutPlan)
+            .where(and_(
+                WorkoutPlan.user_id == user_id,
+                WorkoutPlan.status == "active"
+            ))
+            .order_by(desc(WorkoutPlan.created_at))
+        ).scalar_one_or_none()
+        
+        sport_type = active_plan.sport_type if active_plan else None
+        level = active_plan.level if active_plan else None
+        goal = active_plan.goal if active_plan else None
+        
         # Genera prossima settimana adattata
         next_week_number = current_week_data.get("week_number", 1) + 1
         next_week_plan = self.generate_weekly_plan(
@@ -219,7 +241,11 @@ class ProgressiveWorkoutPlanService:
             week_number=next_week_number,
             target_date=target_date,
             previous_week_data=current_week_data,
-            current_fitness_level=current_fitness_level
+            current_fitness_level=current_fitness_level,
+            sport_type=sport_type,
+            level=level,
+            goal=goal,
+            weekly_hours=None
         )
         
         return next_week_plan
@@ -433,13 +459,17 @@ class ProgressiveWorkoutPlanService:
                                 include_strength: bool = False,
                                 unavailable_days: Optional[List[str]] = None,
                                 sport_specific_days: Optional[Dict[str, str]] = None,
-                                available_days_in_week: Optional[List[str]] = None) -> str:
+                                available_days_in_week: Optional[List[str]] = None,
+                                sport_type: Optional[str] = None,
+                                level: Optional[str] = None,
+                                goal: Optional[str] = None,
+                                weekly_hours: Optional[float] = None) -> str:
         """Costruisce prompt per generazione progressiva"""
         
         prompt = f"""
         Generate WEEK {week_number} of a progressive training plan.
         
-        AUTONOMY NOTE: You have full autonomy to determine the optimal number of workouts per week and session durations based on training science. Any user preferences regarding available days or minimum session duration are INDICATIVE ONLY, not constraints. Optimize the plan for best training outcomes.
+        AUTONOMY NOTE: You have full autonomy to determine the optimal number of workouts per week and session durations based on training science. HOWEVER, sport-specific day constraints (if provided) are MANDATORY and must be respected - you MUST generate workouts for ALL sport-specific days specified.
         
         TARGET DATE: {target_date}
         WEEKS REMAINING: {weeks_remaining}
@@ -463,6 +493,7 @@ class ProgressiveWorkoutPlanService:
             else:
                 prompt += f"\nThe plan starts on Monday, so this is a full week: {', '.join(available_days_in_week)}"
                 prompt += f"\n\nCRITICAL: Generate workouts for these days: {', '.join(available_days_in_week)}"
+                prompt += f"\nNOTE: You should generate workouts for multiple days this week (not just 3-4 workouts). Consider all {len(available_days_in_week)} days when planning."
             
             prompt += "\nThe week ends on Sunday, so include Sunday in your plan."
             prompt += "\nSubsequent weeks (week 2+) will be full weeks (Monday-Sunday)."
@@ -556,26 +587,152 @@ class ProgressiveWorkoutPlanService:
                 prompt += "\n\nCRITICAL: Use exact zone values from above. For Z4 use threshold values, for Z5 use 105-120% of threshold."
                 prompt += "\nAdapt intensities week-by-week based on performance trends, but always within the user's zone definitions."
         
+        # Triathlon-specific guidelines based on triathlon_session_guide.md
+        if sport_type and sport_type.lower() == "triathlon" and level and goal:
+            # Normalizza level
+            level_map = {
+                "beginner": "PRINCIPIANTE",
+                "intermediate": "INTERMEDIO", 
+                "advanced": "AVANZATO",
+                "elite": "ELITE"
+            }
+            normalized_level = level_map.get(level.lower(), "INTERMEDIO")
+            
+            # Estrai race distance dal goal
+            goal_lower = goal.lower()
+            if "sprint" in goal_lower:
+                race_distance = "SPRINT"
+            elif "olympic" in goal_lower or "olimpico" in goal_lower:
+                race_distance = "OLYMPIC"
+            elif "70.3" in goal_lower or "half" in goal_lower or "half-ironman" in goal_lower:
+                race_distance = "70.3"
+            elif "ironman" in goal_lower and "70.3" not in goal_lower and "half" not in goal_lower:
+                race_distance = "IRONMAN"
+            else:
+                race_distance = "OLYMPIC"  # default
+            
+            # Determina fase basata su weeks_remaining
+            if weeks_remaining > 12:
+                phase = "BASE"
+            elif weeks_remaining > 4:
+                phase = "BUILD"
+            elif weeks_remaining > 1:
+                phase = "PEAK"
+            else:
+                phase = "TAPER"
+            
+            # Sessioni target per livello+distanza+fase (dal documento triathlon_session_guide.md)
+            session_matrix = {
+                "PRINCIPIANTE": {
+                    "SPRINT": {"BASE": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 0},
+                              "BUILD": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 1},
+                              "PEAK": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 1},
+                              "TAPER": {"swim": 2, "bike": 1, "run": 1, "strength": 0, "brick": 0}},
+                    "OLYMPIC": {"BASE": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 0},
+                               "BUILD": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 1},
+                               "PEAK": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 1},
+                               "TAPER": {"swim": 2, "bike": 1, "run": 1, "strength": 0, "brick": 0}}},
+                "INTERMEDIO": {
+                    "SPRINT": {"BASE": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 0},
+                              "BUILD": {"swim": 3, "bike": 3, "run": 3, "strength": 1, "brick": 1},
+                              "PEAK": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 1},
+                              "TAPER": {"swim": 2, "bike": 1, "run": 1, "strength": 0, "brick": 1}},
+                    "OLYMPIC": {"BASE": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 0},
+                               "BUILD": {"swim": 3, "bike": 3, "run": 3, "strength": 1, "brick": 1},
+                               "PEAK": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 1},
+                               "TAPER": {"swim": 2, "bike": 1, "run": 1, "strength": 0, "brick": 1}}},
+                "AVANZATO": {
+                    "OLYMPIC": {"BASE": {"swim": 3, "bike": 3, "run": 3, "strength": 1, "brick": 1},
+                               "BUILD": {"swim": 4, "bike": 4, "run": 4, "strength": 1, "brick": 2},
+                               "PEAK": {"swim": 3, "bike": 3, "run": 3, "strength": 1, "brick": 1},
+                               "TAPER": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 0}},
+                    "70.3": {"BASE": {"swim": 3, "bike": 4, "run": 3, "strength": 1, "brick": 1},
+                            "BUILD": {"swim": 4, "bike": 5, "run": 4, "strength": 1, "brick": 2},
+                            "PEAK": {"swim": 3, "bike": 4, "run": 3, "strength": 1, "brick": 2},
+                            "TAPER": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 1}}},
+                "ELITE": {
+                    "OLYMPIC": {"BASE": {"swim": 5, "bike": 5, "run": 4, "strength": 1, "brick": 1},
+                               "BUILD": {"swim": 6, "bike": 6, "run": 5, "strength": 2, "brick": 2},
+                               "PEAK": {"swim": 5, "bike": 5, "run": 4, "strength": 1, "brick": 2},
+                               "TAPER": {"swim": 3, "bike": 3, "run": 2, "strength": 0, "brick": 1}},
+                    "70.3": {"BASE": {"swim": 6, "bike": 6, "run": 5, "strength": 1, "brick": 2},
+                            "BUILD": {"swim": 7, "bike": 7, "run": 5, "strength": 2, "brick": 3},
+                            "PEAK": {"swim": 6, "bike": 6, "run": 5, "strength": 1, "brick": 3},
+                            "TAPER": {"swim": 4, "bike": 4, "run": 3, "strength": 0, "brick": 1}}}}
+            
+            target_sessions = session_matrix.get(normalized_level, {}).get(race_distance, {}).get(phase, {})
+            
+            if target_sessions:
+                total_sessions = sum([target_sessions.get("swim", 0), target_sessions.get("bike", 0), 
+                                     target_sessions.get("run", 0), target_sessions.get("strength", 0), 
+                                     target_sessions.get("brick", 0)])
+                
+                prompt += f"\n\n=== TRIATHLON TRAINING GUIDELINES (MANDATORY) ==="
+                prompt += f"\nBased on scientific triathlon training guide for {normalized_level} level, {race_distance} distance, {phase} phase:"
+                prompt += f"\n\nTARGET SESSIONS PER WEEK (MUST FOLLOW):"
+                prompt += f"\n- Swim: {target_sessions.get('swim', 0)} sessions/week (minimum)"
+                prompt += f"\n- Bike: {target_sessions.get('bike', 0)} sessions/week"
+                prompt += f"\n- Run: {target_sessions.get('run', 0)} sessions/week"
+                if target_sessions.get('strength', 0) > 0:
+                    prompt += f"\n- Strength: {target_sessions.get('strength', 0)} session(s)/week"
+                if target_sessions.get('brick', 0) > 0:
+                    prompt += f"\n- Brick workouts: {target_sessions.get('brick', 0)} session(s)/week"
+                prompt += f"\n- TOTAL SESSIONS: {total_sessions} minimum per week"
+                
+                prompt += f"\n\nCRITICAL RULES:"
+                prompt += f"\n- Swim frequency is CRITICAL: minimum {target_sessions.get('swim', 0)}×/week (technique-dependent)"
+                prompt += f"\n- Distribution: Swim 15-20%, Bike 45-55%, Run 25-35% of total volume"
+                if target_sessions.get('brick', 0) > 0:
+                    prompt += f"\n- MUST include {target_sessions.get('brick', 0)} brick workout(s) (bike+run same day)"
+                    if weeks_remaining <= 8:
+                        prompt += f"\n- Brick workouts should be race-specific practice"
+                if normalized_level in ["INTERMEDIO", "AVANZATO", "ELITE"]:
+                    prompt += f"\n- Include 1-2 quality sessions per discipline (intervals/tempo)"
+                if normalized_level == "ELITE":
+                    prompt += f"\n- Double sessions allowed (easy+easy pairs, minimum 3h recovery between)"
+                    prompt += f"\n- Back-to-back days possible for easy sessions"
+                
+                prompt += f"\n\nWEEK STRUCTURE GUIDELINES:"
+                if normalized_level == "PRINCIPIANTE":
+                    prompt += f"\n- No intensity sessions, focus on consistency"
+                    prompt += f"\n- No brick workouts in BASE phase"
+                elif normalized_level == "INTERMEDIO":
+                    prompt += f"\n- 1 quality session per discipline (bike intervals, run tempo)"
+                    prompt += f"\n- 1 brick workout/week in BUILD+PEAK phases"
+                    prompt += f"\n- Double sessions only easy+easy (not hard+anything)"
+                elif normalized_level == "AVANZATO":
+                    prompt += f"\n- 2 hard sessions/week (bike intervals + run intervals)"
+                    prompt += f"\n- 1-2 brick workouts/week"
+                    prompt += f"\n- 2-3 double sessions/week (easy pairs)"
+                elif normalized_level == "ELITE":
+                    prompt += f"\n- 2-3 hard sessions/week"
+                    prompt += f"\n- 2-3 brick workouts/week (one long double)"
+                    prompt += f"\n- 4-5 double sessions/week"
+                    prompt += f"\n- Back-to-back days for easy sessions"
+                
+                prompt += f"\n\nMANDATORY: Generate {total_sessions} workouts minimum this week following the session distribution above."
+                prompt += f"\n"
+        
         # Stretching periodization
         if include_stretching:
             prompt += "\n\n=== STRETCHING PERIODIZATION (REQUIRED) ==="
             prompt += "\nYou MUST include stretching sessions following scientific periodization guidelines:"
             
-            # Determine phase based on weeks_remaining
+            # Determine stretching phase based on weeks_remaining
             if weeks_remaining > 8:
-                phase = "Build"
+                stretching_phase = "Build"
                 freq = "4 days/week"
                 duration = "10-12 minutes per session"
             elif weeks_remaining > 4:
-                phase = "Peak"
+                stretching_phase = "Peak"
                 freq = "4 days/week"
                 duration = "8-10 minutes per session"
             else:
-                phase = "Taper"
+                stretching_phase = "Taper"
                 freq = "2-3 days/week"
                 duration = "5-8 minutes per session"
             
-            prompt += f"\n\nCURRENT PHASE ({weeks_remaining} weeks remaining): {phase} Phase"
+            prompt += f"\n\nCURRENT PHASE ({weeks_remaining} weeks remaining): {stretching_phase} Phase"
             prompt += f"\n- Frequency: {freq}"
             prompt += f"\n- Duration: {duration}"
             prompt += "\n\nTIMING:"
@@ -597,6 +754,17 @@ class ProgressiveWorkoutPlanService:
             prompt += "\n- Can be incorporated into cooldown segments OR scheduled as separate dedicated workouts"
             prompt += "\n- When incorporated in cooldown, add stretching steps to the cooldown segment"
             prompt += "\n- When separate, create dedicated 'Stretching' workout type with appropriate duration"
+            prompt += f"\n- CRITICAL: You MUST include stretching sessions in the weekly plan"
+            prompt += f"\n- If stretching is enabled (include_stretching=true), schedule {freq} stretching sessions"
+            prompt += "\n- Stretching can be:"
+            prompt += f"\n  1. Separate dedicated workouts (recommended for {freq} sessions/week)"
+            prompt += "\n  2. Incorporated into cooldown segments of other workouts"
+            prompt += "\n  3. Both (separate workouts + cooldown stretching)"
+            prompt += "\n- When scheduling separate stretching workouts, they should be on different days from hard training days when possible"
+            prompt += "\n\nSTRETCHING WORKOUT STRUCTURE (CRITICAL):"
+            prompt += "\n- If separate 'Stretching' workout: complete 'structure' field required"
+            prompt += "\n- Each exercise = separate step: step_type='steady', name='Exercise Name', duration={type:'time', seconds:30}, notes='Hold 30s, target: muscle group'"
+            prompt += "\n- Include warmup (2-3min optional), main (all exercises), group by muscle"
         
         # Strength training periodization
         if include_strength:
@@ -671,10 +839,11 @@ class ProgressiveWorkoutPlanService:
             elif weeks_remaining <= 2:
                 prompt += "\n\nTAPER WEEK: 1×/week bodyweight only or skip"
             
-            prompt += "\n\nWORKOUT STRUCTURE:"
-            prompt += "\n- Always create separate 'Strength' workout type"
-            prompt += "\n- Include specific exercises, sets, reps, intensity (%1RM or RPE), rest periods"
-            prompt += "\n- Focus on compound movements appropriate for the phase"
+            prompt += "\n\nWORKOUT STRUCTURE (CRITICAL):"
+            prompt += "\n- Create 'Strength' workout type with complete 'structure' field"
+            prompt += "\n- Each exercise = separate step: step_type='strength', name='Exercise Name', duration={type:'repetitions', repetitions:X}, notes='Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min'"
+            prompt += "\n- Include warmup (5-10min dynamic), main (all exercises), cooldown (5-10min stretching)"
+            prompt += "\n- Focus on compound movements"
         
         # Day constraints
         if unavailable_days or sport_specific_days:
@@ -686,11 +855,13 @@ class ProgressiveWorkoutPlanService:
                 prompt += "\n- These are complete rest days"
             
             if sport_specific_days:
-                prompt += f"\n\nSPORT-SPECIFIC DAYS (ONLY SPECIFIED SPORT ALLOWED):"
+                prompt += f"\n\nSPORT-SPECIFIC DAYS (MANDATORY - MUST GENERATE WORKOUTS):"
                 for day, sport in sport_specific_days.items():
-                    prompt += f"\n- {day}: ONLY {sport} workouts (no other sports)"
+                    prompt += f"\n- {day}: ONLY {sport} workouts (no other sports) - YOU MUST CREATE A WORKOUT FOR THIS DAY"
+                prompt += "\n- CRITICAL: You MUST generate a workout for EVERY day listed above"
                 prompt += "\n- On these days, schedule ONLY the specified sport"
                 prompt += "\n- If a day is both unavailable and sport-specific, the sport-specific constraint PREVAILS"
+                prompt += f"\n- Total sport-specific days requiring workouts: {len(sport_specific_days)}"
             
             if unavailable_days and sport_specific_days:
                 # Check for conflicts
@@ -701,6 +872,12 @@ class ProgressiveWorkoutPlanService:
                     prompt += "\n- SPORT-SPECIFIC CONSTRAINT PREVAILS - schedule only the specified sport on these days"
         
         prompt += """
+        
+        === WORKOUT STRUCTURE REQUIREMENTS (CRITICAL) ===
+        ALL workouts MUST include complete 'structure' field: {sport, segments: [{segment_type, steps: [{step_type, name, duration, target, notes}]}], metadata}
+        Strength: each exercise = step with name, duration={type:'repetitions', repetitions:X}, notes='Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min'
+        Stretching: each exercise = step with name, duration={type:'time', seconds:30}, notes='Hold 30s, target: muscle'
+        All workouts: include warmup, main, cooldown segments
         
         ADAPTATION RULES:
         1. If previous week was too easy (RPE < 6), increase intensity by 5-10%
@@ -716,16 +893,15 @@ class ProgressiveWorkoutPlanService:
         - Volume progression
         - Recovery considerations
         - Adaptation rationale
+        - Complete 'structure' field for EVERY workout (required for frontend visualization)
+        - MANDATORY: Generate workouts for ALL sport-specific days specified in constraints
+        - Generate workouts for other available days based on training science (optimal number and distribution)
         
         Format as JSON:
         {{
             "week": {week_number},
-            "focus": "Week focus based on progression and weeks remaining",
-            "adaptations": {{
-                "intensity_change": "+5%",
-                "volume_change": "+10%",
-                "rationale": "Previous week completed easily, user ready for progression"
-            }},
+            "focus": "Week focus",
+            "adaptations": {{"intensity_change": "+5%", "volume_change": "+10%", "rationale": "..."}},
             "workouts": [
                 {{
                     "day": "Monday",
@@ -734,13 +910,24 @@ class ProgressiveWorkoutPlanService:
                     "intensity": "Z2",
                     "target_hr": "140-150",
                     "rpe_target": 6,
-                    "description": "Adapted based on previous performance",
-                    "key_focus": "Specific focus for this workout"
+                    "description": "...",
+                    "key_focus": "...",
+                    "structure": {{"sport": "run", "segments": [{{"segment_type": "warmup", "steps": [...]}}, {{"segment_type": "main", "steps": [...]}}, {{"segment_type": "cooldown", "steps": [...]}}], "metadata": {{"focus": "...", "rpe_target": 6}}}}
+                }},
+                {{
+                    "day": "Wednesday",
+                    "type": "Strength",
+                    "duration_minutes": 60,
+                    "intensity": "Very High",
+                    "rpe_target": 8,
+                    "description": "...",
+                    "key_focus": "...",
+                    "structure": {{"sport": "strength", "segments": [{{"segment_type": "warmup", "steps": [{{"step_type": "steady", "name": "Leg Swings", "duration": {{"type": "time", "seconds": 60}}, "notes": "..."}}]}}, {{"segment_type": "main", "steps": [{{"step_type": "strength", "name": "Back Squat", "duration": {{"type": "repetitions", "repetitions": 4}}, "notes": "Sets: 4, Reps: 5, Intensity: 90% 1RM, Rest: 4 min"}}]}}, {{"segment_type": "cooldown", "steps": [...]}}], "metadata": {{"focus": "...", "rpe_target": 8}}}}
                 }}
             ],
-            "recovery_notes": "Specific recovery recommendations based on performance",
-            "next_week_preview": "What to expect next week based on this week's plan",
-            "adaptation_rationale": "Detailed explanation of why these adaptations were made"
+            "recovery_notes": "...",
+            "next_week_preview": "...",
+            "adaptation_rationale": "..."
         }}
         """
         return prompt
