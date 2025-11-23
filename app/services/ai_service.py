@@ -1606,6 +1606,264 @@ class AIService:
             prompt += "\nNo specific user profile provided - create a generic plan suitable for the specified level."
             prompt += "\nUse standard zone definitions and progressions appropriate for the level."
         
+        # Sport-specific training guidelines based on session guides
+        # Determina fase basata sulla durata totale e settimana corrente
+        if week_start is not None:
+            current_week = week_start
+        else:
+            current_week = 1
+        
+        weeks_remaining = duration_weeks - current_week + 1
+        if weeks_remaining > 12:
+            phase = "BASE"
+        elif weeks_remaining > 4:
+            phase = "BUILD"
+        elif weeks_remaining > 1:
+            phase = "PEAK"
+        else:
+            phase = "TAPER"
+        
+        # Triathlon-specific guidelines
+        if request.sport_type and request.sport_type.lower() == "triathlon" and request.level and request.goal:
+            level_map = {
+                "beginner": "PRINCIPIANTE",
+                "intermediate": "INTERMEDIO", 
+                "advanced": "AVANZATO",
+                "elite": "ELITE"
+            }
+            normalized_level = level_map.get(request.level.lower(), "INTERMEDIO")
+            
+            goal_lower = request.goal.lower()
+            if "sprint" in goal_lower:
+                race_distance = "SPRINT"
+            elif "olympic" in goal_lower or "olimpico" in goal_lower:
+                race_distance = "OLYMPIC"
+            elif "70.3" in goal_lower or "half" in goal_lower or "half-ironman" in goal_lower:
+                race_distance = "70.3"
+            elif "ironman" in goal_lower and "70.3" not in goal_lower and "half" not in goal_lower:
+                race_distance = "IRONMAN"
+            else:
+                race_distance = "OLYMPIC"
+            
+            session_matrix = {
+                "PRINCIPIANTE": {
+                    "SPRINT": {"BASE": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 0},
+                              "BUILD": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 1},
+                              "PEAK": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 1},
+                              "TAPER": {"swim": 2, "bike": 1, "run": 1, "strength": 0, "brick": 0}},
+                    "OLYMPIC": {"BASE": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 0},
+                               "BUILD": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 1},
+                               "PEAK": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 1},
+                               "TAPER": {"swim": 2, "bike": 1, "run": 1, "strength": 0, "brick": 0}}},
+                "INTERMEDIO": {
+                    "SPRINT": {"BASE": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 0},
+                              "BUILD": {"swim": 3, "bike": 3, "run": 3, "strength": 1, "brick": 1},
+                              "PEAK": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 1},
+                              "TAPER": {"swim": 2, "bike": 1, "run": 1, "strength": 0, "brick": 1}},
+                    "OLYMPIC": {"BASE": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 0},
+                               "BUILD": {"swim": 3, "bike": 3, "run": 3, "strength": 1, "brick": 1},
+                               "PEAK": {"swim": 2, "bike": 2, "run": 2, "strength": 1, "brick": 1},
+                               "TAPER": {"swim": 2, "bike": 1, "run": 1, "strength": 0, "brick": 1}}},
+                "AVANZATO": {
+                    "OLYMPIC": {"BASE": {"swim": 3, "bike": 3, "run": 3, "strength": 1, "brick": 1},
+                               "BUILD": {"swim": 4, "bike": 4, "run": 4, "strength": 1, "brick": 2},
+                               "PEAK": {"swim": 3, "bike": 3, "run": 3, "strength": 1, "brick": 1},
+                               "TAPER": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 0}},
+                    "70.3": {"BASE": {"swim": 3, "bike": 4, "run": 3, "strength": 1, "brick": 1},
+                            "BUILD": {"swim": 4, "bike": 5, "run": 4, "strength": 1, "brick": 2},
+                            "PEAK": {"swim": 3, "bike": 4, "run": 3, "strength": 1, "brick": 2},
+                            "TAPER": {"swim": 2, "bike": 2, "run": 2, "strength": 0, "brick": 1}}},
+                "ELITE": {
+                    "OLYMPIC": {"BASE": {"swim": 5, "bike": 5, "run": 4, "strength": 1, "brick": 1},
+                               "BUILD": {"swim": 6, "bike": 6, "run": 5, "strength": 2, "brick": 2},
+                               "PEAK": {"swim": 5, "bike": 5, "run": 4, "strength": 1, "brick": 2},
+                               "TAPER": {"swim": 3, "bike": 3, "run": 2, "strength": 0, "brick": 1}},
+                    "70.3": {"BASE": {"swim": 6, "bike": 6, "run": 5, "strength": 1, "brick": 2},
+                            "BUILD": {"swim": 7, "bike": 7, "run": 5, "strength": 2, "brick": 3},
+                            "PEAK": {"swim": 6, "bike": 6, "run": 5, "strength": 1, "brick": 3},
+                            "TAPER": {"swim": 4, "bike": 4, "run": 3, "strength": 0, "brick": 1}}}}
+            
+            target_sessions = session_matrix.get(normalized_level, {}).get(race_distance, {}).get(phase, {})
+            
+            if target_sessions:
+                total_sessions = sum([target_sessions.get("swim", 0), target_sessions.get("bike", 0), 
+                                     target_sessions.get("run", 0), target_sessions.get("strength", 0), 
+                                     target_sessions.get("brick", 0)])
+                
+                prompt += f"\n\n=== TRIATHLON TRAINING GUIDELINES (MANDATORY) ==="
+                prompt += f"\nBased on scientific triathlon training guide for {normalized_level} level, {race_distance} distance, {phase} phase:"
+                prompt += f"\n\nTARGET SESSIONS PER WEEK (MUST FOLLOW):"
+                prompt += f"\n- Swim: {target_sessions.get('swim', 0)} sessions/week (minimum)"
+                prompt += f"\n- Bike: {target_sessions.get('bike', 0)} sessions/week"
+                prompt += f"\n- Run: {target_sessions.get('run', 0)} sessions/week"
+                if target_sessions.get('strength', 0) > 0:
+                    prompt += f"\n- Strength: {target_sessions.get('strength', 0)} session(s)/week"
+                if target_sessions.get('brick', 0) > 0:
+                    prompt += f"\n- Brick workouts: {target_sessions.get('brick', 0)} session(s)/week"
+                prompt += f"\n- TOTAL SESSIONS: {total_sessions} minimum per week"
+                prompt += f"\n- Distribution: Swim 15-20%, Bike 45-55%, Run 25-35% of total volume"
+                prompt += f"\n"
+        
+        # Running-specific guidelines
+        if request.sport_type and request.sport_type.lower() == "running" and request.level and request.goal:
+            level_map = {
+                "beginner": "PRINCIPIANTE",
+                "intermediate": "INTERMEDIO", 
+                "advanced": "AVANZATO",
+                "elite": "ELITE"
+            }
+            normalized_level = level_map.get(request.level.lower(), "INTERMEDIO")
+            
+            goal_lower = request.goal.lower()
+            if "5k" in goal_lower or "5 k" in goal_lower:
+                race_distance = "5K"
+            elif "10k" in goal_lower or "10 k" in goal_lower:
+                race_distance = "10K"
+            elif "half" in goal_lower or "hm" in goal_lower or "21" in goal_lower:
+                race_distance = "HM"
+            elif "marathon" in goal_lower or "maratona" in goal_lower or "42" in goal_lower:
+                race_distance = "MARATHON"
+            else:
+                race_distance = "10K"
+            
+            prompt += f"\n\n=== RUNNING TRAINING GUIDELINES (MANDATORY) ==="
+            prompt += f"\nBased on scientific running training guide for {normalized_level} level, {race_distance} distance, {phase} phase:"
+            prompt += f"\n\nTARGET SESSIONS PER WEEK:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- 3-4 sessions/week"
+                prompt += f"\n- Easy (Zone 1-2): 90% volume"
+                prompt += f"\n- Moderate (Zone 3): 10% volume"
+                prompt += f"\n- Hard (Zone 4-5): 0%"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- 4-5 sessions/week"
+                prompt += f"\n- Easy (Zone 1-2): 70% volume"
+                prompt += f"\n- Moderate (Zone 3): 20% volume"
+                prompt += f"\n- Hard (Zone 4-5): 10% volume"
+                prompt += f"\n- 2 quality sessions (1 intervals, 1 tempo)"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- 5-6 sessions/week"
+                prompt += f"\n- Easy (Zone 1-2): 65% volume"
+                prompt += f"\n- Moderate (Zone 3): 20% volume"
+                prompt += f"\n- Hard (Zone 4-5): 15% volume"
+                prompt += f"\n- 2 hard sessions (VO2max + threshold)"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- 6-8 sessions/week"
+                prompt += f"\n- Easy (Zone 1-2): 60% volume"
+                prompt += f"\n- Moderate (Zone 3): 20% volume"
+                prompt += f"\n- Hard (Zone 4-5): 20% volume"
+                prompt += f"\n- 2-3 hard sessions (VO2max, threshold, marathon pace)"
+            prompt += f"\n- 1 long run weekly (all phases)"
+            prompt += f"\n"
+        
+        # Trail Running-specific guidelines
+        if request.sport_type and request.sport_type.lower() in ["trail running", "trail"] and request.level and request.goal:
+            level_map = {
+                "beginner": "PRINCIPIANTE",
+                "intermediate": "INTERMEDIO", 
+                "advanced": "AVANZATO",
+                "elite": "ELITE"
+            }
+            normalized_level = level_map.get(request.level.lower(), "INTERMEDIO")
+            
+            prompt += f"\n\n=== TRAIL RUNNING TRAINING GUIDELINES (MANDATORY) ==="
+            prompt += f"\nBased on scientific trail running training guide for {normalized_level} level, {phase} phase:"
+            prompt += f"\n\nCRITICAL: Trail running differs from road - elevation gain significantly increases load."
+            prompt += f"\n- Dislivello (D+) increases physiological stress"
+            prompt += f"\n- Downhills cause eccentric fatigue, require longer recovery"
+            prompt += f"\n- Max +15% D+ increase week-to-week"
+            prompt += f"\n- Never 2 consecutive days with >500m D- (downhill focus)"
+            prompt += f"\n\nTARGET SESSIONS PER WEEK:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- 2-3 trail sessions/week"
+                prompt += f"\n- Max 600m D+ per session initially"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- 3-4 trail sessions/week"
+                prompt += f"\n- 1 uphill power session"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- 4-5 trail sessions/week"
+                prompt += f"\n- 2 hard sessions (uphill power + trail threshold)"
+                prompt += f"\n- 1 downhill technique session weekly"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- 5-7 trail sessions/week"
+                prompt += f"\n- 2-3 hard sessions (VO2max, threshold, downhill reps)"
+                prompt += f"\n- 1-2 downhill technique sessions"
+            prompt += f"\n"
+        
+        # Swimming-specific guidelines
+        if request.sport_type and request.sport_type.lower() in ["swimming", "swim"] and request.level and request.goal:
+            level_map = {
+                "beginner": "PRINCIPIANTE",
+                "intermediate": "INTERMEDIO", 
+                "advanced": "AVANZATO",
+                "elite": "ELITE"
+            }
+            normalized_level = level_map.get(request.level.lower(), "INTERMEDIO")
+            
+            prompt += f"\n\n=== SWIMMING TRAINING GUIDELINES (MANDATORY) ==="
+            prompt += f"\nBased on scientific swimming training guide for {normalized_level} level, {phase} phase:"
+            prompt += f"\n\nCRITICAL: FREQUENCY > VOLUME for swimming."
+            prompt += f"\n- Technique is frequency-dependent"
+            prompt += f"\n- 3× weekly minimum (even for beginners)"
+            prompt += f"\n- Better 3× short sessions than 1× long session"
+            prompt += f"\n\nTARGET SESSIONS PER WEEK:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- 2-3 sessions/week MINIMUM"
+                prompt += f"\n- Focus on technique, no intensity"
+                prompt += f"\n- Easy (Zone 1-2): 90% volume"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- 3-4 sessions/week"
+                prompt += f"\n- 1 quality session (race pace)"
+                prompt += f"\n- Easy (Zone 1-2): 60% volume, Hard (Zone 4-5): 15% volume"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- 4-5 sessions/week"
+                prompt += f"\n- 2 hard sessions (threshold + VO2max)"
+                prompt += f"\n- Easy (Zone 1-2): 50% volume, Hard (Zone 4-5): 25% volume"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- 6-7 sessions/week"
+                prompt += f"\n- 3 hard sessions (threshold, VO2max, sprint)"
+                prompt += f"\n- Easy (Zone 1-2): 45% volume, Hard (Zone 4-5): 35% volume"
+            prompt += f"\n- Always include warm-up (400-600m) and cool-down (300-600m)"
+            prompt += f"\n"
+        
+        # Cycling-specific guidelines
+        if request.sport_type and request.sport_type.lower() in ["cycling", "bike", "bicycle"] and request.level and request.goal:
+            level_map = {
+                "beginner": "PRINCIPIANTE",
+                "intermediate": "INTERMEDIO", 
+                "advanced": "AVANZATO",
+                "elite": "ELITE"
+            }
+            normalized_level = level_map.get(request.level.lower(), "INTERMEDIO")
+            
+            prompt += f"\n\n=== CYCLING TRAINING GUIDELINES (MANDATORY) ==="
+            prompt += f"\nBased on scientific cycling training guide for {normalized_level} level, {phase} phase:"
+            prompt += f"\n\nCRITICAL METRICS:"
+            prompt += f"\n- Use TSS (Training Stress Score) and Power (Watts) as primary metrics"
+            prompt += f"\n- FTP (Functional Threshold Power) required for intensity prescription"
+            prompt += f"\n- Cadence: 85-95 RPM (beginner), 90-100 RPM (elite)"
+            prompt += f"\n\nTARGET SESSIONS PER WEEK:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- 3-4 sessions/week"
+                prompt += f"\n- Weekly TSS: 250-350"
+                prompt += f"\n- Easy (Zone 1-2): 80% volume"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- 4-5 sessions/week"
+                prompt += f"\n- 2 hard sessions (threshold + intervals/tempo)"
+                prompt += f"\n- Weekly TSS: 400-550"
+                prompt += f"\n- Easy (Zone 1-2): 65% volume"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- 5-6 sessions/week"
+                prompt += f"\n- 2-3 hard sessions (VO2max, threshold, tempo)"
+                prompt += f"\n- Weekly TSS: 600-800"
+                prompt += f"\n- Easy (Zone 1-2): 55% volume"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- 6-8 sessions/week"
+                prompt += f"\n- 3-4 hard sessions (VO2max, threshold, sprint, race sim)"
+                prompt += f"\n- Weekly TSS: 1000-1400"
+                prompt += f"\n- Easy (Zone 1-2): 50% volume"
+            prompt += f"\n- Long ride weekly in all phases"
+            prompt += f"\n"
+        
         # Gestione preferences
         if request.preferences:
             prompt += "\n\n=== USER PREFERENCES (INDICATIVE ONLY) ==="
