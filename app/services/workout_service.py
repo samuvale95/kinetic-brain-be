@@ -477,21 +477,53 @@ class WorkoutService:
         # Always use plan start_date to calculate week start date
         # This ensures workouts are aligned with the plan dates
         week_number = week_data.get("week", 1)
-        week_start = plan.start_date + timedelta(weeks=week_number - 1)
-        logger.debug(f"[WORKOUT_SERVICE] Week {week_number} start date: {week_start}")
+        
+        # Per la prima settimana, usa la data di inizio del piano direttamente
+        # Per settimane successive, calcola dal lunedì successivo alla domenica della settimana 1
+        if week_number == 1:
+            week_start = plan.start_date
+            # Per la prima settimana, il mapping dei giorni deve essere relativo alla data di inizio
+            start_weekday = plan.start_date.weekday()  # 0=lunedì, 6=domenica
+        else:
+            # Settimane successive: calcola il lunedì della settimana
+            # La settimana 1 finisce domenica, quindi la settimana 2 inizia lunedì successivo
+            week1_end = plan.start_date + timedelta(days=(6 - plan.start_date.weekday()))
+            week_start = week1_end + timedelta(days=1)  # Lunedì successivo
+            if week_number > 2:
+                week_start = week_start + timedelta(weeks=week_number - 2)
+            start_weekday = 0  # Sempre lunedì per settimane successive
+        
+        logger.debug(f"[WORKOUT_SERVICE] Week {week_number} start date: {week_start}, start_weekday: {start_weekday}")
         
         week_workouts = week_data.get("workouts", [])
         week_focus = week_data.get("focus", "Base Building")
         logger.info(f"[WORKOUT_SERVICE] Processing {len(week_workouts)} workouts for week {week_number} (focus: {week_focus})")
         
+        # Mapping giorni della settimana
+        day_mapping = {
+            "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
+            "Friday": 4, "Saturday": 5, "Sunday": 6
+        }
+        
         for workout_data in week_workouts:
             # Calculate scheduled date
-            day_mapping = {
-                "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
-                "Friday": 4, "Saturday": 5, "Sunday": 6
-            }
-            day_offset = day_mapping.get(workout_data.get("day", "Monday"), 0)
-            scheduled_date = week_start + timedelta(days=day_offset)
+            workout_day = workout_data.get("day", "Monday")
+            day_offset_in_week = day_mapping.get(workout_day, 0)
+            
+            if week_number == 1:
+                # Prima settimana: calcola offset relativo alla data di inizio
+                # Se la settimana inizia mercoledì (weekday=2) e l'allenamento è per mercoledì (offset=2),
+                # l'offset relativo è 0
+                relative_offset = day_offset_in_week - start_weekday
+                # Se l'offset è negativo, significa che il giorno richiesto è prima della data di inizio
+                # (non dovrebbe succedere se l'AI ha seguito le istruzioni, ma gestiamo il caso)
+                if relative_offset < 0:
+                    logger.warning(f"[WORKOUT_SERVICE] Workout day {workout_day} is before start date {plan.start_date}, skipping")
+                    continue
+                scheduled_date = week_start + timedelta(days=relative_offset)
+            else:
+                # Settimane successive: sempre da lunedì, quindi offset normale
+                scheduled_date = week_start + timedelta(days=day_offset_in_week)
             
             # Create workout
             title = self._clean_text(workout_data.get("type", "Workout"), "Workout", max_length=200)

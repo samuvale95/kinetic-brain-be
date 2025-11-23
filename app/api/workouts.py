@@ -117,7 +117,8 @@ async def generate_progressive_workout_plan(
         include_stretching=request.include_stretching,
         include_strength=request.include_strength,
         unavailable_days=request.unavailable_days,
-        sport_specific_days=request.sport_specific_days
+        sport_specific_days=request.sport_specific_days,
+        start_date=request.start_date
     )
     
     # Crea piano base nel database

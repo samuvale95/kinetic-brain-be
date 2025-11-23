@@ -27,10 +27,11 @@ class ProgressiveWorkoutPlanService:
                            include_stretching: bool = False,
                            include_strength: bool = False,
                            unavailable_days: Optional[List[str]] = None,
-                           sport_specific_days: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                           sport_specific_days: Optional[Dict[str, str]] = None,
+                           start_date: Optional[str] = None) -> Dict[str, Any]:
         """Genera piano per una settimana specifica basato sui dati precedenti"""
-        logger.info(f"[PROGRESSIVE] Generating weekly plan - user_id: {user_id}, week_number: {week_number}, target_date: {target_date}")
-        logger.debug(f"[PROGRESSIVE] Input params: user_id={user_id}, week_number={week_number}, target_date={target_date}, has_previous_week={previous_week_data is not None}, has_fitness_level={current_fitness_level is not None}")
+        logger.info(f"[PROGRESSIVE] Generating weekly plan - user_id: {user_id}, week_number: {week_number}, target_date: {target_date}, start_date: {start_date}")
+        logger.debug(f"[PROGRESSIVE] Input params: user_id={user_id}, week_number={week_number}, target_date={target_date}, start_date={start_date}, has_previous_week={previous_week_data is not None}, has_fitness_level={current_fitness_level is not None}")
         
         # 1. Raccoglie dati storici dell'utente (same for mock and real)
         logger.debug(f"[PROGRESSIVE] Collecting user workout history (weeks_back=4)")
@@ -40,10 +41,21 @@ class ProgressiveWorkoutPlanService:
         performance_trends = self._analyze_performance_trends(user_history)
         logger.debug(f"[PROGRESSIVE] Performance trends: completion_rate={performance_trends.get('completion_rate', 0):.1f}%, fatigue_level={performance_trends.get('fatigue_level', 'N/A')}")
         
-        # 2. Calcola date della settimana
+        # 2. Calcola date della settimana e giorni disponibili per prima settimana
         target_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
         weeks_remaining = self._calculate_weeks_remaining(target_dt, week_number)
         logger.debug(f"[PROGRESSIVE] Weeks remaining to target: {weeks_remaining}")
+        
+        # Calcola giorni disponibili per la prima settimana se start_date è fornito
+        available_days_in_week: Optional[List[str]] = None
+        plan_start_date: Optional[date] = None
+        if week_number == 1 and start_date:
+            plan_start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            # Calcola giorni disponibili dalla data di inizio fino a domenica
+            start_weekday = plan_start_date.weekday()  # 0=lunedì, 6=domenica
+            day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            available_days_in_week = day_names[start_weekday:]
+            logger.info(f"[PROGRESSIVE] First week partial: start_date={start_date}, available_days={available_days_in_week}")
         
         # 3. Costruisce prompt contestualizzato (same for mock and real)
         logger.debug(f"[PROGRESSIVE] Building progressive prompt")
@@ -58,7 +70,8 @@ class ProgressiveWorkoutPlanService:
             sport_specific_days=sport_specific_days,
             user_history=user_history,
             performance_trends=performance_trends,
-            current_fitness=current_fitness_level
+            current_fitness=current_fitness_level,
+            available_days_in_week=available_days_in_week
         )
         logger.debug(f"[PROGRESSIVE] Prompt built - length: {len(prompt)} characters")
         
@@ -152,8 +165,8 @@ class ProgressiveWorkoutPlanService:
         # 6. Aggiunge metadati
         plan_data.update({
             "generated_at": datetime.utcnow().isoformat(),
-            "week_start_date": self._get_week_start_date(target_dt, week_number),
-            "week_end_date": self._get_week_end_date(target_dt, week_number)
+            "week_start_date": self._get_week_start_date(target_dt, week_number, plan_start_date),
+            "week_end_date": self._get_week_end_date(target_dt, week_number, plan_start_date)
         })
         
         logger.info(f"[PROGRESSIVE] Weekly plan generated successfully - week: {plan_data.get('week', 'N/A')}, focus: {plan_data.get('focus', 'N/A')}")
@@ -386,7 +399,8 @@ class ProgressiveWorkoutPlanService:
                                 include_stretching: bool = False,
                                 include_strength: bool = False,
                                 unavailable_days: Optional[List[str]] = None,
-                                sport_specific_days: Optional[Dict[str, str]] = None) -> str:
+                                sport_specific_days: Optional[Dict[str, str]] = None,
+                                available_days_in_week: Optional[List[str]] = None) -> str:
         """Costruisce prompt per generazione progressiva"""
         
         prompt = f"""
@@ -397,6 +411,20 @@ class ProgressiveWorkoutPlanService:
         TARGET DATE: {target_date}
         WEEKS REMAINING: {weeks_remaining}
         
+        """
+        
+        # Prima settimana parziale: aggiungi sezione per giorni disponibili
+        if available_days_in_week and week_number == 1:
+            prompt += "\n\n=== FIRST WEEK PARTIAL SCHEDULE (CRITICAL) ==="
+            prompt += f"\nThis is WEEK 1 and it is a PARTIAL week."
+            prompt += f"\nThe plan starts on a day other than Monday, so this week only includes: {', '.join(available_days_in_week)}"
+            prompt += f"\n\nCRITICAL: Generate workouts ONLY for these days: {', '.join(available_days_in_week)}"
+            prompt += "\nDO NOT generate workouts for Monday or Tuesday (or any day before the start date)."
+            prompt += "\nThe week ends on Sunday, so include Sunday in your plan."
+            prompt += "\nSubsequent weeks (week 2+) will be full weeks (Monday-Sunday)."
+            prompt += "\n"
+        
+        prompt += """
         CONTEXT FROM PREVIOUS WEEK:
         {json.dumps(previous_week, indent=2) if previous_week else "First week - no previous data"}
         
@@ -674,18 +702,44 @@ class ProgressiveWorkoutPlanService:
         weeks_remaining = max(0, days_remaining // 7)
         return weeks_remaining
     
-    def _get_week_start_date(self, target_date: date, week_number: int) -> str:
+    def _get_week_start_date(self, target_date: date, week_number: int, plan_start_date: Optional[date] = None) -> str:
         """Calcola data inizio settimana"""
-        # Calcola la data di inizio del piano (assumendo 12 settimane prima del target)
-        plan_start = target_date - timedelta(weeks=12)
-        week_start = plan_start + timedelta(weeks=week_number-1)
-        return week_start.isoformat()
+        if week_number == 1 and plan_start_date:
+            # Prima settimana: usa la data di inizio fornita
+            return plan_start_date.isoformat()
+        else:
+            # Settimane successive: calcola dalla data di inizio del piano o assume 12 settimane prima del target
+            if plan_start_date:
+                # Calcola dalla data di inizio del piano
+                # La settimana 2 inizia il lunedì successivo alla domenica della settimana 1
+                week1_end = plan_start_date + timedelta(days=(6 - plan_start_date.weekday()))
+                week_start = week1_end + timedelta(days=1)  # Lunedì successivo
+                if week_number > 2:
+                    week_start = week_start + timedelta(weeks=week_number - 2)
+            else:
+                # Fallback: calcola assumendo 12 settimane prima del target
+                plan_start = target_date - timedelta(weeks=12)
+                week_start = plan_start + timedelta(weeks=week_number-1)
+                # Assicurati che inizi da lunedì per settimane successive
+                if week_number > 1:
+                    # Trova il lunedì della settimana
+                    days_since_monday = week_start.weekday()
+                    week_start = week_start - timedelta(days=days_since_monday)
+            return week_start.isoformat()
     
-    def _get_week_end_date(self, target_date: date, week_number: int) -> str:
+    def _get_week_end_date(self, target_date: date, week_number: int, plan_start_date: Optional[date] = None) -> str:
         """Calcola data fine settimana"""
-        week_start = self._get_week_start_date(target_date, week_number)
+        week_start = self._get_week_start_date(target_date, week_number, plan_start_date)
         week_start_dt = datetime.strptime(week_start, "%Y-%m-%d").date()
-        week_end = week_start_dt + timedelta(days=6)
+        
+        if week_number == 1 and plan_start_date:
+            # Prima settimana: finisce sempre domenica
+            days_to_sunday = 6 - week_start_dt.weekday()
+            week_end = week_start_dt + timedelta(days=days_to_sunday)
+        else:
+            # Settimane successive: sempre domenica (6 giorni dopo il lunedì)
+            week_end = week_start_dt + timedelta(days=6)
+        
         return week_end.isoformat()
     
     def _get_week_performance(self, user_id: int, week_start: date, week_end: date) -> Dict[str, Any]:
