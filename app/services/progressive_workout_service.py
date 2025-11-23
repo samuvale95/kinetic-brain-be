@@ -106,8 +106,46 @@ class ProgressiveWorkoutPlanService:
             logger.debug(f"[PROGRESSIVE] Plan data keys: {list(plan_data.keys())}")
             if 'workouts' in plan_data:
                 logger.info(f"[PROGRESSIVE] Plan contains {len(plan_data.get('workouts', []))} workouts")
+            
+            # Log successo nel database
+            self.ai_service._log_ai_response(
+                request_type="progressive_weekly_plan",
+                user_id=user_id,
+                prompt=prompt,
+                request_payload={
+                    "week_number": week_number,
+                    "target_date": target_date,
+                    "weeks_remaining": weeks_remaining,
+                    "has_previous_week": previous_week_data is not None,
+                    "has_fitness_level": current_fitness_level is not None,
+                },
+                response_text=response.response,
+                model=response.model,
+                parse_success=True,
+                error_message=None,
+            )
         except json.JSONDecodeError as e:
-            logger.warning(f"[PROGRESSIVE] Failed to parse AI response as JSON, using fallback: {str(e)}")
+            error_msg = f"Failed to parse AI response as JSON: {str(e)}"
+            logger.warning(f"[PROGRESSIVE] {error_msg}, using fallback")
+            
+            # Log errore nel database
+            self.ai_service._log_ai_response(
+                request_type="progressive_weekly_plan",
+                user_id=user_id,
+                prompt=prompt,
+                request_payload={
+                    "week_number": week_number,
+                    "target_date": target_date,
+                    "weeks_remaining": weeks_remaining,
+                    "has_previous_week": previous_week_data is not None,
+                    "has_fitness_level": current_fitness_level is not None,
+                },
+                response_text=response.response,
+                model=response.model,
+                parse_success=False,
+                error_message=error_msg,
+            )
+            
             plan_data = self._parse_text_response(response.response, week_number, target_date)
             logger.info(f"[PROGRESSIVE] Using fallback text response parser")
         
