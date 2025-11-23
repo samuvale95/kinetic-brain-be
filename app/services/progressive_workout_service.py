@@ -713,6 +713,395 @@ class ProgressiveWorkoutPlanService:
                 prompt += f"\n\nMANDATORY: Generate {total_sessions} workouts minimum this week following the session distribution above."
                 prompt += f"\n"
         
+        # Running-specific guidelines based on running_session_guide.md
+        if sport_type and sport_type.lower() == "running" and level and goal:
+            level_map = {
+                "beginner": "PRINCIPIANTE",
+                "intermediate": "INTERMEDIO", 
+                "advanced": "AVANZATO",
+                "elite": "ELITE"
+            }
+            normalized_level = level_map.get(level.lower(), "INTERMEDIO")
+            
+            # Estrai race distance dal goal
+            goal_lower = goal.lower()
+            if "5k" in goal_lower or "5 k" in goal_lower:
+                race_distance = "5K"
+            elif "10k" in goal_lower or "10 k" in goal_lower:
+                race_distance = "10K"
+            elif "half" in goal_lower or "hm" in goal_lower or "21" in goal_lower:
+                race_distance = "HM"
+            elif "marathon" in goal_lower or "maratona" in goal_lower or "42" in goal_lower:
+                race_distance = "MARATHON"
+            else:
+                race_distance = "10K"  # default
+            
+            # Determina fase
+            if weeks_remaining > 12:
+                phase = "BASE"
+            elif weeks_remaining > 4:
+                phase = "BUILD"
+            elif weeks_remaining > 1:
+                phase = "PEAK"
+            else:
+                phase = "TAPER"
+            
+            # Matrice sessioni running
+            session_matrix = {
+                "PRINCIPIANTE": {
+                    "5K": {"BASE": {"easy": 3, "moderate": 0, "hard": 0, "long": 1},
+                          "BUILD": {"easy": 2, "moderate": 1, "hard": 0, "long": 1},
+                          "PEAK": {"easy": 2, "moderate": 0, "hard": 1, "long": 1},
+                          "TAPER": {"easy": 2, "moderate": 0, "hard": 0, "long": 0}},
+                    "10K": {"BASE": {"easy": 3, "moderate": 0, "hard": 0, "long": 1},
+                           "BUILD": {"easy": 2, "moderate": 1, "hard": 0, "long": 1},
+                           "PEAK": {"easy": 2, "moderate": 0, "hard": 1, "long": 1},
+                           "TAPER": {"easy": 2, "moderate": 0, "hard": 0, "long": 0}},
+                    "HM": {"BASE": {"easy": 3, "moderate": 0, "hard": 0, "long": 1},
+                          "BUILD": {"easy": 2, "moderate": 1, "hard": 0, "long": 1},
+                          "PEAK": {"easy": 2, "moderate": 0, "hard": 1, "long": 1},
+                          "TAPER": {"easy": 2, "moderate": 0, "hard": 0, "long": 1}},
+                    "MARATHON": {"BASE": {"easy": 3, "moderate": 0, "hard": 0, "long": 1},
+                                "BUILD": {"easy": 2, "moderate": 1, "hard": 0, "long": 1},
+                                "PEAK": {"easy": 2, "moderate": 0, "hard": 1, "long": 1},
+                                "TAPER": {"easy": 2, "moderate": 0, "hard": 0, "long": 1}}},
+                "INTERMEDIO": {
+                    "5K": {"BASE": {"easy": 2, "moderate": 1, "hard": 0, "long": 1},
+                          "BUILD": {"easy": 2, "moderate": 1, "hard": 1, "long": 1},
+                          "PEAK": {"easy": 1, "moderate": 1, "hard": 1, "long": 1},
+                          "TAPER": {"easy": 2, "moderate": 0, "hard": 0, "long": 1}},
+                    "10K": {"BASE": {"easy": 2, "moderate": 1, "hard": 0, "long": 1},
+                           "BUILD": {"easy": 2, "moderate": 1, "hard": 1, "long": 1},
+                           "PEAK": {"easy": 1, "moderate": 1, "hard": 1, "long": 1},
+                           "TAPER": {"easy": 2, "moderate": 0, "hard": 0, "long": 1}},
+                    "HM": {"BASE": {"easy": 2, "moderate": 1, "hard": 0, "long": 1},
+                          "BUILD": {"easy": 2, "moderate": 1, "hard": 1, "long": 1},
+                          "PEAK": {"easy": 1, "moderate": 1, "hard": 1, "long": 1},
+                          "TAPER": {"easy": 2, "moderate": 0, "hard": 0, "long": 1}},
+                    "MARATHON": {"BASE": {"easy": 2, "moderate": 1, "hard": 0, "long": 1},
+                                "BUILD": {"easy": 2, "moderate": 1, "hard": 1, "long": 1},
+                                "PEAK": {"easy": 1, "moderate": 1, "hard": 1, "long": 1},
+                                "TAPER": {"easy": 2, "moderate": 0, "hard": 0, "long": 1}}},
+                "AVANZATO": {
+                    "HM": {"BASE": {"easy": 2, "moderate": 1, "hard": 1, "long": 1},
+                          "BUILD": {"easy": 2, "moderate": 1, "hard": 2, "long": 1},
+                          "PEAK": {"easy": 1, "moderate": 1, "hard": 2, "long": 1},
+                          "TAPER": {"easy": 2, "moderate": 0, "hard": 1, "long": 1}},
+                    "MARATHON": {"BASE": {"easy": 2, "moderate": 1, "hard": 1, "long": 1},
+                                "BUILD": {"easy": 2, "moderate": 1, "hard": 2, "long": 1},
+                                "PEAK": {"easy": 1, "moderate": 1, "hard": 2, "long": 1},
+                                "TAPER": {"easy": 2, "moderate": 0, "hard": 1, "long": 1}}},
+                "ELITE": {
+                    "HM": {"BASE": {"easy": 2, "moderate": 1, "hard": 2, "long": 1},
+                          "BUILD": {"easy": 2, "moderate": 1, "hard": 3, "long": 1},
+                          "PEAK": {"easy": 1, "moderate": 1, "hard": 3, "long": 1},
+                          "TAPER": {"easy": 2, "moderate": 0, "hard": 1, "long": 1}},
+                    "MARATHON": {"BASE": {"easy": 2, "moderate": 1, "hard": 2, "long": 1},
+                                "BUILD": {"easy": 2, "moderate": 1, "hard": 3, "long": 1},
+                                "PEAK": {"easy": 1, "moderate": 1, "hard": 3, "long": 1},
+                                "TAPER": {"easy": 2, "moderate": 0, "hard": 1, "long": 1}}}}
+            
+            target_sessions = session_matrix.get(normalized_level, {}).get(race_distance, {}).get(phase, {})
+            
+            if target_sessions:
+                total_sessions = sum([target_sessions.get("easy", 0), target_sessions.get("moderate", 0), 
+                                     target_sessions.get("hard", 0), target_sessions.get("long", 0)])
+                
+                prompt += f"\n\n=== RUNNING TRAINING GUIDELINES (MANDATORY) ==="
+                prompt += f"\nBased on scientific running training guide for {normalized_level} level, {race_distance} distance, {phase} phase:"
+                prompt += f"\n\nTARGET SESSIONS PER WEEK (MUST FOLLOW):"
+                prompt += f"\n- Easy runs (Zone 1-2): {target_sessions.get('easy', 0)} sessions/week"
+                if target_sessions.get('moderate', 0) > 0:
+                    prompt += f"\n- Moderate runs (Zone 3): {target_sessions.get('moderate', 0)} session(s)/week"
+                if target_sessions.get('hard', 0) > 0:
+                    prompt += f"\n- Hard runs (Zone 4-5): {target_sessions.get('hard', 0)} session(s)/week (intervals/tempo)"
+                prompt += f"\n- Long run: {target_sessions.get('long', 0)} session(s)/week"
+                prompt += f"\n- TOTAL SESSIONS: {total_sessions} per week"
+                
+                prompt += f"\n\nINTENSITY DISTRIBUTION:"
+                if normalized_level == "PRINCIPIANTE":
+                    prompt += f"\n- Easy (Zone 1-2): 90% volume"
+                    prompt += f"\n- Moderate (Zone 3): 10% volume"
+                    prompt += f"\n- Hard (Zone 4-5): 0%"
+                elif normalized_level == "INTERMEDIO":
+                    prompt += f"\n- Easy (Zone 1-2): 70% volume"
+                    prompt += f"\n- Moderate (Zone 3): 20% volume"
+                    prompt += f"\n- Hard (Zone 4-5): 10% volume"
+                elif normalized_level == "AVANZATO":
+                    prompt += f"\n- Easy (Zone 1-2): 65% volume"
+                    prompt += f"\n- Moderate (Zone 3): 20% volume"
+                    prompt += f"\n- Hard (Zone 4-5): 15% volume"
+                elif normalized_level == "ELITE":
+                    prompt += f"\n- Easy (Zone 1-2): 60% volume"
+                    prompt += f"\n- Moderate (Zone 3): 20% volume"
+                    prompt += f"\n- Hard (Zone 4-5): 20% volume"
+                
+                prompt += f"\n\nWEEK STRUCTURE GUIDELINES:"
+                if normalized_level == "PRINCIPIANTE":
+                    prompt += f"\n- Focus on consistency and base building"
+                    prompt += f"\n- 1 rest day minimum"
+                    prompt += f"\n- Long run 25-40% of weekly volume"
+                elif normalized_level == "INTERMEDIO":
+                    prompt += f"\n- 2 quality sessions (1 intervals, 1 tempo)"
+                    prompt += f"\n- 1 long run weekly"
+                    prompt += f"\n- 1 strength core/glute recommended"
+                elif normalized_level == "AVANZATO":
+                    prompt += f"\n- 2 hard sessions (VO2max + threshold)"
+                    prompt += f"\n- 1 long run 18-20 km weekly"
+                    prompt += f"\n- 1-2 strength sessions"
+                elif normalized_level == "ELITE":
+                    prompt += f"\n- 2-3 hard sessions (VO2max, threshold, marathon pace)"
+                    prompt += f"\n- 1 long run 25-27 km weekly"
+                    prompt += f"\n- 1-2 strength sessions"
+                    prompt += f"\n- Back-to-back easy sessions possible"
+                
+                prompt += f"\n\nMANDATORY: Generate {total_sessions} running workouts minimum this week following the session distribution above."
+                prompt += f"\n"
+        
+        # Trail Running-specific guidelines based on trail_running_session_guide.md
+        if sport_type and sport_type.lower() in ["trail running", "trail"] and level and goal:
+            level_map = {
+                "beginner": "PRINCIPIANTE",
+                "intermediate": "INTERMEDIO", 
+                "advanced": "AVANZATO",
+                "elite": "ELITE"
+            }
+            normalized_level = level_map.get(level.lower(), "INTERMEDIO")
+            
+            # Estrai race distance dal goal
+            goal_lower = goal.lower()
+            if "short" in goal_lower or "10" in goal_lower or "20" in goal_lower:
+                race_distance = "SHORT"
+            elif "middle" in goal_lower or "30" in goal_lower or "40" in goal_lower:
+                race_distance = "MIDDLE"
+            elif "ultra" in goal_lower or "50" in goal_lower or "100" in goal_lower:
+                race_distance = "ULTRA"
+            else:
+                race_distance = "MIDDLE"  # default
+            
+            # Determina fase
+            if weeks_remaining > 12:
+                phase = "BASE"
+            elif weeks_remaining > 4:
+                phase = "BUILD"
+            elif weeks_remaining > 1:
+                phase = "PEAK"
+            else:
+                phase = "TAPER"
+            
+            prompt += f"\n\n=== TRAIL RUNNING TRAINING GUIDELINES (MANDATORY) ==="
+            prompt += f"\nBased on scientific trail running training guide for {normalized_level} level, {race_distance} trail distance, {phase} phase:"
+            prompt += f"\n\nCRITICAL: Trail running differs from road - elevation gain significantly increases load."
+            prompt += f"\n- Dislivello (D+) increases physiological stress"
+            prompt += f"\n- Downhills cause eccentric fatigue, require longer recovery"
+            prompt += f"\n- Max +15% D+ increase week-to-week"
+            prompt += f"\n- Never 2 consecutive days with >500m D- (downhill focus)"
+            
+            prompt += f"\n\nTARGET SESSIONS PER WEEK:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- 2-3 trail sessions/week"
+                prompt += f"\n- Focus on uphill technique (walking is OK)"
+                prompt += f"\n- Max 600m D+ per session initially"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- 3-4 trail sessions/week"
+                prompt += f"\n- 1 uphill power session"
+                prompt += f"\n- 1 long slow trail"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- 4-5 trail sessions/week"
+                prompt += f"\n- 2 hard sessions (uphill power + trail threshold)"
+                prompt += f"\n- 1 downhill technique session weekly"
+                prompt += f"\n- 1 long skyrace prep"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- 5-7 trail sessions/week"
+                prompt += f"\n- 2-3 hard sessions (VO2max, threshold, downhill reps)"
+                prompt += f"\n- 1-2 downhill technique sessions"
+                prompt += f"\n- 1 long ultra prep (25-30 km, 1500m+ D+)"
+            
+            prompt += f"\n\nELEVATION SAFETY RULES:"
+            prompt += f"\n- Max D+ per session: PRINCIPIANTE=600m, INTERMEDIO=1000m, AVANZATO=1500m, ELITE=2500m"
+            prompt += f"\n- No 2 consecutive days with high D+"
+            prompt += f"\n- +1-2 days extra recovery after >1500m D+ session"
+            prompt += f"\n- Monitor DOMS (especially posterior chain)"
+            
+            prompt += f"\n\nMANDATORY: Generate trail workouts with appropriate elevation gain for {normalized_level} level."
+            prompt += f"\n"
+        
+        # Swimming-specific guidelines based on swimming_session_guide.md
+        if sport_type and sport_type.lower() in ["swimming", "swim"] and level and goal:
+            level_map = {
+                "beginner": "PRINCIPIANTE",
+                "intermediate": "INTERMEDIO", 
+                "advanced": "AVANZATO",
+                "elite": "ELITE"
+            }
+            normalized_level = level_map.get(level.lower(), "INTERMEDIO")
+            
+            # Estrai race distance dal goal
+            goal_lower = goal.lower()
+            if "sprint" in goal_lower or "50" in goal_lower or "100" in goal_lower or "200" in goal_lower:
+                race_distance = "SPRINT"
+            elif "middle" in goal_lower or "400" in goal_lower or "800" in goal_lower:
+                race_distance = "MIDDLE"
+            elif "distance" in goal_lower or "1500" in goal_lower or "open water" in goal_lower or "ow" in goal_lower:
+                race_distance = "DISTANCE"
+            else:
+                race_distance = "MIDDLE"  # default
+            
+            # Determina fase
+            if weeks_remaining > 12:
+                phase = "BASE"
+            elif weeks_remaining > 4:
+                phase = "BUILD"
+            elif weeks_remaining > 1:
+                phase = "PEAK"
+            else:
+                phase = "TAPER"
+            
+            prompt += f"\n\n=== SWIMMING TRAINING GUIDELINES (MANDATORY) ==="
+            prompt += f"\nBased on scientific swimming training guide for {normalized_level} level, {race_distance} distance, {phase} phase:"
+            prompt += f"\n\nCRITICAL: FREQUENCY > VOLUME for swimming."
+            prompt += f"\n- Technique is frequency-dependent"
+            prompt += f"\n- 3× weekly minimum (even for beginners)"
+            prompt += f"\n- Better 3× short sessions than 1× long session"
+            
+            prompt += f"\n\nTARGET SESSIONS PER WEEK:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- 2-3 sessions/week MINIMUM"
+                prompt += f"\n- Focus on technique, no intensity"
+                prompt += f"\n- Volume: 3-5 km/week"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- 3-4 sessions/week"
+                prompt += f"\n- 1 quality session (race pace)"
+                prompt += f"\n- Volume: 7-10 km/week"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- 4-5 sessions/week"
+                prompt += f"\n- 2 hard sessions (threshold + VO2max)"
+                prompt += f"\n- 1 long/OW session"
+                prompt += f"\n- Volume: 12-18 km/week"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- 6-7 sessions/week"
+                prompt += f"\n- 3 hard sessions (threshold, VO2max, sprint)"
+                prompt += f"\n- 1-2 OW sessions weekly (in season)"
+                prompt += f"\n- Volume: 18-28 km/week"
+            
+            prompt += f"\n\nINTENSITY DISTRIBUTION:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- Easy (Zone 1-2): 90% volume"
+                prompt += f"\n- Moderate (Zone 3): 10% volume"
+                prompt += f"\n- Hard (Zone 4-5): 0%"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- Easy (Zone 1-2): 60% volume"
+                prompt += f"\n- Moderate (Zone 3): 25% volume"
+                prompt += f"\n- Hard (Zone 4-5): 15% volume"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- Easy (Zone 1-2): 50% volume"
+                prompt += f"\n- Moderate (Zone 3): 25% volume"
+                prompt += f"\n- Hard (Zone 4-5): 25% volume"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- Easy (Zone 1-2): 45% volume"
+                prompt += f"\n- Moderate (Zone 3): 20% volume"
+                prompt += f"\n- Hard (Zone 4-5): 35% volume"
+            
+            prompt += f"\n\nSPECIFIC RULES:"
+            prompt += f"\n- Always include warm-up (400-600m) and cool-down (300-600m)"
+            prompt += f"\n- Include drills for technique (kick, pull, stroke focus)"
+            if normalized_level in ["INTERMEDIO", "AVANZATO", "ELITE"]:
+                prompt += f"\n- 1 strength session/week (shoulder-focused)"
+            if race_distance == "DISTANCE" and normalized_level in ["AVANZATO", "ELITE"]:
+                prompt += f"\n- Include 1-2 open water sessions/week in season"
+            
+            prompt += f"\n\nMANDATORY: Generate swimming workouts with proper technique focus and appropriate volume for {normalized_level} level."
+            prompt += f"\n"
+        
+        # Cycling-specific guidelines based on cycling_session_guide.md
+        if sport_type and sport_type.lower() in ["cycling", "bike", "bicycle"] and level and goal:
+            level_map = {
+                "beginner": "PRINCIPIANTE",
+                "intermediate": "INTERMEDIO", 
+                "advanced": "AVANZATO",
+                "elite": "ELITE"
+            }
+            normalized_level = level_map.get(level.lower(), "INTERMEDIO")
+            
+            # Estrai specialty dal goal
+            goal_lower = goal.lower()
+            if "gran fondo" in goal_lower or "granfondo" in goal_lower or "fond" in goal_lower:
+                specialty = "GRAN_FONDO"
+            elif "race" in goal_lower or "agon" in goal_lower or "velocit" in goal_lower:
+                specialty = "ROAD_RACE"
+            elif "xc" in goal_lower or "ciclocross" in goal_lower or "mtb" in goal_lower:
+                specialty = "XC"
+            else:
+                specialty = "GRAN_FONDO"  # default
+            
+            # Determina fase
+            if weeks_remaining > 12:
+                phase = "BASE"
+            elif weeks_remaining > 4:
+                phase = "BUILD"
+            elif weeks_remaining > 1:
+                phase = "PEAK"
+            else:
+                phase = "TAPER"
+            
+            prompt += f"\n\n=== CYCLING TRAINING GUIDELINES (MANDATORY) ==="
+            prompt += f"\nBased on scientific cycling training guide for {normalized_level} level, {specialty} specialty, {phase} phase:"
+            prompt += f"\n\nCRITICAL METRICS:"
+            prompt += f"\n- Use TSS (Training Stress Score) and Power (Watts) as primary metrics"
+            prompt += f"\n- FTP (Functional Threshold Power) required for intensity prescription"
+            prompt += f"\n- Cadence: 85-95 RPM (beginner), 90-100 RPM (elite)"
+            
+            prompt += f"\n\nTARGET SESSIONS PER WEEK:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- 3-4 sessions/week"
+                prompt += f"\n- 1 quality session + 1 long weekly"
+                prompt += f"\n- Weekly TSS: 250-350"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- 4-5 sessions/week"
+                prompt += f"\n- 2 hard sessions (threshold + intervals/tempo)"
+                prompt += f"\n- 1 long steady weekly"
+                prompt += f"\n- Weekly TSS: 400-550"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- 5-6 sessions/week"
+                prompt += f"\n- 2-3 hard sessions (VO2max, threshold, tempo)"
+                prompt += f"\n- 1 long gran fondo specific"
+                prompt += f"\n- Weekly TSS: 600-800"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- 6-8 sessions/week"
+                prompt += f"\n- 3-4 hard sessions (VO2max, threshold, sprint, race sim)"
+                prompt += f"\n- 1 long ultra-endurance (200+ km)"
+                prompt += f"\n- Weekly TSS: 1000-1400"
+            
+            prompt += f"\n\nINTENSITY DISTRIBUTION:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- Easy (Zone 1-2): 80% volume"
+                prompt += f"\n- Moderate (Zone 3): 15% volume"
+                prompt += f"\n- Hard (Zone 4-5): 5% volume"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- Easy (Zone 1-2): 65% volume"
+                prompt += f"\n- Moderate (Zone 3): 20% volume"
+                prompt += f"\n- Hard (Zone 4-5): 15% volume"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- Easy (Zone 1-2): 55% volume"
+                prompt += f"\n- Moderate (Zone 3): 25% volume"
+                prompt += f"\n- Hard (Zone 4-5): 20% volume"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- Easy (Zone 1-2): 50% volume"
+                prompt += f"\n- Moderate (Zone 3): 25% volume"
+                prompt += f"\n- Hard (Zone 4-5): 25% volume"
+            
+            prompt += f"\n\nSPECIFIC RULES:"
+            prompt += f"\n- Hard sessions should not be back-to-back (max same day easy+hard)"
+            prompt += f"\n- Long ride weekly in all phases"
+            if normalized_level in ["INTERMEDIO", "AVANZATO", "ELITE"]:
+                prompt += f"\n- 1 strength session/week (cycling-specific: glutes, quads, core)"
+            if normalized_level == "ELITE":
+                prompt += f"\n- 3-4 double sessions/week possible"
+                prompt += f"\n- Back-to-back hard possible with adequate recovery (48h+)"
+            
+            prompt += f"\n\nMANDATORY: Generate cycling workouts with TSS targets and power zones for {normalized_level} level."
+            prompt += f"\n"
+        
         # Stretching periodization
         if include_stretching:
             prompt += "\n\n=== STRETCHING PERIODIZATION (REQUIRED) ==="
