@@ -11,12 +11,10 @@ Questa documentazione descrive le modifiche all'API dei piani progressivi per su
 Quando viene specificata una data di inizio che non è lunedì:
 - La **prima settimana** include solo i giorni dalla data di inizio fino alla domenica successiva
 - L'AI genera allenamenti **solo** per i giorni disponibili nella prima settimana
-- Esempio: se la data di inizio è **mercoledì 5 novembre**, la prima settimana include:
-  - Mercoledì 5 novembre
-  - Giovedì 6 novembre
-  - Venerdì 7 novembre
-  - Sabato 8 novembre
-  - Domenica 9 novembre
+- Esempi:
+  - Se la data di inizio è **mercoledì 5 novembre**, la prima settimana include: mercoledì, giovedì, venerdì, sabato, domenica (5 giorni)
+  - Se la data di inizio è **venerdì 7 novembre**, la prima settimana include: venerdì, sabato, domenica (3 giorni)
+  - Se la data di inizio è **domenica 2 novembre**, la prima settimana include: solo domenica (1 giorno)
 
 ### Settimane Successive
 
@@ -224,7 +222,26 @@ function StartDateSelector({ startDate, onChange }) {
 - **Settimana 2** (completa): 10-16 novembre (lunedì-domenica)
 - Comportamento normale, nessuna differenza
 
-### Esempio 3: Inizio Domenica
+### Esempio 3: Inizio Venerdì
+
+**Input:**
+- `start_date`: "2025-11-07" (venerdì)
+- `target_date`: "2025-12-24"
+
+**Risultato:**
+- **Settimana 1** (parziale): 7-9 novembre (venerdì-domenica)
+  - 2-3 allenamenti generati solo per questi giorni
+  - L'AI genererà allenamenti per: Friday, Saturday, Sunday
+- **Settimana 2** (completa): 10-16 novembre (lunedì-domenica)
+- **Settimana 3** (completa): 17-23 novembre (lunedì-domenica)
+
+**Dettagli:**
+- Venerdì 7 novembre: primo allenamento del piano
+- Sabato 8 novembre: secondo allenamento
+- Domenica 9 novembre: terzo allenamento (fine settimana 1)
+- Lunedì 10 novembre: inizio settimana 2 (settimana completa)
+
+### Esempio 4: Inizio Domenica
 
 **Input:**
 - `start_date`: "2025-11-02" (domenica)
