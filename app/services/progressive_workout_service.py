@@ -112,15 +112,10 @@ class ProgressiveWorkoutPlanService:
         logger.info(f"[PROGRESSIVE] Calling AI service for weekly plan generation")
         response = self.ai_service.generate_response(ai_request)
         
-        # 5. Parsing e strutturazione della risposta
-        try:
-            plan_data = json.loads(response.response)
-            logger.info(f"[PROGRESSIVE] Successfully parsed AI response as JSON")
-            logger.debug(f"[PROGRESSIVE] Plan data keys: {list(plan_data.keys())}")
-            if 'workouts' in plan_data:
-                logger.info(f"[PROGRESSIVE] Plan contains {len(plan_data.get('workouts', []))} workouts")
-            
-            # Log successo nel database
+        # Check if response is valid
+        if not response or not response.response:
+            error_msg = "AI service returned empty or None response"
+            logger.error(f"[PROGRESSIVE] {error_msg}")
             self.ai_service._log_ai_response(
                 request_type="progressive_weekly_plan",
                 user_id=user_id,
@@ -132,35 +127,73 @@ class ProgressiveWorkoutPlanService:
                     "has_previous_week": previous_week_data is not None,
                     "has_fitness_level": current_fitness_level is not None,
                 },
-                response_text=response.response,
-                model=response.model,
-                parse_success=True,
-                error_message=None,
-            )
-        except json.JSONDecodeError as e:
-            error_msg = f"Failed to parse AI response as JSON: {str(e)}"
-            logger.warning(f"[PROGRESSIVE] {error_msg}, using fallback")
-            
-            # Log errore nel database
-            self.ai_service._log_ai_response(
-                request_type="progressive_weekly_plan",
-                user_id=user_id,
-                prompt=prompt,
-                request_payload={
-                    "week_number": week_number,
-                    "target_date": target_date,
-                    "weeks_remaining": weeks_remaining,
-                    "has_previous_week": previous_week_data is not None,
-                    "has_fitness_level": current_fitness_level is not None,
-                },
-                response_text=response.response,
-                model=response.model,
+                response_text="",
+                model=getattr(response, 'model', 'unknown') if response else 'unknown',
                 parse_success=False,
                 error_message=error_msg,
             )
-            
-            plan_data = self._parse_text_response(response.response, week_number, target_date)
-            logger.info(f"[PROGRESSIVE] Using fallback text response parser")
+            plan_data = self._parse_text_response("", week_number, target_date)
+            logger.info(f"[PROGRESSIVE] Using fallback parser due to empty response")
+        else:
+            # 5. Parsing e strutturazione della risposta
+            try:
+                # Strip any markdown code blocks if present
+                response_text = response.response.strip()
+                if response_text.startswith("```json"):
+                    response_text = response_text[7:]  # Remove ```json
+                if response_text.startswith("```"):
+                    response_text = response_text[3:]  # Remove ```
+                if response_text.endswith("```"):
+                    response_text = response_text[:-3]  # Remove trailing ```
+                response_text = response_text.strip()
+                
+                plan_data = json.loads(response_text)
+                logger.info(f"[PROGRESSIVE] Successfully parsed AI response as JSON")
+                logger.debug(f"[PROGRESSIVE] Plan data keys: {list(plan_data.keys())}")
+                if 'workouts' in plan_data:
+                    logger.info(f"[PROGRESSIVE] Plan contains {len(plan_data.get('workouts', []))} workouts")
+                
+                # Log successo nel database
+                self.ai_service._log_ai_response(
+                    request_type="progressive_weekly_plan",
+                    user_id=user_id,
+                    prompt=prompt,
+                    request_payload={
+                        "week_number": week_number,
+                        "target_date": target_date,
+                        "weeks_remaining": weeks_remaining,
+                        "has_previous_week": previous_week_data is not None,
+                        "has_fitness_level": current_fitness_level is not None,
+                    },
+                    response_text=response.response,
+                    model=response.model,
+                    parse_success=True,
+                    error_message=None,
+                )
+            except json.JSONDecodeError as e:
+                error_msg = f"Failed to parse AI response as JSON: {str(e)}"
+                logger.warning(f"[PROGRESSIVE] {error_msg}, using fallback")
+                
+                # Log errore nel database
+                self.ai_service._log_ai_response(
+                    request_type="progressive_weekly_plan",
+                    user_id=user_id,
+                    prompt=prompt,
+                    request_payload={
+                        "week_number": week_number,
+                        "target_date": target_date,
+                        "weeks_remaining": weeks_remaining,
+                        "has_previous_week": previous_week_data is not None,
+                        "has_fitness_level": current_fitness_level is not None,
+                    },
+                    response_text=response.response,
+                    model=response.model,
+                    parse_success=False,
+                    error_message=error_msg,
+                )
+                
+                plan_data = self._parse_text_response(response.response, week_number, target_date)
+                logger.info(f"[PROGRESSIVE] Using fallback text response parser")
         
         # 6. Aggiunge metadati
         plan_data.update({
@@ -415,27 +448,44 @@ class ProgressiveWorkoutPlanService:
         
         # Prima settimana parziale: aggiungi sezione per giorni disponibili
         if available_days_in_week and week_number == 1:
+            # Calcola quali giorni NON sono disponibili (prima della data di inizio)
+            all_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            unavailable_days_before_start = [day for day in all_days if day not in available_days_in_week]
+            
             prompt += "\n\n=== FIRST WEEK PARTIAL SCHEDULE (CRITICAL) ==="
             prompt += f"\nThis is WEEK 1 and it is a PARTIAL week."
-            prompt += f"\nThe plan starts on a day other than Monday, so this week only includes: {', '.join(available_days_in_week)}"
-            prompt += f"\n\nCRITICAL: Generate workouts ONLY for these days: {', '.join(available_days_in_week)}"
-            prompt += "\nDO NOT generate workouts for Monday or Tuesday (or any day before the start date)."
+            
+            if len(available_days_in_week) < 7:
+                prompt += f"\nThe plan starts on {available_days_in_week[0]}, so this week only includes: {', '.join(available_days_in_week)}"
+                if unavailable_days_before_start:
+                    prompt += f"\n\nCRITICAL: Generate workouts ONLY for these days: {', '.join(available_days_in_week)}"
+                    prompt += f"\nDO NOT generate workouts for: {', '.join(unavailable_days_before_start)} (days before the start date)."
+            else:
+                prompt += f"\nThe plan starts on Monday, so this is a full week: {', '.join(available_days_in_week)}"
+                prompt += f"\n\nCRITICAL: Generate workouts for these days: {', '.join(available_days_in_week)}"
+            
             prompt += "\nThe week ends on Sunday, so include Sunday in your plan."
             prompt += "\nSubsequent weeks (week 2+) will be full weeks (Monday-Sunday)."
             prompt += "\n"
         
-        prompt += """
+        # Format context data as JSON strings
+        previous_week_str = json.dumps(previous_week, indent=2) if previous_week else "First week - no previous data"
+        user_history_str = json.dumps(user_history, indent=2)
+        performance_trends_str = json.dumps(performance_trends, indent=2)
+        current_fitness_str = json.dumps(current_fitness, indent=2) if current_fitness else "No fitness data available"
+        
+        prompt += f"""
         CONTEXT FROM PREVIOUS WEEK:
-        {json.dumps(previous_week, indent=2) if previous_week else "First week - no previous data"}
+        {previous_week_str}
         
         USER PERFORMANCE HISTORY (Last 4 weeks):
-        {json.dumps(user_history, indent=2)}
+        {user_history_str}
         
         PERFORMANCE TRENDS:
-        {json.dumps(performance_trends, indent=2)}
+        {performance_trends_str}
         
         CURRENT FITNESS LEVEL:
-        {json.dumps(current_fitness, indent=2) if current_fitness else "No fitness data available"}
+        {current_fitness_str}
         
         """
         
