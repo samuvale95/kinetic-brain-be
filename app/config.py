@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4"
     openai_max_tokens: int = 2000
     
+    # Anthropic/Claude
+    enable_claude_review: bool = False
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-haiku-4-5"
+    claude_review_percentage: int = 20
+    
     # Google OAuth
     google_client_id: str = ""
     google_client_secret: str = ""

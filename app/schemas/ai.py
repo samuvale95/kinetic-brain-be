@@ -304,3 +304,12 @@ class AdaptivePlanRequest(BaseModel):
     target_date: str = Field(..., description="Data obiettivo finale - formato YYYY-MM-DD")
     force_regeneration: bool = Field(False, description="Forza rigenerazione completa del piano")
     specific_focus: Optional[str] = Field(None, description="Focus specifico per la settimana")
+
+
+class ClaudeReviewResponse(BaseModel):
+    approved: bool = Field(..., description="Whether the plan is approved or needs improvement")
+    improved_plan: Optional[Dict[str, Any]] = Field(None, description="Improved version of the plan if changes were made")
+    review_notes: str = Field(..., description="Review notes explaining the evaluation")
+    changelog: Optional[List[str]] = Field(None, description="List of changes made to the plan")
+    model: str = Field(..., description="Claude model used for review")
+    usage: Optional[Dict[str, Any]] = Field(None, description="Token usage information")

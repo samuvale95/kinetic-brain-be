@@ -4,6 +4,8 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, date, timedelta
 from app.models.workout import Workout, WorkoutSession, WorkoutPlan
 from app.services.ai_service import AIService
+from app.services.claude_review_service import ClaudeReviewService
+from app.services.plan_validator import WorkoutPlanValidator, PlanValidationError
 from app.schemas.ai import AIRequest, WeeklyPlanRequest, PerformanceAnalysisData
 from app.config import settings
 import json
@@ -16,6 +18,8 @@ class ProgressiveWorkoutPlanService:
     def __init__(self, db: Session):
         self.db = db
         self.ai_service = AIService(db)
+        self.claude_review_service = ClaudeReviewService(db)
+        self.plan_validator = WorkoutPlanValidator()
         self.mock_mode = settings.mock_llm
     
     def generate_weekly_plan(self, 
@@ -86,7 +90,7 @@ class ProgressiveWorkoutPlanService:
         # 4. Create AIRequest (same for mock and real)
         ai_request = AIRequest(
             prompt=prompt,
-            max_tokens=2000,
+            max_tokens=3500,
             temperature=0.7
         )
         
@@ -203,7 +207,83 @@ class ProgressiveWorkoutPlanService:
                 plan_data = self._parse_text_response(response.response, week_number, target_date)
                 logger.info(f"[PROGRESSIVE] Using fallback text response parser")
         
-        # 6. Aggiunge metadati
+        # 6. Validator deterministico
+        validator_has_errors = False
+        validator_has_warnings = False
+        validator_results = None
+        
+        try:
+            # Build user state for validator
+            user_state = None
+            if current_fitness_level:
+                user_state = {
+                    "readiness_state": current_fitness_level.get("readiness_state"),
+                    "recovery_index": current_fitness_level.get("recovery_index"),
+                    "injury_risk_score": current_fitness_level.get("injury_risk_score"),
+                    "hydration_score": current_fitness_level.get("hydration_score"),
+                }
+            
+            # Validate the plan
+            self.plan_validator.validate(plan_data, user_state=user_state)
+            logger.info("[PROGRESSIVE] Plan passed deterministic validator")
+            validator_results = {"status": "passed", "violations": []}
+            
+        except PlanValidationError as e:
+            validator_has_errors = True
+            validator_results = {
+                "status": "failed",
+                "violations": e.violations,
+            }
+            logger.warning(f"[PROGRESSIVE] Plan validation failed: {e.violations}")
+            # Continue anyway - we'll let Claude review it
+        
+        # 7. Claude review (se abilitato)
+        if settings.enable_claude_review:
+            logger.info(f"[PROGRESSIVE] Claude review enabled, checking if review is needed")
+            
+            should_review = self.claude_review_service.should_review_plan(
+                validator_has_errors=validator_has_errors,
+                validator_has_warnings=validator_has_warnings,
+            )
+            
+            if should_review:
+                logger.info(f"[PROGRESSIVE] Claude review triggered (validator_errors={validator_has_errors}, validator_warnings={validator_has_warnings})")
+                
+                try:
+                    claude_review = self.claude_review_service.review_plan(
+                        plan=plan_data,
+                        validator_results=validator_results,
+                        user_id=user_id,
+                        week_number=week_number,
+                    )
+                    
+                    logger.info(f"[PROGRESSIVE] Claude review completed - approved: {claude_review.approved}")
+                    
+                    if not claude_review.approved and claude_review.improved_plan:
+                        logger.info("[PROGRESSIVE] Using Claude's improved plan")
+                        plan_data = claude_review.improved_plan
+                        # Preserve metadata
+                        plan_data.update({
+                            "generated_at": datetime.utcnow().isoformat(),
+                            "week_start_date": self._get_week_start_date(target_dt, week_number, plan_start_date),
+                            "week_end_date": self._get_week_end_date(target_dt, week_number, plan_start_date),
+                            "_claude_reviewed": True,
+                            "_claude_changelog": claude_review.changelog,
+                        })
+                    elif claude_review.approved:
+                        logger.info("[PROGRESSIVE] Claude approved the plan")
+                        plan_data["_claude_reviewed"] = True
+                        plan_data["_claude_approved"] = True
+                    
+                except Exception as e:
+                    logger.warning(f"[PROGRESSIVE] Claude review failed: {e}, using original plan")
+                    # Continue with original plan if Claude fails
+            else:
+                logger.info(f"[PROGRESSIVE] Claude review skipped (percentage threshold or no errors)")
+        else:
+            logger.debug("[PROGRESSIVE] Claude review disabled")
+        
+        # 8. Aggiunge metadati
         plan_data.update({
             "generated_at": datetime.utcnow().isoformat(),
             "week_start_date": self._get_week_start_date(target_dt, week_number, plan_start_date),
