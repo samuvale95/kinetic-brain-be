@@ -1240,12 +1240,57 @@ PARAMETERS:
         
         prompt += f"""
 [MANDATORY] OUTPUT_REQUIREMENTS:
+
+1. REQUISITI GENERALI PER TUTTI GLI STEP:
+- Ogni step deve avere: step_type, duration, target (per endurance), notes
+- Il campo 'target' è OBBLIGATORIO per tutti gli step di endurance (run, bike, swim)
+- Formato target: {{"type": "zone", "zone": "Z1"|"Z2"|"Z3"|"Z4"|"Z5"|"Z6"|"Z7"}}
+- NON mettere informazioni strutturali solo nelle notes - ogni step deve essere un oggetto JSON completo
+
+2. INTERVALLI (CRITICAL FOR SMARTWATCH):
+- Ogni step interval DEVE avere: step_type: "interval", duration: {{"type": "time", "seconds": X}}, target: {{"type": "zone", "zone": "Z4"}}, notes: "..."
+- Ogni step recovery DEVE avere: step_type: "recovery", duration: {{"type": "time", "seconds": X}}, target: {{"type": "zone", "zone": "Z1"}}, notes: "..."
+- Usare step_type: "repeat" con repeat: N e steps: [interval_step, recovery_step] per blocchi ripetuti
+- Esempio: "5 min Z4 / 3 min Z1 x 4" = {{"step_type": "repeat", "repeat": 4, "steps": [{{"step_type": "interval", "duration": {{"type": "time", "seconds": 300}}, "target": {{"type": "zone", "zone": "Z4"}}, "notes": "..."}}, {{"step_type": "recovery", "duration": {{"type": "time", "seconds": 180}}, "target": {{"type": "zone", "zone": "Z1"}}, "notes": "..."}}]}}
+- NON mettere struttura intervalli solo nelle notes - ogni step deve essere un oggetto separato
+
+3. STRENGTH (CRITICAL FOR SMARTWATCH):
+- Ogni esercizio DEVE essere un step separato con: step_type: "strength", name: "Nome Esercizio" (REQUIRED), duration: {{"type": "repetitions", "repetitions": X}}, notes: "Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min"
+- NON combinare più esercizi in uno step - ogni esercizio è un step separato
+- Esempi di name: "Squat", "Deadlift", "Bench Press", "Pull-ups", "Overhead Press", "Romanian Deadlift"
+- Esempio step: {{"step_type": "strength", "name": "Squat", "duration": {{"type": "repetitions", "repetitions": 5}}, "notes": "Sets: 3, Reps: 5, Intensity: 90% 1RM, Rest: 2 min"}}
+
+4. STRETCHING (CRITICAL FOR SMARTWATCH):
+- Ogni esercizio DEVE essere un step separato con: step_type: "steady", name: "Nome Esercizio" (REQUIRED), duration: {{"type": "time", "seconds": 30}}, notes: "Hold 30s, target: [muscle]"
+- NON combinare più esercizi in uno step - ogni esercizio è un step separato
+- Esempi di name: "Hamstring Stretch", "Quad Stretch", "Hip Flexor Stretch", "Shoulder Stretch", "Calf Stretch", "IT Band Stretch"
+- Esempio step: {{"step_type": "steady", "name": "Hamstring Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: hamstrings"}}
+
+5. BRICK WORKOUTS (per Triathlon):
+- Brick = bike + run stesso giorno
+- Strutturare come workout SEPARATI nello stesso giorno (es. "Bike 60min" + "Run 30min")
+- NON usare step di transizione - sono due workout distinti
+- Il primo workout (bike) deve essere completato prima del secondo (run)
+- Entrambi i workout devono avere struttura completa con warmup, main, cooldown
+
+6. SWIM DRILLS e SET:
+- Drills: step_type: "swim", name: "Drill Name" (es. "Kick Drill", "Pull Drill", "Single Arm Drill"), duration: {{"type": "distance", "meters": X}}, target: {{"type": "zone", "zone": "Z1"}}, notes: "..."
+- Main set con ripetizioni: usare step_type: "repeat" con steps swim
+- Esempio: "4x200m" = {{"step_type": "repeat", "repeat": 4, "steps": [{{"step_type": "swim", "duration": {{"type": "distance", "meters": 200}}, "target": {{"type": "zone", "zone": "Z3"}}, "notes": "..."}}]}}
+- PREFERIRE sempre duration: {{"type": "distance", "meters": X}} per swim workouts quando possibile
+- Usare duration: {{"type": "time", "seconds": X}} solo come fallback se la distanza non è specifica
+
+7. POWER ZONES (per Ciclismo):
+- Per step bike: usare SOLO target: {{"type": "zone", "zone": "Z2"|"Z3"|"Z4"|"Z5"|"Z6"|"Z7"}}
+- Il sistema calcola automaticamente i watt basandosi su FTP dell'utente
+- NON specificare watt espliciti nel target - usare solo zone
+- Se disponibile FTP, le zone corrispondono a: Z2 = 55-75% FTP, Z3 = 75-90% FTP, Z4 = 90-105% FTP, Z5 = 105-120% FTP, Z6 = 120-150% FTP, Z7 = 150%+ FTP
+
+MINIMUM REQUIREMENTS:
+- {stretching_min} stretching sessions, {strength_min_str} strength sessions
+- Minimum 1 rest day if weekly_hours allows
 - ALL workouts MUST have complete 'structure' field: {{sport, segments: [{{segment_type, steps: [...]}}], metadata}}
 - Structure: warmup, main, cooldown segments required
-- Strength: step_type='strength', duration={{type:'repetitions', repetitions:X}}, notes='Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min'
-- Stretching: step_type='steady', duration={{type:'time', seconds:30}}, notes='Hold 30s, target: [muscle]'
-- MINIMUM: {stretching_min} stretching sessions, {strength_min_str} strength sessions
-- Minimum 1 rest day if weekly_hours allows
 
 [STRONGLY RECOMMENDED] ADAPTATION_RULES:
 - RPE < 6: +5-10% intensity
@@ -1271,7 +1316,422 @@ OUTPUT_FORMAT (JSON only, no markdown):
                     "rpe_target": 6,
                     "description": "...",
                     "key_focus": "...",
-                    "structure": {{"sport": "run", "segments": [{{"segment_type": "warmup", "steps": [...]}}, {{"segment_type": "main", "steps": [...]}}, {{"segment_type": "cooldown", "steps": [...]}}], "metadata": {{"focus": "...", "rpe_target": 6}}}}
+                    "structure": {{
+                        "sport": "run",
+                        "segments": [
+                            {{
+                                "segment_type": "warmup",
+                                "steps": [
+                                    {{
+                                        "step_type": "steady",
+                                        "duration": {{"type": "time", "seconds": 600}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Easy jog to warm up"
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "main",
+                                "steps": [
+                                    {{
+                                        "step_type": "steady",
+                                        "duration": {{"type": "time", "seconds": 3000}},
+                                        "target": {{"type": "zone", "zone": "Z2"}},
+                                        "notes": "Maintain steady pace in HR zone 2"
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "cooldown",
+                                "steps": [
+                                    {{
+                                        "step_type": "steady",
+                                        "duration": {{"type": "time", "seconds": 600}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Easy jog to cool down"
+                                    }}
+                                ]
+                            }}
+                        ],
+                        "metadata": {{"focus": "...", "rpe_target": 6}}
+                    }}
+                }},
+                {{
+                    "day": "Tuesday",
+                    "type": "Intervals",
+                    "duration_minutes": 45,
+                    "intensity": "Z4",
+                    "target_hr": "162-169",
+                    "rpe_target": 7,
+                    "description": "Interval training",
+                    "key_focus": "Speed development",
+                    "structure": {{
+                        "sport": "run",
+                        "segments": [
+                            {{
+                                "segment_type": "warmup",
+                                "steps": [
+                                    {{
+                                        "step_type": "steady",
+                                        "duration": {{"type": "time", "seconds": 600}},
+                                        "target": {{"type": "zone", "zone": "Z2"}},
+                                        "notes": "Gradual warm-up"
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "main",
+                                "steps": [
+                                    {{
+                                        "step_type": "repeat",
+                                        "repeat": 4,
+                                        "steps": [
+                                            {{
+                                                "step_type": "interval",
+                                                "duration": {{"type": "time", "seconds": 300}},
+                                                "target": {{"type": "zone", "zone": "Z4"}},
+                                                "notes": "Run at fast pace, close to race effort"
+                                            }},
+                                            {{
+                                                "step_type": "recovery",
+                                                "duration": {{"type": "time", "seconds": 180}},
+                                                "target": {{"type": "zone", "zone": "Z1"}},
+                                                "notes": "Walk or jog for recovery"
+                                            }}
+                                        ]
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "cooldown",
+                                "steps": [
+                                    {{
+                                        "step_type": "steady",
+                                        "duration": {{"type": "time", "seconds": 600}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Easy jog to cool down"
+                                    }}
+                                ]
+                            }}
+                        ],
+                        "metadata": {{"focus": "Speed development", "rpe_target": 7}}
+                    }}
+                }},
+                {{
+                    "day": "Wednesday",
+                    "type": "Strength",
+                    "duration_minutes": 45,
+                    "intensity": "High",
+                    "target_hr": "N/A",
+                    "rpe_target": 7,
+                    "description": "Strength training",
+                    "key_focus": "Compound movements",
+                    "structure": {{
+                        "sport": "strength",
+                        "segments": [
+                            {{
+                                "segment_type": "warmup",
+                                "steps": [
+                                    {{
+                                        "step_type": "dynamic",
+                                        "duration": {{"type": "time", "seconds": 300}},
+                                        "notes": "Dynamic stretches for all major muscle groups"
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "main",
+                                "steps": [
+                                    {{
+                                        "step_type": "strength",
+                                        "name": "Squat",
+                                        "duration": {{"type": "repetitions", "repetitions": 5}},
+                                        "notes": "Sets: 3, Reps: 5, Intensity: 90% 1RM, Rest: 2 min"
+                                    }},
+                                    {{
+                                        "step_type": "strength",
+                                        "name": "Deadlift",
+                                        "duration": {{"type": "repetitions", "repetitions": 5}},
+                                        "notes": "Sets: 3, Reps: 5, Intensity: 90% 1RM, Rest: 3 min"
+                                    }},
+                                    {{
+                                        "step_type": "strength",
+                                        "name": "Bench Press",
+                                        "duration": {{"type": "repetitions", "repetitions": 5}},
+                                        "notes": "Sets: 3, Reps: 5, Intensity: 85% 1RM, Rest: 2 min"
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "cooldown",
+                                "steps": [
+                                    {{
+                                        "step_type": "steady",
+                                        "name": "Quad Stretch",
+                                        "duration": {{"type": "time", "seconds": 30}},
+                                        "notes": "Hold 30s, target: quads"
+                                    }},
+                                    {{
+                                        "step_type": "steady",
+                                        "name": "Hamstring Stretch",
+                                        "duration": {{"type": "time", "seconds": 30}},
+                                        "notes": "Hold 30s, target: hamstrings"
+                                    }}
+                                ]
+                            }}
+                        ],
+                        "metadata": {{"focus": "Strength", "rpe_target": 7}}
+                    }}
+                }},
+                {{
+                    "day": "Thursday",
+                    "type": "Stretching",
+                    "duration_minutes": 15,
+                    "intensity": "Very Low",
+                    "target_hr": "N/A",
+                    "rpe_target": 2,
+                    "description": "Flexibility session",
+                    "key_focus": "Recovery and mobility",
+                    "structure": {{
+                        "sport": "general",
+                        "segments": [
+                            {{
+                                "segment_type": "main",
+                                "steps": [
+                                    {{
+                                        "step_type": "steady",
+                                        "name": "Hamstring Stretch",
+                                        "duration": {{"type": "time", "seconds": 30}},
+                                        "notes": "Hold 30s, target: hamstrings"
+                                    }},
+                                    {{
+                                        "step_type": "steady",
+                                        "name": "Quad Stretch",
+                                        "duration": {{"type": "time", "seconds": 30}},
+                                        "notes": "Hold 30s, target: quads"
+                                    }},
+                                    {{
+                                        "step_type": "steady",
+                                        "name": "Hip Flexor Stretch",
+                                        "duration": {{"type": "time", "seconds": 30}},
+                                        "notes": "Hold 30s, target: hip flexors"
+                                    }},
+                                    {{
+                                        "step_type": "steady",
+                                        "name": "Calf Stretch",
+                                        "duration": {{"type": "time", "seconds": 30}},
+                                        "notes": "Hold 30s, target: calves"
+                                    }}
+                                ]
+                            }}
+                        ],
+                        "metadata": {{"focus": "Flexibility", "rpe_target": 2}}
+                    }}
+                }},
+                {{
+                    "day": "Saturday",
+                    "type": "Brick",
+                    "duration_minutes": 90,
+                    "intensity": "Mixed",
+                    "target_hr": "146-152",
+                    "rpe_target": 6,
+                    "description": "Brick workout - bike then run",
+                    "key_focus": "Race simulation",
+                    "structure": {{
+                        "sport": "bike",
+                        "segments": [
+                            {{
+                                "segment_type": "warmup",
+                                "steps": [
+                                    {{
+                                        "step_type": "bike",
+                                        "duration": {{"type": "time", "seconds": 600}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Easy pedaling to warm up"
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "main",
+                                "steps": [
+                                    {{
+                                        "step_type": "bike",
+                                        "duration": {{"type": "time", "seconds": 3000}},
+                                        "target": {{"type": "zone", "zone": "Z2"}},
+                                        "notes": "Steady effort in HR zone 2"
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "cooldown",
+                                "steps": [
+                                    {{
+                                        "step_type": "bike",
+                                        "duration": {{"type": "time", "seconds": 300}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Easy pedaling transition to run"
+                                    }}
+                                ]
+                            }}
+                        ],
+                        "metadata": {{"focus": "Bike portion", "rpe_target": 5}}
+                    }}
+                }},
+                {{
+                    "day": "Saturday",
+                    "type": "Brick",
+                    "duration_minutes": 30,
+                    "intensity": "Z2",
+                    "target_hr": "146-152",
+                    "rpe_target": 6,
+                    "description": "Brick workout - run after bike",
+                    "key_focus": "Race simulation",
+                    "structure": {{
+                        "sport": "run",
+                        "segments": [
+                            {{
+                                "segment_type": "main",
+                                "steps": [
+                                    {{
+                                        "step_type": "run",
+                                        "duration": {{"type": "time", "seconds": 1800}},
+                                        "target": {{"type": "zone", "zone": "Z2"}},
+                                        "notes": "Steady run after bike, maintain HR zone 2"
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "cooldown",
+                                "steps": [
+                                    {{
+                                        "step_type": "run",
+                                        "duration": {{"type": "time", "seconds": 300}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Easy jog to cool down"
+                                    }}
+                                ]
+                            }}
+                        ],
+                        "metadata": {{"focus": "Run portion", "rpe_target": 6}}
+                    }}
+                }},
+                {{
+                    "day": "Friday",
+                    "type": "Swim",
+                    "duration_minutes": 60,
+                    "intensity": "Mixed",
+                    "target_hr": "N/A",
+                    "rpe_target": 6,
+                    "description": "Swim session with drills and main set",
+                    "key_focus": "Technique and endurance",
+                    "structure": {{
+                        "sport": "swim",
+                        "segments": [
+                            {{
+                                "segment_type": "warmup",
+                                "steps": [
+                                    {{
+                                        "step_type": "swim",
+                                        "duration": {{"type": "distance", "meters": 200}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Easy swimming to loosen up"
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "main",
+                                "steps": [
+                                    {{
+                                        "step_type": "swim",
+                                        "name": "Kick Drill",
+                                        "duration": {{"type": "distance", "meters": 100}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Focus on kick technique"
+                                    }},
+                                    {{
+                                        "step_type": "swim",
+                                        "name": "Pull Drill",
+                                        "duration": {{"type": "distance", "meters": 100}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Focus on pull technique"
+                                    }},
+                                    {{
+                                        "step_type": "repeat",
+                                        "repeat": 4,
+                                        "steps": [
+                                            {{
+                                                "step_type": "swim",
+                                                "duration": {{"type": "distance", "meters": 200}},
+                                                "target": {{"type": "zone", "zone": "Z3"}},
+                                                "notes": "Maintain pace in zone 3"
+                                            }}
+                                        ]
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "cooldown",
+                                "steps": [
+                                    {{
+                                        "step_type": "swim",
+                                        "duration": {{"type": "distance", "meters": 200}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Easy swimming to cool down"
+                                    }}
+                                ]
+                            }}
+                        ],
+                        "metadata": {{"focus": "Swim technique", "rpe_target": 6}}
+                    }}
+                }},
+                {{
+                    "day": "Sunday",
+                    "type": "Bike",
+                    "duration_minutes": 90,
+                    "intensity": "Z2",
+                    "target_hr": "146-152",
+                    "rpe_target": 5,
+                    "description": "Long steady bike ride",
+                    "key_focus": "Aerobic base building",
+                    "structure": {{
+                        "sport": "bike",
+                        "segments": [
+                            {{
+                                "segment_type": "warmup",
+                                "steps": [
+                                    {{
+                                        "step_type": "bike",
+                                        "duration": {{"type": "time", "seconds": 900}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Easy pedaling to warm up"
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "main",
+                                "steps": [
+                                    {{
+                                        "step_type": "bike",
+                                        "duration": {{"type": "time", "seconds": 4500}},
+                                        "target": {{"type": "zone", "zone": "Z2"}},
+                                        "notes": "Steady effort in power zone 2 (55-75% FTP)"
+                                    }}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "cooldown",
+                                "steps": [
+                                    {{
+                                        "step_type": "bike",
+                                        "duration": {{"type": "time", "seconds": 900}},
+                                        "target": {{"type": "zone", "zone": "Z1"}},
+                                        "notes": "Easy pedaling to cool down"
+                                    }}
+                                ]
+                            }}
+                        ],
+                        "metadata": {{"focus": "Aerobic development", "rpe_target": 5}}
+                    }}
                 }}
             ],
             "recovery_notes": "...",
