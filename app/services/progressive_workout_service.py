@@ -90,7 +90,7 @@ class ProgressiveWorkoutPlanService:
         # 4. Create AIRequest (same for mock and real)
         ai_request = AIRequest(
             prompt=prompt,
-            max_tokens=3500,
+            max_tokens=4000,
             temperature=0.7
         )
         
@@ -544,128 +544,91 @@ class ProgressiveWorkoutPlanService:
                                 level: Optional[str] = None,
                                 goal: Optional[str] = None,
                                 weekly_hours: Optional[float] = None) -> str:
-        """Costruisce prompt per generazione progressiva"""
+        """Costruisce prompt ottimizzato per generazione progressiva - compatto e strutturato"""
         
-        prompt = f"""
-        Generate WEEK {week_number} of a progressive training plan.
+        # Determina fase
+        if weeks_remaining > 12:
+            phase = "BASE"
+        elif weeks_remaining > 4:
+            phase = "BUILD"
+        elif weeks_remaining > 1:
+            phase = "PEAK"
+        else:
+            phase = "TAPER"
         
-        AUTONOMY NOTE: You have full autonomy to determine the optimal number of workouts per week and session durations based on training science. HOWEVER, sport-specific day constraints (if provided) are MANDATORY and must be respected - you MUST generate workouts for ALL sport-specific days specified.
+        # Parametri essenziali (variabili compatte)
+        prompt = f"""Generate WEEK {week_number} progressive training plan.
+
+PARAMETERS:
+- week_number: {week_number}
+- weeks_remaining: {weeks_remaining}
+- target_date: {target_date}
+- phase: {phase}
+- sport_type: {sport_type or 'not specified'}
+- level: {level or 'not specified'}
+- goal: {goal or 'not specified'}
+- weekly_hours: {weekly_hours or 'not specified'}
+- include_stretching: {include_stretching}
+- include_strength: {include_strength}
+- performance_trends: {json.dumps(performance_trends) if performance_trends else 'improving'}
+
+"""
         
-        TARGET DATE: {target_date}
-        WEEKS REMAINING: {weeks_remaining}
-        
-        """
-        
-        # Prima settimana parziale: aggiungi sezione per giorni disponibili
+        # [MANDATORY] Prima settimana parziale
         if available_days_in_week and week_number == 1:
-            # Calcola quali giorni NON sono disponibili (prima della data di inizio)
             all_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
             unavailable_days_before_start = [day for day in all_days if day not in available_days_in_week]
-            
-            prompt += "\n\n=== FIRST WEEK PARTIAL SCHEDULE (CRITICAL) ==="
-            prompt += f"\nThis is WEEK 1 and it is a PARTIAL week."
-            
-            if len(available_days_in_week) < 7:
-                prompt += f"\nThe plan starts on {available_days_in_week[0]}, so this week only includes: {', '.join(available_days_in_week)}"
-                if unavailable_days_before_start:
-                    prompt += f"\n\nCRITICAL: Generate workouts ONLY for these days: {', '.join(available_days_in_week)}"
-                    prompt += f"\nDO NOT generate workouts for: {', '.join(unavailable_days_before_start)} (days before the start date)."
-            else:
-                prompt += f"\nThe plan starts on Monday, so this is a full week: {', '.join(available_days_in_week)}"
-                prompt += f"\n\nCRITICAL: Generate workouts for these days: {', '.join(available_days_in_week)}"
-                prompt += f"\nNOTE: You should generate workouts for multiple days this week (not just 3-4 workouts). Consider all {len(available_days_in_week)} days when planning."
-            
-            prompt += "\nThe week ends on Sunday, so include Sunday in your plan."
-            prompt += "\nSubsequent weeks (week 2+) will be full weeks (Monday-Sunday)."
+            prompt += f"[MANDATORY] FIRST WEEK PARTIAL: Generate workouts ONLY for {', '.join(available_days_in_week)}. DO NOT generate for {', '.join(unavailable_days_before_start) if unavailable_days_before_start else 'none'}.\n\n"
+        
+        # Context data (compatto)
+        if previous_week:
+            prompt += f"PREVIOUS_WEEK: {json.dumps(previous_week)}\n"
+        if user_history:
+            prompt += f"USER_HISTORY: {json.dumps(user_history)}\n"
+        if current_fitness:
+            prompt += f"CURRENT_FITNESS: {json.dumps(current_fitness)}\n"
             prompt += "\n"
         
-        # Format context data as JSON strings
-        previous_week_str = json.dumps(previous_week, indent=2) if previous_week else "First week - no previous data"
-        user_history_str = json.dumps(user_history, indent=2)
-        performance_trends_str = json.dumps(performance_trends, indent=2)
-        current_fitness_str = json.dumps(current_fitness, indent=2) if current_fitness else "No fitness data available"
-        
-        prompt += f"""
-        CONTEXT FROM PREVIOUS WEEK:
-        {previous_week_str}
-        
-        USER PERFORMANCE HISTORY (Last 4 weeks):
-        {user_history_str}
-        
-        PERFORMANCE TRENDS:
-        {performance_trends_str}
-        
-        CURRENT FITNESS LEVEL:
-        {current_fitness_str}
-        
-        """
-        
-        # Gestione PERFORMANCE METRICS se presenti nel current_fitness
+        # [MANDATORY] Performance Metrics (compatto)
         if current_fitness:
-            has_performance_metrics = any(key in current_fitness for key in [
-                'hr_max', 'hr_rest', 'threshold_hr', 'hrr', 'custom_threshold_hr',
-                'threshold_pace', 'critical_speed', 'vla',
-                'ftp', 'wkg',
-                'vo2max',
-                'hr_zones', 'pace_zones', 'power_zones',
-                'hr_zones_source', 'pace_zones_source', 'power_zones_source'
-            ])
+            metrics = []
+            if current_fitness.get('hr_max') or current_fitness.get('hr_zones'):
+                hr_parts = []
+                if current_fitness.get('hr_max'): hr_parts.append(f"max={current_fitness.get('hr_max')}")
+                if current_fitness.get('hr_rest'): hr_parts.append(f"rest={current_fitness.get('hr_rest')}")
+                if current_fitness.get('threshold_hr'): hr_parts.append(f"thr={current_fitness.get('threshold_hr')}")
+                if current_fitness.get('hr_zones'):
+                    zones = current_fitness.get('hr_zones')
+                    if isinstance(zones, dict):
+                        hr_parts.append(f"zones={','.join([f'{k}={v}' for k, v in zones.items()])}")
+                if hr_parts: metrics.append(f"HR: {', '.join(hr_parts)}")
             
-            if has_performance_metrics:
-                prompt += "\n\n=== PERFORMANCE METRICS ==="
-                prompt += "\nUSE EXACT ZONE VALUES PROVIDED - do not estimate or approximate."
-                
-                # HR Metrics (compact)
-                if current_fitness.get('hr_zones') or current_fitness.get('threshold_hr') or current_fitness.get('hr_max'):
-                    hr_info = []
-                    if current_fitness.get('hr_max'):
-                        hr_info.append(f"HR Max: {current_fitness.get('hr_max')} bpm")
-                    if current_fitness.get('hr_rest'):
-                        hr_info.append(f"HR Rest: {current_fitness.get('hr_rest')} bpm")
-                    if current_fitness.get('threshold_hr'):
-                        hr_info.append(f"Threshold: {current_fitness.get('threshold_hr')} bpm")
-                    if current_fitness.get('hr_zones'):
-                        zones = current_fitness.get('hr_zones')
-                        if isinstance(zones, dict):
-                            hr_info.append(f"Zones: {', '.join([f'{k.upper()}={v}' for k, v in zones.items()])}")
-                    prompt += f"\nHR: {', '.join(hr_info)}"
-                
-                # Pace Metrics (compact)
-                if current_fitness.get('pace_zones') or current_fitness.get('threshold_pace'):
-                    pace_info = []
-                    if current_fitness.get('threshold_pace'):
-                        pace_info.append(f"Threshold: {current_fitness.get('threshold_pace')} min/km")
-                    if current_fitness.get('critical_speed'):
-                        pace_info.append(f"Critical Speed: {current_fitness.get('critical_speed')} km/h")
-                    if current_fitness.get('pace_zones'):
-                        zones = current_fitness.get('pace_zones')
-                        if isinstance(zones, dict):
-                            pace_info.append(f"Zones: {', '.join([f'{k.upper()}={v}' for k, v in zones.items()])}")
-                    prompt += f"\nPace: {', '.join(pace_info)}"
-                
-                # Power Metrics (compact)
-                if current_fitness.get('power_zones') or current_fitness.get('ftp'):
-                    power_info = []
-                    if current_fitness.get('ftp'):
-                        power_info.append(f"FTP: {current_fitness.get('ftp')}W")
-                    if current_fitness.get('wkg'):
-                        power_info.append(f"W/kg: {current_fitness.get('wkg')}")
-                    if current_fitness.get('power_zones'):
-                        zones = current_fitness.get('power_zones')
-                        if isinstance(zones, dict):
-                            power_info.append(f"Zones: {', '.join([f'{k.upper()}={v}W' for k, v in zones.items()])}")
-                    prompt += f"\nPower: {', '.join(power_info)}"
-                
-                # Advanced Metrics
-                if current_fitness.get('vo2max'):
-                    prompt += f"\nVO2max: {current_fitness.get('vo2max')} ml/kg/min"
-                
-                # Preferred zone type
-                preferred_zone_type = current_fitness.get('preferred_zone_type', 'hr')
-                prompt += f"\nPreferred zone type: {preferred_zone_type.upper()} (prioritize this in prescriptions)"
-                
-                prompt += "\n\nCRITICAL: Use exact zone values from above. For Z4 use threshold values, for Z5 use 105-120% of threshold."
-                prompt += "\nAdapt intensities week-by-week based on performance trends, but always within the user's zone definitions."
+            if current_fitness.get('pace_zones') or current_fitness.get('threshold_pace'):
+                pace_parts = []
+                if current_fitness.get('threshold_pace'): pace_parts.append(f"thr={current_fitness.get('threshold_pace')}")
+                if current_fitness.get('critical_speed'): pace_parts.append(f"cs={current_fitness.get('critical_speed')}")
+                if current_fitness.get('pace_zones'):
+                    zones = current_fitness.get('pace_zones')
+                    if isinstance(zones, dict):
+                        pace_parts.append(f"zones={','.join([f'{k}={v}' for k, v in zones.items()])}")
+                if pace_parts: metrics.append(f"Pace: {', '.join(pace_parts)}")
+            
+            if current_fitness.get('power_zones') or current_fitness.get('ftp'):
+                power_parts = []
+                if current_fitness.get('ftp'): power_parts.append(f"ftp={current_fitness.get('ftp')}W")
+                if current_fitness.get('wkg'): power_parts.append(f"wkg={current_fitness.get('wkg')}")
+                if current_fitness.get('power_zones'):
+                    zones = current_fitness.get('power_zones')
+                    if isinstance(zones, dict):
+                        power_parts.append(f"zones={','.join([f'{k}={v}W' for k, v in zones.items()])}")
+                if power_parts: metrics.append(f"Power: {', '.join(power_parts)}")
+            
+            if current_fitness.get('vo2max'):
+                metrics.append(f"VO2max: {current_fitness.get('vo2max')}")
+            
+            if metrics:
+                preferred_zone = current_fitness.get('preferred_zone_type', 'hr').upper()
+                prompt += f"[MANDATORY] PERFORMANCE_METRICS: {', '.join(metrics)}. Preferred: {preferred_zone}. Use EXACT values provided.\n\n"
         
         # Triathlon-specific guidelines based on triathlon_session_guide.md
         if sport_type and sport_type.lower() == "triathlon" and level and goal:
@@ -1182,194 +1145,121 @@ class ProgressiveWorkoutPlanService:
             prompt += f"\n\nMANDATORY: Generate cycling workouts with TSS targets and power zones for {normalized_level} level."
             prompt += f"\n"
         
-        # Stretching periodization
+        # [MANDATORY] Stretching Periodization (solo se include_stretching==True)
+        stretching_freq = 0
         if include_stretching:
-            prompt += "\n\n=== STRETCHING PERIODIZATION (REQUIRED) ==="
-            prompt += "\nYou MUST include stretching sessions following scientific periodization guidelines:"
-            
-            # Determine stretching phase based on weeks_remaining
+            # Determina fase e frequenza
             if weeks_remaining > 8:
-                stretching_phase = "Build"
-                freq = "4 days/week"
-                duration = "10-12 minutes per session"
+                stretching_freq = 4
+                duration_min = 10
             elif weeks_remaining > 4:
-                stretching_phase = "Peak"
-                freq = "4 days/week"
-                duration = "8-10 minutes per session"
+                stretching_freq = 4
+                duration_min = 8
             else:
-                stretching_phase = "Taper"
-                freq = "2-3 days/week"
-                duration = "5-8 minutes per session"
+                stretching_freq = 2
+                duration_min = 5
             
-            prompt += f"\n\nCURRENT PHASE ({weeks_remaining} weeks remaining): {stretching_phase} Phase"
-            prompt += f"\n- Frequency: {freq}"
-            prompt += f"\n- Duration: {duration}"
-            prompt += "\n\nTIMING:"
-            prompt += "\n- Post-workout (incorporated in cooldown) OR dedicated morning/evening session"
-            prompt += "\n- Can be BOTH incorporated in cooldown AND as separate workout when appropriate"
-            prompt += "\n\nSPORT-SPECIFIC FOCUS:"
-            prompt += "\n- Running/Trail: Focus on hamstrings, calves, hip flexors, glutes, IT band, lower back (8-10 min total)"
-            prompt += "\n- Cycling: Focus on quadriceps, hip flexors, hip adductors, lower back, upper back/chest (8-10 min total)"
-            prompt += "\n- Swimming: Focus on shoulders (all angles - internal/external rotation), chest, lats, hip flexors (8-10 min total)"
-            prompt += "\n- Triathlon: Combine all three sport focuses - hamstrings, calves, quads, hip flexors, shoulders, chest, lats (10-12 min total)"
-            prompt += "\n\nPROTOCOL:"
-            prompt += "\n- 30 seconds per hold (standard, not longer)"
-            prompt += "\n- 3-4 minutes per major muscle group = 80% of benefits"
-            prompt += "\n- Frequency > Duration: 4-5 days/week short sessions > 1 day long session"
-            prompt += "\n- Daily brief stretching best for ROM maintenance"
-            prompt += "\n\nRACE DAY:"
-            prompt += "\n- Dynamic warm-up ONLY, NO static stretching pre-race (causes strength reduction)"
-            prompt += "\n\nINTEGRATION:"
-            prompt += "\n- Can be incorporated into cooldown segments OR scheduled as separate dedicated workouts"
-            prompt += "\n- When incorporated in cooldown, add stretching steps to the cooldown segment"
-            prompt += "\n- When separate, create dedicated 'Stretching' workout type with appropriate duration"
-            prompt += f"\n- CRITICAL: You MUST include stretching sessions in the weekly plan"
-            prompt += f"\n- If stretching is enabled (include_stretching=true), schedule {freq} stretching sessions"
-            prompt += "\n- Stretching can be:"
-            prompt += f"\n  1. Separate dedicated workouts (recommended for {freq} sessions/week)"
-            prompt += "\n  2. Incorporated into cooldown segments of other workouts"
-            prompt += "\n  3. Both (separate workouts + cooldown stretching)"
-            prompt += "\n- When scheduling separate stretching workouts, they should be on different days from hard training days when possible"
-            prompt += "\n\nSTRETCHING WORKOUT STRUCTURE (CRITICAL):"
-            prompt += "\n- If separate 'Stretching' workout: complete 'structure' field required"
-            prompt += "\n- Each exercise = separate step: step_type='steady', name='Exercise Name', duration={type:'time', seconds:30}, notes='Hold 30s, target: muscle group'"
-            prompt += "\n- Include warmup (2-3min optional), main (all exercises), group by muscle"
+            # Focus muscolare basato su sport
+            sport_lower = (sport_type or "").lower()
+            if "run" in sport_lower or "trail" in sport_lower:
+                focus = "hamstrings,calves,hip_flexors,glutes,IT_band,lower_back"
+            elif "cycl" in sport_lower or "bike" in sport_lower:
+                focus = "quadriceps,hip_flexors,adductors,lower_back,upper_back,chest"
+            elif "swim" in sport_lower:
+                focus = "shoulders(rotations),chest,lats,hip_flexors"
+            elif "triathlon" in sport_lower:
+                focus = "hamstrings,calves,quads,hip_flexors,shoulders,chest,lats"
+            else:
+                focus = "full_body"
+            
+            prompt += f"""[MANDATORY] STRETCHING_PERIODIZATION:
+- Phase: {phase} ({weeks_remaining}w remaining)
+- Frequency: {stretching_freq}x/week MINIMUM
+- Duration: {duration_min}-{duration_min+2}min per session
+- Protocol: 30s hold per exercise, 3-4min per muscle group
+- Timing: post-workout (cooldown) OR separate session OR both
+- Focus: {focus}
+- Structure: step_type='steady', duration={{type:'time', seconds:30}}, notes='Hold 30s, target: [muscle]'
+- NO static pre-race (dynamic warmup only)
+- MUST include {stretching_freq} stretching sessions this week
+
+"""
         
-        # Strength training periodization
+        # [MANDATORY] Strength Integration (solo se include_strength==True)
+        strength_freq = '0'
         if include_strength:
-            prompt += "\n\n=== STRENGTH TRAINING PERIODIZATION (REQUIRED) ==="
-            prompt += "\nYou MUST include strength training sessions following scientific periodization based on weeks to target date:"
-            
-            # Determine strength phase based on weeks_remaining
+            # Determina fase strength
             if weeks_remaining > 12:
-                phase = "Phase 2: MAX STRENGTH"
-                freq = "2-3 sessions/week"
-                duration = "45-60 minutes per session"
-                intensity = "Very High (87-93% 1RM)"
-                reps = "3-5 reps per set"
-                rest = "3-5 minutes between sets"
-                focus = "Max strength development"
-                exercises = "Back Squat, RDL, Rows, Bench Press, Dips"
+                strength_freq = "2-3x/week"
+                strength_intensity = "87-93% 1RM"
+                strength_reps = "3-5"
             elif weeks_remaining > 8:
-                phase = "Phase 3: POWER/EXPLOSIVITY"
-                freq = "1-2 sessions/week"
-                duration = "45-50 minutes per session"
-                intensity = "Very High (70-90% 1RM, explosive movement)"
-                reps = "Fast, ballistic, plyometric"
-                rest = "2-3 minutes"
-                focus = "Converting strength into sport-specific power"
-                exercises = "Explosive Push-ups, Box Jumps, Medicine Ball Throws, Jump Squats, Lateral Bounds"
+                strength_freq = "1-2x/week"
+                strength_intensity = "70-90% 1RM (explosive)"
+                strength_reps = "ballistic/plyometric"
             elif weeks_remaining > 4:
-                phase = "Phase 3: POWER/EXPLOSIVITY (transitioning to Maintenance)"
-                freq = "1-2 sessions/week"
-                duration = "45-50 minutes per session"
-                intensity = "High (70-90% 1RM, explosive)"
-                reps = "Explosive movements"
-                rest = "2-3 minutes"
-                focus = "Power development"
-                exercises = "Plyometric and explosive movements"
+                strength_freq = "1-2x/week"
+                strength_intensity = "70-90% 1RM (explosive)"
+                strength_reps = "explosive"
+            elif weeks_remaining > 1:
+                strength_freq = "1x/week"
+                strength_intensity = "60-80% 1RM"
+                strength_reps = "5"
             else:
-                phase = "Phase 4: MAINTENANCE"
-                freq = "1 session/week"
-                duration = "20-40 minutes per session"
-                intensity = "Moderate (60-80% 1RM)"
-                reps = "5 reps per set"
-                rest = "2 minutes"
-                focus = "Minimal Effective Dose (MED) - preservation without fatigue"
-                exercises = "Big 5: Squat, Hinge, Push, Pull, Carry"
+                strength_freq = "skip"
+                strength_intensity = "N/A"
+                strength_reps = "N/A"
             
-            prompt += f"\n\nCURRENT PHASE ({weeks_remaining} weeks remaining): {phase}"
-            prompt += f"\n- Frequency: {freq}"
-            prompt += f"\n- Duration: {duration}"
-            prompt += f"\n- Intensity: {intensity}"
-            if 'reps' in locals() and reps:
-                prompt += f"\n- Rep Range: {reps}"
-            prompt += f"\n- Rest: {rest}"
-            prompt += f"\n- Focus: {focus}"
-            if 'exercises' in locals() and exercises:
-                prompt += f"\n- Sample exercises: {exercises}"
-            
-            prompt += "\n\nCRITICAL TIMING RULES:"
-            prompt += "\n- Separate days ALWAYS preferred (if possible)"
-            prompt += "\n- If same day: Minimum 90 minutes recovery between (strength FIRST, then endurance)"
-            prompt += "\n- DO NOT schedule hard endurance + strength on the same day"
-            prompt += "\n- Strength should be scheduled on recovery/easy days when possible"
-            
-            prompt += "\n\nTSS QUANTIFICATION:"
-            prompt += "\n- Strength TSS ≈ (Duration (min) × RPE/10 × Movement Complexity) × 0.65"
-            prompt += "\n- Complexity factors: Single muscle group = 1.0, 2-3 compound movements = 2.0, Full-body compound + plyos = 3.0"
-            
-            prompt += "\n\nACWR ADJUSTMENT:"
-            prompt += "\n- ACWR_total = (Endurance_ATL + Strength_ATL × 0.7) / CTL"
-            prompt += "\n- Strength weighted at 70% because it's muscle-specific, not whole-system stress like endurance"
-            
-            if weeks_remaining <= 1:
-                prompt += "\n\nRACE WEEK: SKIP strength training completely"
-            elif weeks_remaining <= 2:
-                prompt += "\n\nTAPER WEEK: 1×/week bodyweight only or skip"
-            
-            prompt += "\n\nWORKOUT STRUCTURE (CRITICAL):"
-            prompt += "\n- Create 'Strength' workout type with complete 'structure' field"
-            prompt += "\n- Each exercise = separate step: step_type='strength', name='Exercise Name', duration={type:'repetitions', repetitions:X}, notes='Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min'"
-            prompt += "\n- Include warmup (5-10min dynamic), main (all exercises), cooldown (5-10min stretching)"
-            prompt += "\n- Focus on compound movements"
+            if strength_freq != "skip":
+                prompt += f"""[MANDATORY] STRENGTH_INTEGRATION:
+- Frequency: {strength_freq}
+- Intensity: {strength_intensity}
+- Reps: {strength_reps}
+- Timing: separate days preferred, or 90min+ after endurance (strength first)
+- Structure: step_type='strength', duration={{type:'repetitions', repetitions:X}}, notes='Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min'
+- Focus: compound movements
+- MUST include strength sessions as specified
+
+"""
         
-        # Day constraints
-        if unavailable_days or sport_specific_days:
-            prompt += "\n\n=== TRAINING SCHEDULE CONSTRAINTS (MANDATORY) ==="
+        # [MANDATORY] Day constraints
+        if unavailable_days:
+            prompt += f"[MANDATORY] UNAVAILABLE_DAYS: {', '.join(unavailable_days)}. NO workouts on these days.\n"
+        if sport_specific_days:
+            sport_days_list = [f"{day}:{sport}" for day, sport in sport_specific_days.items()]
+            prompt += f"[MANDATORY] SPORT_SPECIFIC_DAYS: {', '.join(sport_days_list)}. MUST generate workout for each.\n"
             if unavailable_days:
-                prompt += f"\n\nUNAVAILABLE DAYS (NO TRAINING ALLOWED):"
-                prompt += f"\n- {', '.join(unavailable_days)}"
-                prompt += "\n- DO NOT schedule any workouts on these days"
-                prompt += "\n- These are complete rest days"
-            
-            if sport_specific_days:
-                prompt += f"\n\nSPORT-SPECIFIC DAYS (MANDATORY - MUST GENERATE WORKOUTS):"
-                for day, sport in sport_specific_days.items():
-                    prompt += f"\n- {day}: ONLY {sport} workouts (no other sports) - YOU MUST CREATE A WORKOUT FOR THIS DAY"
-                prompt += "\n- CRITICAL: You MUST generate a workout for EVERY day listed above"
-                prompt += "\n- On these days, schedule ONLY the specified sport"
-                prompt += "\n- If a day is both unavailable and sport-specific, the sport-specific constraint PREVAILS"
-                prompt += f"\n- Total sport-specific days requiring workouts: {len(sport_specific_days)}"
-            
-            if unavailable_days and sport_specific_days:
-                # Check for conflicts
                 conflicts = [day for day in sport_specific_days.keys() if day in unavailable_days]
                 if conflicts:
-                    prompt += f"\n\n⚠️ CONFLICT RESOLUTION:"
-                    prompt += f"\n- Days {', '.join(conflicts)} appear in both unavailable_days and sport_specific_days"
-                    prompt += "\n- SPORT-SPECIFIC CONSTRAINT PREVAILS - schedule only the specified sport on these days"
+                    prompt += f"CONFLICT: {', '.join(conflicts)} in both lists. SPORT_SPECIFIC prevails.\n"
+            
+        # [MANDATORY] Output requirements
+        stretching_min = stretching_freq if include_stretching else 0
+        # strength_freq è una stringa come "2-3x/week" o "skip", quindi per il prompt usiamo direttamente la stringa
+        strength_min_str = strength_freq if (include_strength and strength_freq != 'skip') else '0'
         
-        prompt += """
-        
-        === WORKOUT STRUCTURE REQUIREMENTS (CRITICAL) ===
-        ALL workouts MUST include complete 'structure' field: {sport, segments: [{segment_type, steps: [{step_type, name, duration, target, notes}]}], metadata}
-        Strength: each exercise = step with name, duration={type:'repetitions', repetitions:X}, notes='Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min'
-        Stretching: each exercise = step with name, duration={type:'time', seconds:30}, notes='Hold 30s, target: muscle'
-        All workouts: include warmup, main, cooldown segments
-        
-        ADAPTATION RULES:
-        1. If previous week was too easy (RPE < 6), increase intensity by 5-10%
-        2. If previous week was too hard (RPE > 8), decrease intensity by 5-10%
-        3. If user missed >2 workouts, reduce volume by 20%
-        4. If user completed all workouts easily, increase volume by 10%
-        5. Adjust based on performance trends and recovery indicators
-        6. Consider weeks remaining to target date for peak timing
-        
-        Generate ONLY this week's plan with:
-        - Specific workout details
-        - Intensity adjustments based on previous week
-        - Volume progression
-        - Recovery considerations
-        - Adaptation rationale
-        - Complete 'structure' field for EVERY workout (required for frontend visualization)
-        - MANDATORY: Generate workouts for ALL sport-specific days specified in constraints
-        - Generate workouts for other available days based on training science (optimal number and distribution)
-        
-        Format as JSON:
+        prompt += f"""
+[MANDATORY] OUTPUT_REQUIREMENTS:
+- ALL workouts MUST have complete 'structure' field: {{sport, segments: [{{segment_type, steps: [...]}}], metadata}}
+- Structure: warmup, main, cooldown segments required
+- Strength: step_type='strength', duration={{type:'repetitions', repetitions:X}}, notes='Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min'
+- Stretching: step_type='steady', duration={{type:'time', seconds:30}}, notes='Hold 30s, target: [muscle]'
+- MINIMUM: {stretching_min} stretching sessions, {strength_min_str} strength sessions
+- Minimum 1 rest day if weekly_hours allows
+
+[STRONGLY RECOMMENDED] ADAPTATION_RULES:
+- RPE < 6: +5-10% intensity
+- RPE > 8: -5-10% intensity
+- Missed >2 workouts: -20% volume
+- All completed easily: +10% volume
+- Adjust based on performance_trends and weeks_remaining
+
+[OPTIONAL] General guidelines: optimal distribution, recovery considerations, peak timing
+
+OUTPUT_FORMAT (JSON only, no markdown):
         {{
             "week": {week_number},
-            "focus": "Week focus",
+    "focus": "Week focus description",
             "adaptations": {{"intensity_change": "+5%", "volume_change": "+10%", "rationale": "..."}},
             "workouts": [
                 {{
@@ -1382,22 +1272,17 @@ class ProgressiveWorkoutPlanService:
                     "description": "...",
                     "key_focus": "...",
                     "structure": {{"sport": "run", "segments": [{{"segment_type": "warmup", "steps": [...]}}, {{"segment_type": "main", "steps": [...]}}, {{"segment_type": "cooldown", "steps": [...]}}], "metadata": {{"focus": "...", "rpe_target": 6}}}}
-                }},
-                {{
-                    "day": "Wednesday",
-                    "type": "Strength",
-                    "duration_minutes": 60,
-                    "intensity": "Very High",
-                    "rpe_target": 8,
-                    "description": "...",
-                    "key_focus": "...",
-                    "structure": {{"sport": "strength", "segments": [{{"segment_type": "warmup", "steps": [{{"step_type": "steady", "name": "Leg Swings", "duration": {{"type": "time", "seconds": 60}}, "notes": "..."}}]}}, {{"segment_type": "main", "steps": [{{"step_type": "strength", "name": "Back Squat", "duration": {{"type": "repetitions", "repetitions": 4}}, "notes": "Sets: 4, Reps: 5, Intensity: 90% 1RM, Rest: 4 min"}}]}}, {{"segment_type": "cooldown", "steps": [...]}}], "metadata": {{"focus": "...", "rpe_target": 8}}}}
                 }}
             ],
             "recovery_notes": "...",
             "next_week_preview": "...",
             "adaptation_rationale": "..."
         }}
+
+ERROR_HANDLING: If constraints impossible (too few days, insufficient weekly_hours), return:
+{{"error": true, "reason": "...", "suggestion": "..."}}
+
+Generate ONLY this week's plan. Output JSON only, no explanations.
         """
         return prompt
     
