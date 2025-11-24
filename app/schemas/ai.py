@@ -4,7 +4,7 @@ from pydantic import model_validator
 
 
 class AIRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, max_length=15000)
+    prompt: str = Field(..., min_length=1, max_length=50000)
     context: Optional[Dict[str, Any]] = None
     max_tokens: Optional[int] = Field(None, ge=1, le=4000)
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
