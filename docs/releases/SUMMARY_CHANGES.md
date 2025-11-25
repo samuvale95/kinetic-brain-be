@@ -21,6 +21,9 @@
 
 ### 3. Workout Plans APIs ✅
 
+#### POST `/workouts/plans/{id}/suspend`
+- Sospende un piano (cambia status a "suspended")
+
 #### POST `/workouts/plans/{id}/archive`
 - Archivia un piano (cambia status a "archived")
 

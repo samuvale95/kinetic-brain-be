@@ -30,7 +30,7 @@ class WorkoutPlanUpdate(BaseModel):
     goal: Optional[str] = Field(None, max_length=200)
     sport_type: Optional[str] = Field(None, max_length=50)
     level: Optional[str] = Field(None, pattern="^(beginner|intermediate|advanced)$")
-    status: Optional[str] = Field(None, pattern="^(active|completed|paused)$")
+    status: Optional[str] = Field(None, pattern="^(active|completed|paused|suspended|archived)$")
 
 
 class WorkoutPlanResponse(BaseModel):

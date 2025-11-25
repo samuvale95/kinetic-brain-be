@@ -672,6 +672,31 @@ async def update_workout_plan(plan_id: int,
     return plan_dict
 
 
+@router.post("/plans/{plan_id}/suspend")
+async def suspend_workout_plan(plan_id: int,
+                              current_user: dict = Depends(get_current_user),
+                              db: Session = Depends(get_db)):
+    """Suspend a workout plan"""
+    workout_service = WorkoutService(db)
+    
+    # Get the plan
+    plan = workout_service.get_workout_plan(plan_id, current_user["user_id"])
+    if not plan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workout plan not found"
+        )
+    
+    # Update status to suspended
+    plan.status = "suspended"
+    db.commit()
+    
+    return {
+        "message": "Piano sospeso con successo",
+        "plan_id": plan.id
+    }
+
+
 @router.post("/plans/{plan_id}/archive")
 async def archive_workout_plan(plan_id: int,
                               current_user: dict = Depends(get_current_user),

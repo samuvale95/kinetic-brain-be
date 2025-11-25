@@ -24,7 +24,7 @@ class WorkoutPlan(Base):
     goal = Column(String(200))
     sport_type = Column(String(50))
     level = Column(String(20))  # beginner, intermediate, advanced
-    status = Column(String(20), default="active")  # active, completed, paused
+    status = Column(String(20), default="active")  # active, completed, paused, suspended, archived
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
