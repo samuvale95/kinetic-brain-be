@@ -1208,11 +1208,16 @@ PARAMETERS:
 - Frequency: {stretching_freq}x/week MINIMUM
 - Duration: {duration_min}-{duration_min+2}min per session
 - Protocol: 30s hold per exercise, 3-4min per muscle group
-- Timing: post-workout (cooldown) OR separate session OR both
+- Timing: MANDATORY separate workout sessions (NOT in cooldown of other workouts)
 - Focus: {focus}
-- Structure: step_type='steady', duration={{type:'time', seconds:30}}, notes='Hold 30s, target: [muscle]'
+- Structure: Each stretching session must be a COMPLETE SEPARATE WORKOUT with full structure (warmup, main, cooldown segments)
+- Each exercise: step_type='steady', name='Exercise Name' (REQUIRED), duration={{type:'time', seconds:30}}, notes='Hold 30s, target: [muscle]'
 - NO static pre-race (dynamic warmup only)
-- MUST include {stretching_freq} stretching sessions this week
+- MUST include {stretching_freq} separate stretching workout sessions this week
+- Each stretching workout must have complete structure with:
+  * warmup segment (dynamic movements, 2-3min)
+  * main segment (6-10 stretching exercises, each as separate step)
+  * cooldown segment (relaxation, 1-2min)
 
 """
         
@@ -1278,7 +1283,13 @@ PARAMETERS:
 
 3. STRENGTH (CRITICAL): Each exercise is a SEPARATE step: step_type "strength", name "Exercise Name" (REQUIRED), duration {{"type": "repetitions", "repetitions": X}}, notes "Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min". Examples: "Squat", "Deadlift", "Bench Press". DO NOT combine exercises in one step.
 
-4. STRETCHING (CRITICAL): Each exercise is a SEPARATE step: step_type "steady", name "Exercise Name" (REQUIRED), duration {{"type": "time", "seconds": 30}}, notes "Hold 30s, target: [muscle]". Examples: "Hamstring Stretch", "Quad Stretch". DO NOT combine exercises in one step.
+4. STRETCHING (CRITICAL): When include_stretching=True, stretching MUST be separate workout sessions (NOT in cooldown). Each stretching workout must have complete structure:
+   - warmup segment: dynamic movements (2-3min)
+   - main segment: 6-10 stretching exercises, each as SEPARATE step
+   - cooldown segment: relaxation (1-2min)
+   Each exercise step: step_type "steady", name "Exercise Name" (REQUIRED), duration {{"type": "time", "seconds": 30}}, notes "Hold 30s, target: [muscle], repeat: 2-3 times". 
+   Examples: "Hamstring Stretch", "Quad Stretch", "Calf Stretch", "Hip Flexor Stretch". 
+   DO NOT combine exercises in one step. Each stretching workout should be 10-15 minutes total.
 
 5. BRICK: Create TWO separate workouts on same day (bike first, then run). Both need complete structure (warmup/main/cooldown). NO transition steps.
 
@@ -1363,6 +1374,47 @@ OUTPUT_FORMAT (JSON only, no markdown):
                         ],
                         "metadata": {{"focus": "Swim technique", "rpe_target": 6}}
                     }}
+                }},
+                {{
+                    "day": "Thursday",
+                    "type": "Stretching",
+                    "duration_minutes": 12,
+                    "intensity": "Low",
+                    "target_hr": "N/A",
+                    "rpe_target": 2,
+                    "description": "Post-workout stretching session",
+                    "key_focus": "Flexibility and recovery",
+                    "structure": {{
+                        "sport": "stretching",
+                        "segments": [
+                            {{
+                                "segment_type": "warmup",
+                                "steps": [
+                                    {{"step_type": "dynamic", "duration": {{"type": "time", "seconds": 120}}, "notes": "Light dynamic movements"}},
+                                    {{"step_type": "dynamic", "duration": {{"type": "time", "seconds": 60}}, "notes": "Arm circles and leg swings"}}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "main",
+                                "steps": [
+                                    {{"step_type": "steady", "name": "Hamstring Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: hamstrings, repeat: 2-3 times"}},
+                                    {{"step_type": "steady", "name": "Quad Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: quadriceps, repeat: 2-3 times"}},
+                                    {{"step_type": "steady", "name": "Calf Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: calves, repeat: 2-3 times"}},
+                                    {{"step_type": "steady", "name": "Hip Flexor Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: hip_flexors, repeat: 2-3 times"}},
+                                    {{"step_type": "steady", "name": "Shoulder Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: shoulders, repeat: 2-3 times"}},
+                                    {{"step_type": "steady", "name": "Chest Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: chest, repeat: 2-3 times"}},
+                                    {{"step_type": "steady", "name": "Lat Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: lats, repeat: 2-3 times"}}
+                                ]
+                            }},
+                            {{
+                                "segment_type": "cooldown",
+                                "steps": [
+                                    {{"step_type": "steady", "duration": {{"type": "time", "seconds": 60}}, "notes": "Deep breathing and relaxation"}}
+                                ]
+                            }}
+                        ],
+                        "metadata": {{"focus": "Flexibility", "rpe_target": 2}}
+                    }}
                 }}
             ],
             "recovery_notes": "...",
@@ -1370,7 +1422,7 @@ OUTPUT_FORMAT (JSON only, no markdown):
             "adaptation_rationale": "..."
         }}
 
-NOTE: For brick workouts, create TWO separate workouts on the same day (bike first, then run). For stretching, use step_type "steady" with name field. For bike, use zone-based target only.
+NOTE: For brick workouts, create TWO separate workouts on the same day (bike first, then run). For stretching when include_stretching=True, ALWAYS create separate workout sessions with complete structure (warmup/main/cooldown). Each stretching exercise must be a separate step with name field. For bike, use zone-based target only.
 
 ERROR_HANDLING: If constraints impossible (too few days, insufficient weekly_hours), return:
 {{"error": true, "reason": "...", "suggestion": "..."}}
