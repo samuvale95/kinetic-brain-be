@@ -1294,12 +1294,12 @@ PARAMETERS:
 - Timing: MANDATORY separate workout sessions (NOT in cooldown of other workouts)
 - Focus: {focus}
 - Structure: Each stretching session must be a COMPLETE SEPARATE WORKOUT with full structure (warmup, main, cooldown segments)
-- Each exercise: step_type='steady', name='Exercise Name' (REQUIRED), duration={{type:'time', seconds:30}}, notes='Hold 30s, target: [muscle]'
+- Each exercise: Use step_type "repeat" with repeat: 2-3 and steps: [stretch_step]. The stretch_step: step_type "steady", name "Exercise Name" (REQUIRED), duration {{type:'time', seconds:30}}, notes "Hold 30s, target: [muscle]"
 - NO static pre-race (dynamic warmup only)
 - MUST include {stretching_freq} separate stretching workout sessions this week
 - Each stretching workout must have complete structure with:
   * warmup segment (dynamic movements, 2-3min)
-  * main segment (6-10 stretching exercises, each as separate step)
+  * main segment (6-10 stretching exercises, each as separate step with repeat structure)
   * cooldown segment (relaxation, 1-2min)
 
 """
@@ -1362,7 +1362,7 @@ PARAMETERS:
 - Intensity: {strength_intensity}
 - Reps: {strength_reps}
 - Timing: separate days preferred, or 90min+ after endurance (strength first)
-- Structure: step_type='strength', duration={{type:'repetitions', repetitions:X}}, notes='Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min'
+- Structure: Use step_type "repeat" with repeat: N (number of sets) and steps: [strength_step, rest_step]. The strength_step: step_type "strength", name "Exercise Name" (REQUIRED), duration {{type:'repetitions', repetitions:Y}}, notes "Intensity: Z% 1RM". The rest_step: step_type "rest", duration {{type:'time', seconds:W}}, notes "Rest between sets"
 - Focus: compound movements
 {equipment_info}
 - MANDATORY: {equipment_instruction}
@@ -1402,17 +1402,21 @@ PARAMETERS:
 
 2. INTERVALLI (CRITICAL): Use step_type "repeat" with repeat: N and steps: [interval_step, recovery_step]. Each interval step: step_type "interval", duration {{"type": "time", "seconds": X}}, target {{"type": "zone", "zone": "Z4"}}. Each recovery: step_type "recovery", duration {{"type": "time", "seconds": X}}, target {{"type": "zone", "zone": "Z1"}}. Example "5min Z4/3min Z1 x4": {{"step_type": "repeat", "repeat": 4, "steps": [{{"step_type": "interval", "duration": {{"type": "time", "seconds": 300}}, "target": {{"type": "zone", "zone": "Z4"}}}}, {{"step_type": "recovery", "duration": {{"type": "time", "seconds": 180}}, "target": {{"type": "zone", "zone": "Z1"}}}}]}}.
 
-3. STRENGTH (CRITICAL): Each exercise is a SEPARATE step: step_type "strength", name "Exercise Name" (REQUIRED), duration {{"type": "repetitions", "repetitions": X}}, notes "Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min". 
+3. STRENGTH (CRITICAL): Each exercise is a SEPARATE step using step_type "repeat" for sets. Structure: step_type "repeat", repeat: N (number of sets), steps: [strength_step, rest_step]. 
+   - strength_step: step_type "strength", name "Exercise Name" (REQUIRED), duration {{"type": "repetitions", "repetitions": Y}}, notes "Intensity: Z% 1RM"
+   - rest_step: step_type "rest", duration {{"type": "time", "seconds": W}}, notes "Rest between sets"
+   - Example "3 sets of 15 reps with 60s rest": {{"step_type": "repeat", "repeat": 3, "steps": [{{"step_type": "strength", "name": "Bodyweight Squats", "duration": {{"type": "repetitions", "repetitions": 15}}, "notes": "Intensity: Bodyweight"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 60}}, "notes": "Rest between sets"}}]}}
    - DEFAULT: ALL exercises MUST be BODYWEIGHT ONLY unless user has equipment/gym mentioned in physical_notes.
    - Bodyweight examples: "Push-ups", "Pull-ups", "Bodyweight Squats", "Lunges", "Planks", "Dips", "Burpees", "Mountain Climbers", "Jump Squats", "Pistol Squats", "Handstand Push-ups", "Single-leg Deadlifts (bodyweight)", etc.
    - Equipment exercises (ONLY if physical_notes mentions gym/equipment): "Barbell Squat", "Deadlift", "Bench Press", "Dumbbell Rows", etc.
-   - DO NOT combine exercises in one step.
+   - DO NOT combine exercises in one step. Each exercise is a separate repeat block.
 
 4. STRETCHING (CRITICAL): When include_stretching=True, stretching MUST be separate workout sessions (NOT in cooldown). Each stretching workout must have complete structure:
    - warmup segment: dynamic movements (2-3min)
-   - main segment: 6-10 stretching exercises, each as SEPARATE step
+   - main segment: 6-10 stretching exercises, each as SEPARATE step using step_type "repeat"
    - cooldown segment: relaxation (1-2min)
-   Each exercise step: step_type "steady", name "Exercise Name" (REQUIRED), duration {{"type": "time", "seconds": 30}}, notes "Hold 30s, target: [muscle], repeat: 2-3 times". 
+   Each exercise step: Use step_type "repeat" with repeat: 2-3 and steps: [stretch_step]. The stretch_step: step_type "steady", name "Exercise Name" (REQUIRED), duration {{"type": "time", "seconds": 30}}, notes "Hold 30s, target: [muscle]". 
+   Example: {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Hamstring Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: hamstrings"}}]}}
    Examples: "Hamstring Stretch", "Quad Stretch", "Calf Stretch", "Hip Flexor Stretch". 
    DO NOT combine exercises in one step. Each stretching workout should be 10-15 minutes total.
 
@@ -1476,11 +1480,11 @@ OUTPUT_FORMAT (JSON only, no markdown):
                         "segments": [
                             {{"segment_type": "warmup", "steps": [{{"step_type": "dynamic", "duration": {{"type": "time", "seconds": 300}}, "notes": "Dynamic warm-up: arm circles, leg swings"}}]}},
                             {{"segment_type": "main", "steps": [
-                                {{"step_type": "strength", "name": "Bodyweight Squats", "duration": {{"type": "repetitions", "repetitions": 15}}, "notes": "Sets: 3, Reps: 15, Bodyweight, Rest: 60s"}},
-                                {{"step_type": "strength", "name": "Push-ups", "duration": {{"type": "repetitions", "repetitions": 12}}, "notes": "Sets: 3, Reps: 12, Bodyweight, Rest: 60s"}},
-                                {{"step_type": "strength", "name": "Lunges", "duration": {{"type": "repetitions", "repetitions": 10}}, "notes": "Sets: 3, Reps: 10 per leg, Bodyweight, Rest: 60s"}},
-                                {{"step_type": "strength", "name": "Plank", "duration": {{"type": "time", "seconds": 60}}, "notes": "Sets: 3, Hold: 60s, Rest: 60s"}},
-                                {{"step_type": "strength", "name": "Burpees", "duration": {{"type": "repetitions", "repetitions": 10}}, "notes": "Sets: 2, Reps: 10, Bodyweight, Rest: 90s"}}
+                                {{"step_type": "repeat", "repeat": 3, "steps": [{{"step_type": "strength", "name": "Bodyweight Squats", "duration": {{"type": "repetitions", "repetitions": 15}}, "notes": "Intensity: Bodyweight"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 60}}, "notes": "Rest between sets"}}]}},
+                                {{"step_type": "repeat", "repeat": 3, "steps": [{{"step_type": "strength", "name": "Push-ups", "duration": {{"type": "repetitions", "repetitions": 12}}, "notes": "Intensity: Bodyweight"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 60}}, "notes": "Rest between sets"}}]}},
+                                {{"step_type": "repeat", "repeat": 3, "steps": [{{"step_type": "strength", "name": "Lunges", "duration": {{"type": "repetitions", "repetitions": 10}}, "notes": "Intensity: Bodyweight, per leg"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 60}}, "notes": "Rest between sets"}}]}},
+                                {{"step_type": "repeat", "repeat": 3, "steps": [{{"step_type": "strength", "name": "Plank", "duration": {{"type": "time", "seconds": 60}}, "notes": "Intensity: Bodyweight"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 60}}, "notes": "Rest between sets"}}]}},
+                                {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "strength", "name": "Burpees", "duration": {{"type": "repetitions", "repetitions": 10}}, "notes": "Intensity: Bodyweight"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 90}}, "notes": "Rest between sets"}}]}}
                             ]}},
                             {{"segment_type": "cooldown", "steps": [{{"step_type": "steady", "name": "Quad Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: quads"}}]}}
                         ],
@@ -1528,13 +1532,13 @@ OUTPUT_FORMAT (JSON only, no markdown):
                             {{
                                 "segment_type": "main",
                                 "steps": [
-                                    {{"step_type": "steady", "name": "Hamstring Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: hamstrings, repeat: 2-3 times"}},
-                                    {{"step_type": "steady", "name": "Quad Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: quadriceps, repeat: 2-3 times"}},
-                                    {{"step_type": "steady", "name": "Calf Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: calves, repeat: 2-3 times"}},
-                                    {{"step_type": "steady", "name": "Hip Flexor Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: hip_flexors, repeat: 2-3 times"}},
-                                    {{"step_type": "steady", "name": "Shoulder Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: shoulders, repeat: 2-3 times"}},
-                                    {{"step_type": "steady", "name": "Chest Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: chest, repeat: 2-3 times"}},
-                                    {{"step_type": "steady", "name": "Lat Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: lats, repeat: 2-3 times"}}
+                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Hamstring Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: hamstrings"}}]}},
+                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Quad Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: quadriceps"}}]}},
+                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Calf Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: calves"}}]}},
+                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Hip Flexor Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: hip_flexors"}}]}},
+                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Shoulder Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: shoulders"}}]}},
+                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Chest Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: chest"}}]}},
+                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Lat Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: lats"}}]}}
                                 ]
                             }},
                             {{
