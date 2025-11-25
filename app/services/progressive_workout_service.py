@@ -1247,6 +1247,33 @@ PARAMETERS:
                 strength_reps = "N/A"
             
             if strength_freq != "skip":
+                # Check if user has gym equipment or access mentioned in physical_notes
+                has_equipment = False
+                has_gym = False
+                equipment_info = ""
+                
+                if current_fitness and current_fitness.get('physical_notes'):
+                    physical_notes_lower = str(current_fitness.get('physical_notes', '')).lower()
+                    equipment_keywords = ['palestra', 'gym', 'pesi', 'weights', 'bilanciere', 'barbell', 'manubri', 'dumbbell', 'kettlebell', 'macchinari', 'machines', 'attrezzatura', 'equipment', 'abbonamento']
+                    gym_keywords = ['palestra', 'gym', 'fitness center', 'abbonamento', 'membership']
+                    
+                    for keyword in equipment_keywords:
+                        if keyword in physical_notes_lower:
+                            has_equipment = True
+                            break
+                    
+                    for keyword in gym_keywords:
+                        if keyword in physical_notes_lower:
+                            has_gym = True
+                            break
+                
+                if has_equipment or has_gym:
+                    equipment_info = f"\n- Equipment available: YES (check physical_notes for specific equipment: {current_fitness.get('physical_notes', '')[:100]})"
+                    equipment_instruction = "You can use gym equipment if specified in physical_notes. Otherwise, prefer bodyweight exercises."
+                else:
+                    equipment_info = "\n- Equipment available: NO (use bodyweight exercises only)"
+                    equipment_instruction = "ALL exercises MUST be BODYWEIGHT ONLY. Use exercises like: Push-ups, Pull-ups, Squats (bodyweight), Lunges, Planks, Dips, Burpees, Mountain Climbers, Jump Squats, etc. NO weights, barbells, dumbbells, or gym machines."
+                
                 prompt += f"""[MANDATORY] STRENGTH_INTEGRATION:
 - Frequency: {strength_freq}
 - Intensity: {strength_intensity}
@@ -1254,6 +1281,8 @@ PARAMETERS:
 - Timing: separate days preferred, or 90min+ after endurance (strength first)
 - Structure: step_type='strength', duration={{type:'repetitions', repetitions:X}}, notes='Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min'
 - Focus: compound movements
+{equipment_info}
+- MANDATORY: {equipment_instruction}
 - MUST include strength sessions as specified
 
 """
@@ -1281,7 +1310,11 @@ PARAMETERS:
 
 2. INTERVALLI (CRITICAL): Use step_type "repeat" with repeat: N and steps: [interval_step, recovery_step]. Each interval step: step_type "interval", duration {{"type": "time", "seconds": X}}, target {{"type": "zone", "zone": "Z4"}}. Each recovery: step_type "recovery", duration {{"type": "time", "seconds": X}}, target {{"type": "zone", "zone": "Z1"}}. Example "5min Z4/3min Z1 x4": {{"step_type": "repeat", "repeat": 4, "steps": [{{"step_type": "interval", "duration": {{"type": "time", "seconds": 300}}, "target": {{"type": "zone", "zone": "Z4"}}}}, {{"step_type": "recovery", "duration": {{"type": "time", "seconds": 180}}, "target": {{"type": "zone", "zone": "Z1"}}}}]}}.
 
-3. STRENGTH (CRITICAL): Each exercise is a SEPARATE step: step_type "strength", name "Exercise Name" (REQUIRED), duration {{"type": "repetitions", "repetitions": X}}, notes "Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min". Examples: "Squat", "Deadlift", "Bench Press". DO NOT combine exercises in one step.
+3. STRENGTH (CRITICAL): Each exercise is a SEPARATE step: step_type "strength", name "Exercise Name" (REQUIRED), duration {{"type": "repetitions", "repetitions": X}}, notes "Sets: X, Reps: Y, Intensity: Z% 1RM, Rest: W min". 
+   - DEFAULT: ALL exercises MUST be BODYWEIGHT ONLY unless user has equipment/gym mentioned in physical_notes.
+   - Bodyweight examples: "Push-ups", "Pull-ups", "Bodyweight Squats", "Lunges", "Planks", "Dips", "Burpees", "Mountain Climbers", "Jump Squats", "Pistol Squats", "Handstand Push-ups", "Single-leg Deadlifts (bodyweight)", etc.
+   - Equipment exercises (ONLY if physical_notes mentions gym/equipment): "Barbell Squat", "Deadlift", "Bench Press", "Dumbbell Rows", etc.
+   - DO NOT combine exercises in one step.
 
 4. STRETCHING (CRITICAL): When include_stretching=True, stretching MUST be separate workout sessions (NOT in cooldown). Each stretching workout must have complete structure:
    - warmup segment: dynamic movements (2-3min)
@@ -1344,16 +1377,22 @@ OUTPUT_FORMAT (JSON only, no markdown):
                     "intensity": "High",
                     "target_hr": "N/A",
                     "rpe_target": 7,
-                    "description": "Strength training",
-                    "key_focus": "Compound movements",
+                    "description": "Bodyweight strength training",
+                    "key_focus": "Compound movements - bodyweight only",
                     "structure": {{
                         "sport": "strength",
                         "segments": [
-                            {{"segment_type": "warmup", "steps": [{{"step_type": "dynamic", "duration": {{"type": "time", "seconds": 300}}, "notes": "Dynamic warm-up"}}]}},
-                            {{"segment_type": "main", "steps": [{{"step_type": "strength", "name": "Squat", "duration": {{"type": "repetitions", "repetitions": 5}}, "notes": "Sets: 3, Reps: 5, Intensity: 90% 1RM, Rest: 2 min"}}, {{"step_type": "strength", "name": "Deadlift", "duration": {{"type": "repetitions", "repetitions": 5}}, "notes": "Sets: 3, Reps: 5, Intensity: 90% 1RM, Rest: 3 min"}}]}},
+                            {{"segment_type": "warmup", "steps": [{{"step_type": "dynamic", "duration": {{"type": "time", "seconds": 300}}, "notes": "Dynamic warm-up: arm circles, leg swings"}}]}},
+                            {{"segment_type": "main", "steps": [
+                                {{"step_type": "strength", "name": "Bodyweight Squats", "duration": {{"type": "repetitions", "repetitions": 15}}, "notes": "Sets: 3, Reps: 15, Bodyweight, Rest: 60s"}},
+                                {{"step_type": "strength", "name": "Push-ups", "duration": {{"type": "repetitions", "repetitions": 12}}, "notes": "Sets: 3, Reps: 12, Bodyweight, Rest: 60s"}},
+                                {{"step_type": "strength", "name": "Lunges", "duration": {{"type": "repetitions", "repetitions": 10}}, "notes": "Sets: 3, Reps: 10 per leg, Bodyweight, Rest: 60s"}},
+                                {{"step_type": "strength", "name": "Plank", "duration": {{"type": "time", "seconds": 60}}, "notes": "Sets: 3, Hold: 60s, Rest: 60s"}},
+                                {{"step_type": "strength", "name": "Burpees", "duration": {{"type": "repetitions", "repetitions": 10}}, "notes": "Sets: 2, Reps: 10, Bodyweight, Rest: 90s"}}
+                            ]}},
                             {{"segment_type": "cooldown", "steps": [{{"step_type": "steady", "name": "Quad Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: quads"}}]}}
                         ],
-                        "metadata": {{"focus": "Strength", "rpe_target": 7}}
+                        "metadata": {{"focus": "Bodyweight Strength", "rpe_target": 7}}
                     }}
                 }},
                 {{
