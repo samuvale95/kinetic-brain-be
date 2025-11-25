@@ -68,8 +68,17 @@ class WorkoutPlanValidator:
     def validate(self, plan: Dict[str, Any], user_state: Optional[Dict[str, Any]] = None) -> None:
         violations: List[str] = []
 
+        # Support both formats:
+        # 1. Full plan format: {"weeks": [{"week": 1, "workouts": [...]}, ...]}
+        # 2. Progressive weekly format: {"week": 1, "workouts": [...], "focus": "..."}
         weeks = plan.get("weeks") or []
-        if not weeks:
+        
+        # Check if this is a single week (progressive format)
+        if not weeks and plan.get("week") is not None and plan.get("workouts") is not None:
+            # Convert single week to array format for consistent processing
+            weeks = [plan]
+            logger.debug("[PLAN_VALIDATION] Validating single week (progressive format)")
+        elif not weeks:
             raise PlanValidationError(["Plan contains no weeks"])
 
         requested_duration = plan.get("duration_weeks")

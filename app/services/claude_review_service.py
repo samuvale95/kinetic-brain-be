@@ -79,7 +79,7 @@ class ClaudeReviewService:
             # Call Claude API
             message = self.client.messages.create(
                 model=settings.anthropic_model,
-                max_tokens=4000,
+                max_tokens=16000,  # Increased to handle large JSON responses
                 temperature=0.3,  # Lower temperature for more consistent reviews
                 messages=[
                     {
@@ -249,13 +249,45 @@ IMPORTANT: The improved_plan must maintain the same structure as the original pl
             
         except json.JSONDecodeError as e:
             logger.warning(f"[CLAUDE_REVIEW] Failed to parse JSON response: {e}")
-            logger.debug(f"[CLAUDE_REVIEW] Response text: {response_text[:500]}")
+            logger.debug(f"[CLAUDE_REVIEW] Response text: {response_text[:1000]}")
             
-            # Fallback: if we can't parse, approve the plan
+            # Try to extract partial JSON if available
+            try:
+                # Try to find JSON in the response even if truncated
+                json_start = response_text.find('{')
+                json_end = response_text.rfind('}')
+                if json_start >= 0 and json_end > json_start:
+                    partial_json = response_text[json_start:json_end+1]
+                    # Try to fix common truncation issues
+                    if not partial_json.strip().endswith('}'):
+                        # Add closing braces for truncated JSON
+                        open_braces = partial_json.count('{') - partial_json.count('}')
+                        if open_braces > 0:
+                            partial_json += '}' * open_braces
+                            # Try to close any open strings
+                            if partial_json.count('"') % 2 != 0:
+                                partial_json = partial_json.rstrip('"') + '"}'
+                    
+                    try:
+                        review_data = json.loads(partial_json)
+                        logger.info("[CLAUDE_REVIEW] Successfully parsed partial/truncated JSON")
+                        return {
+                            "approved": review_data.get("approved", False),  # Default to False if we can't parse properly
+                            "review_notes": review_data.get("review_notes", f"Partial response parsed. Original error: {str(e)}"),
+                            "changelog": review_data.get("changelog"),
+                            "improved_plan": review_data.get("improved_plan"),
+                        }
+                    except json.JSONDecodeError:
+                        pass  # Fall through to default behavior
+            except Exception as parse_error:
+                logger.debug(f"[CLAUDE_REVIEW] Failed to extract partial JSON: {parse_error}")
+            
+            # Fallback: if we can't parse at all, reject the plan to be safe
+            # (better to fail safe than approve a potentially invalid plan)
             return {
-                "approved": True,
-                "review_notes": f"Could not parse Claude's response: {str(e)}. Plan approved by default.",
-                "changelog": None,
+                "approved": False,
+                "review_notes": f"Could not parse Claude's response due to: {str(e)}. Response may be truncated. Plan needs manual review.",
+                "changelog": ["JSON parsing failed - response may be truncated"],
                 "improved_plan": None,
             }
     

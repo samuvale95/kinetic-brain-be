@@ -270,6 +270,36 @@ class ProgressiveWorkoutPlanService:
                             "_claude_reviewed": True,
                             "_claude_changelog": claude_review.changelog,
                         })
+                        # Re-validate the improved plan
+                        try:
+                            user_state = None
+                            if current_fitness_level:
+                                user_state = {
+                                    "readiness_state": current_fitness_level.get("readiness_state"),
+                                    "recovery_index": current_fitness_level.get("recovery_index"),
+                                    "injury_risk_score": current_fitness_level.get("injury_risk_score"),
+                                    "hydration_score": current_fitness_level.get("hydration_score"),
+                                }
+                            self.plan_validator.validate(plan_data, user_state=user_state)
+                            logger.info("[PROGRESSIVE] Claude's improved plan passed validator")
+                        except PlanValidationError as e:
+                            logger.warning(f"[PROGRESSIVE] Claude's improved plan still has validation issues: {e.violations}")
+                            # Continue with improved plan anyway - Claude reviewed it
+                    elif not claude_review.approved and not claude_review.improved_plan:
+                        # Claude rejected the plan but didn't provide an improved version
+                        if validator_has_errors:
+                            # Both validator and Claude rejected - this is problematic
+                            error_msg = f"Plan rejected by both validator and Claude. Validator errors: {validator_results.get('violations', [])}. Claude notes: {claude_review.review_notes}"
+                            logger.error(f"[PROGRESSIVE] {error_msg}")
+                            # Continue with original plan but log the issue
+                            plan_data["_claude_reviewed"] = True
+                            plan_data["_claude_approved"] = False
+                            plan_data["_validation_warnings"] = error_msg
+                        else:
+                            # Only Claude rejected, validator passed - log but continue
+                            logger.warning(f"[PROGRESSIVE] Claude rejected plan but validator passed. Notes: {claude_review.review_notes}")
+                            plan_data["_claude_reviewed"] = True
+                            plan_data["_claude_approved"] = False
                     elif claude_review.approved:
                         logger.info("[PROGRESSIVE] Claude approved the plan")
                         plan_data["_claude_reviewed"] = True
@@ -278,6 +308,7 @@ class ProgressiveWorkoutPlanService:
                 except Exception as e:
                     logger.warning(f"[PROGRESSIVE] Claude review failed: {e}, using original plan")
                     # Continue with original plan if Claude fails
+                    # If validator also failed, this could be problematic but we continue anyway
             else:
                 logger.info(f"[PROGRESSIVE] Claude review skipped (percentage threshold or no errors)")
         else:
