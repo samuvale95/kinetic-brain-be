@@ -737,9 +737,11 @@ PARAMETERS:
             target_sessions = session_matrix.get(normalized_level, {}).get(race_distance, {}).get(phase, {})
             
             if target_sessions:
-                total_sessions = sum([target_sessions.get("swim", 0), target_sessions.get("bike", 0), 
-                                     target_sessions.get("run", 0), target_sessions.get("strength", 0), 
-                                     target_sessions.get("brick", 0)])
+                # Calculate CORE sessions (sport-specific only, excluding strength)
+                core_sessions = sum([target_sessions.get("swim", 0), target_sessions.get("bike", 0), 
+                                   target_sessions.get("run", 0), target_sessions.get("brick", 0)])
+                # Strength is auxiliary and does NOT count toward core minimum
+                strength_sessions = target_sessions.get("strength", 0)
                 
                 prompt += f"\n\n=== TRIATHLON TRAINING GUIDELINES (MANDATORY) ==="
                 prompt += f"\nBased on scientific triathlon training guide for {normalized_level} level, {race_distance} distance, {phase} phase:"
@@ -747,11 +749,26 @@ PARAMETERS:
                 prompt += f"\n- Swim: {target_sessions.get('swim', 0)} sessions/week (minimum)"
                 prompt += f"\n- Bike: {target_sessions.get('bike', 0)} sessions/week"
                 prompt += f"\n- Run: {target_sessions.get('run', 0)} sessions/week"
-                if target_sessions.get('strength', 0) > 0:
-                    prompt += f"\n- Strength: {target_sessions.get('strength', 0)} session(s)/week"
                 if target_sessions.get('brick', 0) > 0:
                     prompt += f"\n- Brick workouts: {target_sessions.get('brick', 0)} session(s)/week"
-                prompt += f"\n- TOTAL SESSIONS: {total_sessions} minimum per week"
+                if strength_sessions > 0:
+                    prompt += f"\n- Strength: {strength_sessions} session(s)/week (AUXILIARY - does NOT count toward core minimum)"
+                prompt += f"\n- CORE SPORT SESSIONS TOTAL: {core_sessions} minimum per week (swim+bike+run+brick only)"
+                
+                prompt += f"\n\n[MANDATORY] SESSION COUNTING LOGIC:"
+                prompt += f"\nYou MUST generate the sport-specific minimums INDEPENDENTLY of strength and stretching:"
+                prompt += f"\n- Swim: AT LEAST {target_sessions.get('swim', 0)} sessions/week (do NOT count strength/stretching toward this)"
+                prompt += f"\n- Bike: AT LEAST {target_sessions.get('bike', 0)} sessions/week (do NOT count strength/stretching toward this)"
+                prompt += f"\n- Run: AT LEAST {target_sessions.get('run', 0)} sessions/week (do NOT count strength/stretching toward this)"
+                if target_sessions.get('brick', 0) > 0:
+                    prompt += f"\n- Brick: AT LEAST {target_sessions.get('brick', 0)} session(s)/week (do NOT count strength/stretching toward this)"
+                if strength_sessions > 0:
+                    prompt += f"\nAdditionally, schedule:"
+                    prompt += f"\n- Strength: {strength_sessions} session(s)/week (these DO NOT count toward sport-specific total)"
+                prompt += f"\n- Stretching: (if include_stretching=True, specified separately - does NOT count toward core minimum)"
+                prompt += f"\n\nCRITICAL: Total workouts in the week = sum of ALL type-specific sessions (core sport + strength + stretching)."
+                prompt += f"\nNEVER count stretching/strength sessions as swim/bike/run sessions to satisfy the minimums."
+                prompt += f"\nEach category is INDEPENDENT and must be scheduled separately."
                 
                 prompt += f"\n\nCRITICAL RULES:"
                 prompt += f"\n- Swim frequency is CRITICAL: minimum {target_sessions.get('swim', 0)}×/week (technique-dependent)"
@@ -784,7 +801,7 @@ PARAMETERS:
                     prompt += f"\n- 4-5 double sessions/week"
                     prompt += f"\n- Back-to-back days for easy sessions"
                 
-                prompt += f"\n\nMANDATORY: Generate {total_sessions} workouts minimum this week following the session distribution above."
+                prompt += f"\n\nMANDATORY: Generate {core_sessions} CORE sport workouts minimum this week (swim+bike+run+brick), PLUS any required strength/stretching sessions as specified separately."
                 prompt += f"\n"
         
         # Running-specific guidelines based on running_session_guide.md
@@ -890,7 +907,22 @@ PARAMETERS:
                 if target_sessions.get('hard', 0) > 0:
                     prompt += f"\n- Hard runs (Zone 4-5): {target_sessions.get('hard', 0)} session(s)/week (intervals/tempo)"
                 prompt += f"\n- Long run: {target_sessions.get('long', 0)} session(s)/week"
-                prompt += f"\n- TOTAL SESSIONS: {total_sessions} per week"
+                prompt += f"\n- CORE RUNNING SESSIONS TOTAL: {total_sessions} per week (easy+moderate+hard+long only)"
+                
+                prompt += f"\n\n[MANDATORY] SESSION COUNTING LOGIC:"
+                prompt += f"\nYou MUST generate the running minimums INDEPENDENTLY of strength and stretching:"
+                prompt += f"\n- Easy runs: AT LEAST {target_sessions.get('easy', 0)} sessions/week (do NOT count strength/stretching toward this)"
+                if target_sessions.get('moderate', 0) > 0:
+                    prompt += f"\n- Moderate runs: AT LEAST {target_sessions.get('moderate', 0)} session(s)/week (do NOT count strength/stretching toward this)"
+                if target_sessions.get('hard', 0) > 0:
+                    prompt += f"\n- Hard runs: AT LEAST {target_sessions.get('hard', 0)} session(s)/week (do NOT count strength/stretching toward this)"
+                prompt += f"\n- Long run: AT LEAST {target_sessions.get('long', 0)} session(s)/week (do NOT count strength/stretching toward this)"
+                prompt += f"\nAdditionally, schedule (if specified):"
+                prompt += f"\n- Strength: (if include_strength=True, specified separately - does NOT count toward running total)"
+                prompt += f"\n- Stretching: (if include_stretching=True, specified separately - does NOT count toward running total)"
+                prompt += f"\n\nCRITICAL: Total workouts in the week = sum of ALL type-specific sessions (running + strength + stretching)."
+                prompt += f"\nNEVER count stretching/strength sessions as running sessions to satisfy the minimums."
+                prompt += f"\nEach category is INDEPENDENT and must be scheduled separately."
                 
                 prompt += f"\n\nINTENSITY DISTRIBUTION:"
                 if normalized_level == "PRINCIPIANTE":
@@ -929,7 +961,7 @@ PARAMETERS:
                     prompt += f"\n- 1-2 strength sessions"
                     prompt += f"\n- Back-to-back easy sessions possible"
                 
-                prompt += f"\n\nMANDATORY: Generate {total_sessions} running workouts minimum this week following the session distribution above."
+                prompt += f"\n\nMANDATORY: Generate {total_sessions} running workouts minimum this week (easy+moderate+hard+long), PLUS any required strength/stretching sessions as specified separately."
                 prompt += f"\n"
         
         # Trail Running-specific guidelines based on trail_running_session_guide.md
@@ -990,6 +1022,23 @@ PARAMETERS:
                 prompt += f"\n- 2-3 hard sessions (VO2max, threshold, downhill reps)"
                 prompt += f"\n- 1-2 downhill technique sessions"
                 prompt += f"\n- 1 long ultra prep (25-30 km, 1500m+ D+)"
+            
+            prompt += f"\n\n[MANDATORY] SESSION COUNTING LOGIC:"
+            prompt += f"\nYou MUST generate the trail running minimums INDEPENDENTLY of strength and stretching:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- Trail sessions: AT LEAST 2-3 sessions/week (do NOT count strength/stretching toward this)"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- Trail sessions: AT LEAST 3-4 sessions/week (do NOT count strength/stretching toward this)"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- Trail sessions: AT LEAST 4-5 sessions/week (do NOT count strength/stretching toward this)"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- Trail sessions: AT LEAST 5-7 sessions/week (do NOT count strength/stretching toward this)"
+            prompt += f"\nAdditionally, schedule (if specified):"
+            prompt += f"\n- Strength: (if include_strength=True, specified separately - does NOT count toward trail total)"
+            prompt += f"\n- Stretching: (if include_stretching=True, specified separately - does NOT count toward trail total)"
+            prompt += f"\n\nCRITICAL: Total workouts in the week = sum of ALL type-specific sessions (trail + strength + stretching)."
+            prompt += f"\nNEVER count stretching/strength sessions as trail sessions to satisfy the minimums."
+            prompt += f"\nEach category is INDEPENDENT and must be scheduled separately."
             
             prompt += f"\n\nELEVATION SAFETY RULES:"
             prompt += f"\n- Max D+ per session: PRINCIPIANTE=600m, INTERMEDIO=1000m, AVANZATO=1500m, ELITE=2500m"
@@ -1057,6 +1106,23 @@ PARAMETERS:
                 prompt += f"\n- 3 hard sessions (threshold, VO2max, sprint)"
                 prompt += f"\n- 1-2 OW sessions weekly (in season)"
                 prompt += f"\n- Volume: 18-28 km/week"
+            
+            prompt += f"\n\n[MANDATORY] SESSION COUNTING LOGIC:"
+            prompt += f"\nYou MUST generate the swimming minimums INDEPENDENTLY of strength and stretching:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- Swim sessions: AT LEAST 2-3 sessions/week (do NOT count strength/stretching toward this)"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- Swim sessions: AT LEAST 3-4 sessions/week (do NOT count strength/stretching toward this)"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- Swim sessions: AT LEAST 4-5 sessions/week (do NOT count strength/stretching toward this)"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- Swim sessions: AT LEAST 6-7 sessions/week (do NOT count strength/stretching toward this)"
+            prompt += f"\nAdditionally, schedule (if specified):"
+            prompt += f"\n- Strength: (if include_strength=True, specified separately - does NOT count toward swim total)"
+            prompt += f"\n- Stretching: (if include_stretching=True, specified separately - does NOT count toward swim total)"
+            prompt += f"\n\nCRITICAL: Total workouts in the week = sum of ALL type-specific sessions (swim + strength + stretching)."
+            prompt += f"\nNEVER count stretching/strength sessions as swim sessions to satisfy the minimums."
+            prompt += f"\nEach category is INDEPENDENT and must be scheduled separately."
             
             prompt += f"\n\nINTENSITY DISTRIBUTION:"
             if normalized_level == "PRINCIPIANTE":
@@ -1145,6 +1211,23 @@ PARAMETERS:
                 prompt += f"\n- 3-4 hard sessions (VO2max, threshold, sprint, race sim)"
                 prompt += f"\n- 1 long ultra-endurance (200+ km)"
                 prompt += f"\n- Weekly TSS: 1000-1400"
+            
+            prompt += f"\n\n[MANDATORY] SESSION COUNTING LOGIC:"
+            prompt += f"\nYou MUST generate the cycling minimums INDEPENDENTLY of strength and stretching:"
+            if normalized_level == "PRINCIPIANTE":
+                prompt += f"\n- Bike sessions: AT LEAST 3-4 sessions/week (do NOT count strength/stretching toward this)"
+            elif normalized_level == "INTERMEDIO":
+                prompt += f"\n- Bike sessions: AT LEAST 4-5 sessions/week (do NOT count strength/stretching toward this)"
+            elif normalized_level == "AVANZATO":
+                prompt += f"\n- Bike sessions: AT LEAST 5-6 sessions/week (do NOT count strength/stretching toward this)"
+            elif normalized_level == "ELITE":
+                prompt += f"\n- Bike sessions: AT LEAST 6-8 sessions/week (do NOT count strength/stretching toward this)"
+            prompt += f"\nAdditionally, schedule (if specified):"
+            prompt += f"\n- Strength: (if include_strength=True, specified separately - does NOT count toward bike total)"
+            prompt += f"\n- Stretching: (if include_stretching=True, specified separately - does NOT count toward bike total)"
+            prompt += f"\n\nCRITICAL: Total workouts in the week = sum of ALL type-specific sessions (bike + strength + stretching)."
+            prompt += f"\nNEVER count stretching/strength sessions as bike sessions to satisfy the minimums."
+            prompt += f"\nEach category is INDEPENDENT and must be scheduled separately."
             
             prompt += f"\n\nINTENSITY DISTRIBUTION:"
             if normalized_level == "PRINCIPIANTE":
@@ -1305,6 +1388,15 @@ PARAMETERS:
         
         prompt += f"""
 [MANDATORY] OUTPUT_REQUIREMENTS:
+
+[MANDATORY] SESSION COUNTING RULES:
+- Core sport sessions (run/bike/swim/triathlon-specific) must be generated to meet the MINIMUM requirements specified in the sport-specific guidelines above.
+- Strength sessions (if include_strength=True) are SUPPLEMENTAL and do NOT count toward core sport minimums.
+- Stretching sessions (if include_stretching=True) are SUPPLEMENTAL and do NOT count toward core sport minimums.
+- Total workouts = core sport sessions + strength sessions + stretching sessions.
+- NEVER combine strength or stretching sessions with sport sessions for the purpose of satisfying the minimums.
+- Each category is INDEPENDENT and must be scheduled separately.
+- If available days < total workouts required, prioritize: (1) core sport sessions, (2) strength sessions, (3) stretching sessions.
 
 1. GENERAL: Every step MUST have step_type, duration, target (for endurance), notes. Target is REQUIRED for all endurance steps (run/bike/swim). Format: {{"type": "zone", "zone": "Z1-Z7"}}. NEVER put structure only in notes - each step must be a complete JSON object.
 

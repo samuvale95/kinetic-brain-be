@@ -31,7 +31,12 @@ target_metadata = Base.metadata
 
 
 def get_url():
-    """Get database URL from environment or config"""
+    """Get database URL giving priority to settings (handles AWS secrets)."""
+    # settings.database_url already accounts for AWS_SECRET_NAME if configured
+    if getattr(settings, "database_url", None):
+        return settings.database_url
+    
+    # Fallback to env var or alembic.ini
     return os.getenv("DATABASE_URL", config.get_main_option("sqlalchemy.url"))
 
 
