@@ -191,6 +191,25 @@ TRAINING PLAN TO REVIEW:
 VALIDATOR RESULTS:
 {validator_json}
 """
+            
+            # Check for missing workouts
+            if validator_results.get("missing_workouts"):
+                missing = validator_results["missing_workouts"]
+                prompt += f"""
+
+CRITICAL: MISSING REQUIRED WORKOUTS DETECTED:
+- Missing {missing.get('strength', 0)} strength workout(s) (required: {missing.get('required_strength', 0)})
+- Missing {missing.get('stretching', 0)} stretching workout(s) (required: {missing.get('required_stretching', 0)})
+
+YOU MUST:
+1. Add the missing strength workouts if strength > 0
+2. Add the missing stretching workouts if stretching > 0
+3. Ensure each workout has complete structure (warmup/main/cooldown)
+4. Follow the format specified in the original prompt for strength/stretching workouts
+5. Use step_type "repeat" for strength sets and stretching repetitions as specified
+
+The improved_plan MUST include all required workouts. This is MANDATORY.
+"""
         
         prompt += """
 REVIEW CRITERIA:

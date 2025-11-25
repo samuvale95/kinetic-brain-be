@@ -237,6 +237,57 @@ class ProgressiveWorkoutPlanService:
             logger.warning(f"[PROGRESSIVE] Plan validation failed: {e.violations}")
             # Continue anyway - we'll let Claude review it
         
+        # Check for missing required workouts (strength/stretching)
+        # Recalculate strength_freq and stretching_freq for checking
+        weeks_remaining = self._calculate_weeks_remaining(target_dt, week_number)
+        
+        check_strength_freq = '0'
+        if include_strength:
+            if weeks_remaining > 12:
+                check_strength_freq = "2-3x/week"
+            elif weeks_remaining > 8:
+                check_strength_freq = "1-2x/week"
+            elif weeks_remaining > 4:
+                check_strength_freq = "1-2x/week"
+            elif weeks_remaining > 1:
+                check_strength_freq = "1x/week"
+            else:
+                check_strength_freq = "skip"
+        
+        check_stretching_freq = 0
+        if include_stretching:
+            if weeks_remaining > 8:
+                check_stretching_freq = 4
+            elif weeks_remaining > 4:
+                check_stretching_freq = 4
+            else:
+                check_stretching_freq = 2
+        
+        check_results = self._check_required_workouts(
+            plan_data=plan_data,
+            include_strength=include_strength,
+            include_stretching=include_stretching,
+            strength_freq=check_strength_freq,
+            stretching_freq=check_stretching_freq,
+        )
+        
+        if check_results["has_missing"]:
+            logger.warning(
+                f"[PROGRESSIVE] Missing required workouts: "
+                f"strength={check_results['missing_strength']} (found {check_results['strength_count']}, required {check_results['required_strength']}), "
+                f"stretching={check_results['missing_stretching']} (found {check_results['stretching_count']}, required {check_results['required_stretching']})"
+            )
+            # Force Claude review to fix missing workouts
+            validator_has_errors = True  # Force review
+            if "missing_workouts" not in validator_results:
+                validator_results["missing_workouts"] = {}
+            validator_results["missing_workouts"] = {
+                "strength": check_results["missing_strength"],
+                "stretching": check_results["missing_stretching"],
+                "required_strength": check_results["required_strength"],
+                "required_stretching": check_results["required_stretching"],
+            }
+        
         # 7. Claude review (se abilitato)
         if settings.enable_claude_review:
             logger.info(f"[PROGRESSIVE] Claude review enabled, checking if review is needed")
@@ -270,6 +321,25 @@ class ProgressiveWorkoutPlanService:
                             "_claude_reviewed": True,
                             "_claude_changelog": claude_review.changelog,
                         })
+                        
+                        # Verify that Claude added the missing workouts
+                        if check_results.get("has_missing"):
+                            post_claude_check = self._check_required_workouts(
+                                plan_data=plan_data,
+                                include_strength=include_strength,
+                                include_stretching=include_stretching,
+                                strength_freq=check_strength_freq,
+                                stretching_freq=check_stretching_freq,
+                            )
+                            if post_claude_check["has_missing"]:
+                                logger.warning(
+                                    f"[PROGRESSIVE] Claude's improved plan still missing workouts: "
+                                    f"strength={post_claude_check['missing_strength']}, "
+                                    f"stretching={post_claude_check['missing_stretching']}"
+                                )
+                            else:
+                                logger.info("[PROGRESSIVE] Claude successfully added all missing workouts")
+                        
                         # Re-validate the improved plan
                         try:
                             user_state = None
@@ -304,6 +374,22 @@ class ProgressiveWorkoutPlanService:
                         logger.info("[PROGRESSIVE] Claude approved the plan")
                         plan_data["_claude_reviewed"] = True
                         plan_data["_claude_approved"] = True
+                        
+                        # Verify that required workouts are present even if Claude approved
+                        if check_results.get("has_missing"):
+                            post_approval_check = self._check_required_workouts(
+                                plan_data=plan_data,
+                                include_strength=include_strength,
+                                include_stretching=include_stretching,
+                                strength_freq=check_strength_freq,
+                                stretching_freq=check_stretching_freq,
+                            )
+                            if post_approval_check["has_missing"]:
+                                logger.warning(
+                                    f"[PROGRESSIVE] Claude approved plan but still missing workouts: "
+                                    f"strength={post_approval_check['missing_strength']}, "
+                                    f"stretching={post_approval_check['missing_stretching']}"
+                                )
                     
                 except Exception as e:
                     logger.warning(f"[PROGRESSIVE] Claude review failed: {e}, using original plan")
@@ -1431,7 +1517,27 @@ MINIMUM REQUIREMENTS:
 - Minimum 1 rest day if weekly_hours allows
 - ALL workouts MUST have complete 'structure' field: {{sport, segments: [{{segment_type, steps: [...]}}], metadata}}
 - Structure: warmup, main, cooldown segments required
+"""
+        
+        # Add explicit summary section if strength or stretching are required
+        if include_strength or include_stretching:
+            prompt += f"""
+[CRITICAL] FINAL WORKOUT COUNT SUMMARY (MANDATORY):
+You MUST generate the following workouts in the "workouts" array:
+- Core sport workouts: As specified in the sport-specific guidelines above (minimum requirements)
+"""
+            if include_strength and strength_freq != 'skip':
+                prompt += f"- Strength workouts: {strength_min_str} separate strength workout sessions (MANDATORY - DO NOT SKIP)\n"
+            if include_stretching:
+                prompt += f"- Stretching workouts: {stretching_min} separate stretching workout sessions (MANDATORY - DO NOT SKIP)\n"
+            prompt += f"""
+TOTAL WORKOUTS REQUIRED = Core sport workouts + Strength workouts + Stretching workouts
 
+CRITICAL: These are NOT optional - they are MANDATORY additions to the core sport workouts.
+If you skip strength or stretching workouts, the plan will be rejected and regenerated.
+"""
+        
+        prompt += f"""
 [STRONGLY RECOMMENDED] ADAPTATION_RULES:
 - RPE < 6: +5-10% intensity
 - RPE > 8: -5-10% intensity
@@ -1612,6 +1718,58 @@ Generate ONLY this week's plan. Output JSON only, no explanations.
             week_end = week_start_dt + timedelta(days=6)
         
         return week_end.isoformat()
+    
+    def _check_required_workouts(
+        self,
+        plan_data: Dict[str, Any],
+        include_strength: bool,
+        include_stretching: bool,
+        strength_freq: str,
+        stretching_freq: int,
+    ) -> Dict[str, Any]:
+        """Check if required strength/stretching workouts are present in the plan"""
+        workouts = plan_data.get("workouts", [])
+        
+        strength_count = 0
+        stretching_count = 0
+        
+        for workout in workouts:
+            workout_type = (workout.get("type") or "").lower()
+            sport = (workout.get("structure", {}).get("sport") or "").lower()
+            
+            if "strength" in workout_type or sport == "strength":
+                strength_count += 1
+            elif "stretching" in workout_type or sport == "stretching":
+                stretching_count += 1
+        
+        # Parse strength_freq (e.g., "2-3x/week" -> 2, "1x/week" -> 1)
+        required_strength = 0
+        if include_strength and strength_freq != 'skip':
+            if "2-3" in strength_freq:
+                required_strength = 2  # Minimum
+            elif "1-2" in strength_freq:
+                required_strength = 1  # Minimum
+            elif "1x" in strength_freq or "1 x" in strength_freq:
+                required_strength = 1
+            elif "2x" in strength_freq or "2 x" in strength_freq:
+                required_strength = 2
+            elif "3x" in strength_freq or "3 x" in strength_freq:
+                required_strength = 3
+        
+        required_stretching = stretching_freq if include_stretching else 0
+        
+        missing_strength = max(0, required_strength - strength_count)
+        missing_stretching = max(0, required_stretching - stretching_count)
+        
+        return {
+            "missing_strength": missing_strength,
+            "missing_stretching": missing_stretching,
+            "has_missing": missing_strength > 0 or missing_stretching > 0,
+            "strength_count": strength_count,
+            "stretching_count": stretching_count,
+            "required_strength": required_strength,
+            "required_stretching": required_stretching,
+        }
     
     def _get_week_performance(self, user_id: int, week_start: date, week_end: date) -> Dict[str, Any]:
         """Ottiene performance della settimana specifica"""

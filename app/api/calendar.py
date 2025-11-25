@@ -630,26 +630,67 @@ async def delete_calendar_event(event_id: int,
 async def handle_drag_drop(drag_data: DragDropRequest,
                           current_user: dict = Depends(get_current_user),
                           db: Session = Depends(get_db)):
-    """Handle drag and drop calendar events"""
+    """Handle drag and drop calendar events or workouts"""
     from app.models.calendar import CalendarEvent
     
+    user_id = current_user["user_id"]
+    
+    # Try to find CalendarEvent first
     event = db.query(CalendarEvent).filter(
         CalendarEvent.id == drag_data.event_id,
-        CalendarEvent.user_id == current_user["user_id"]
+        CalendarEvent.user_id == user_id
     ).first()
     
-    if not event:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Calendar event not found"
-        )
+    if event:
+        # Update calendar event
+        event.scheduled_date = drag_data.new_date
+        if drag_data.new_duration_minutes:
+            event.duration_minutes = drag_data.new_duration_minutes
+        
+        # If event has associated workout, update workout too
+        if event.workout_id:
+            workout = db.query(Workout).filter(
+                Workout.id == event.workout_id,
+                Workout.user_id == user_id
+            ).first()
+            if workout:
+                workout.scheduled_date = drag_data.new_date
+                if drag_data.new_duration_minutes:
+                    workout.duration_minutes = drag_data.new_duration_minutes
+        
+        db.commit()
+        db.refresh(event)
+        return {"message": "Event updated successfully", "event": event}
     
-    # Update event date and duration
-    event.scheduled_date = drag_data.new_date
-    if drag_data.new_duration_minutes:
-        event.duration_minutes = drag_data.new_duration_minutes
+    # If not found as CalendarEvent, try as Workout
+    workout = db.query(Workout).filter(
+        Workout.id == drag_data.event_id,
+        Workout.user_id == user_id
+    ).first()
     
-    db.commit()
-    db.refresh(event)
+    if workout:
+        # Update workout
+        workout.scheduled_date = drag_data.new_date
+        if drag_data.new_duration_minutes:
+            workout.duration_minutes = drag_data.new_duration_minutes
+        
+        # Update associated calendar event if exists
+        calendar_event = db.query(CalendarEvent).filter(
+            CalendarEvent.workout_id == workout.id,
+            CalendarEvent.user_id == user_id
+        ).first()
+        
+        if calendar_event:
+            calendar_event.scheduled_date = drag_data.new_date
+            if drag_data.new_duration_minutes:
+                calendar_event.duration_minutes = drag_data.new_duration_minutes
+        
+        db.commit()
+        db.refresh(workout)
+        return {"message": "Workout updated successfully", "workout_id": workout.id, "scheduled_date": workout.scheduled_date}
     
-    return {"message": "Event updated successfully", "event": event}
+    # Neither found
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Calendar event or workout not found"
+    )
