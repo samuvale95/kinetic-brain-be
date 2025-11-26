@@ -40,16 +40,20 @@ async def options_profile_zone_preference():
 @router.get("/", response_model=UserProfileResponse)
 async def get_profile(current_user: dict = Depends(get_current_user), 
                      db: Session = Depends(get_db)):
-    """Get user profile"""
+    """Get user profile. Creates an empty profile if one doesn't exist."""
     profile = db.query(UserProfile).filter(
         UserProfile.user_id == current_user["user_id"]
     ).first()
     
+    # Create empty profile if it doesn't exist
     if not profile:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Profile not found"
+        profile = UserProfile(
+            user_id=current_user["user_id"],
+            preferred_zone_type='hr'  # Default zone preference
         )
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
     
     # Ensure preferred_zone_type is set (for backward compatibility)
     if not profile.preferred_zone_type:
