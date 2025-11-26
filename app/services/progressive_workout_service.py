@@ -842,19 +842,13 @@ PARAMETERS:
                 prompt += f"\n- CORE SPORT SESSIONS TOTAL: {core_sessions} minimum per week (swim+bike+run+brick only)"
                 
                 prompt += f"\n\n[MANDATORY] SESSION COUNTING LOGIC:"
-                prompt += f"\nYou MUST generate the sport-specific minimums INDEPENDENTLY of strength and stretching:"
-                prompt += f"\n- Swim: AT LEAST {target_sessions.get('swim', 0)} sessions/week (do NOT count strength/stretching toward this)"
-                prompt += f"\n- Bike: AT LEAST {target_sessions.get('bike', 0)} sessions/week (do NOT count strength/stretching toward this)"
-                prompt += f"\n- Run: AT LEAST {target_sessions.get('run', 0)} sessions/week (do NOT count strength/stretching toward this)"
+                prompt += f"\nYou MUST generate the sport-specific minimums:"
+                prompt += f"\n- Swim: AT LEAST {target_sessions.get('swim', 0)} sessions/week"
+                prompt += f"\n- Bike: AT LEAST {target_sessions.get('bike', 0)} sessions/week"
+                prompt += f"\n- Run: AT LEAST {target_sessions.get('run', 0)} sessions/week"
                 if target_sessions.get('brick', 0) > 0:
-                    prompt += f"\n- Brick: AT LEAST {target_sessions.get('brick', 0)} session(s)/week (do NOT count strength/stretching toward this)"
-                if strength_sessions > 0:
-                    prompt += f"\nAdditionally, schedule:"
-                    prompt += f"\n- Strength: {strength_sessions} session(s)/week (these DO NOT count toward sport-specific total)"
-                prompt += f"\n- Stretching: (if include_stretching=True, specified separately - does NOT count toward core minimum)"
-                prompt += f"\n\nCRITICAL: Total workouts in the week = sum of ALL type-specific sessions (core sport + strength + stretching)."
-                prompt += f"\nNEVER count stretching/strength sessions as swim/bike/run sessions to satisfy the minimums."
-                prompt += f"\nEach category is INDEPENDENT and must be scheduled separately."
+                    prompt += f"\n- Brick: AT LEAST {target_sessions.get('brick', 0)} session(s)/week"
+                prompt += f"\n\nCRITICAL: Focus ONLY on core sport-specific sessions."
                 
                 prompt += f"\n\nCRITICAL RULES:"
                 prompt += f"\n- Swim frequency is CRITICAL: minimum {target_sessions.get('swim', 0)}×/week (technique-dependent)"
@@ -996,19 +990,14 @@ PARAMETERS:
                 prompt += f"\n- CORE RUNNING SESSIONS TOTAL: {total_sessions} per week (easy+moderate+hard+long only)"
                 
                 prompt += f"\n\n[MANDATORY] SESSION COUNTING LOGIC:"
-                prompt += f"\nYou MUST generate the running minimums INDEPENDENTLY of strength and stretching:"
-                prompt += f"\n- Easy runs: AT LEAST {target_sessions.get('easy', 0)} sessions/week (do NOT count strength/stretching toward this)"
+                prompt += f"\nYou MUST generate the running minimums:"
+                prompt += f"\n- Easy runs: AT LEAST {target_sessions.get('easy', 0)} sessions/week"
                 if target_sessions.get('moderate', 0) > 0:
-                    prompt += f"\n- Moderate runs: AT LEAST {target_sessions.get('moderate', 0)} session(s)/week (do NOT count strength/stretching toward this)"
+                    prompt += f"\n- Moderate runs: AT LEAST {target_sessions.get('moderate', 0)} session(s)/week"
                 if target_sessions.get('hard', 0) > 0:
-                    prompt += f"\n- Hard runs: AT LEAST {target_sessions.get('hard', 0)} session(s)/week (do NOT count strength/stretching toward this)"
-                prompt += f"\n- Long run: AT LEAST {target_sessions.get('long', 0)} session(s)/week (do NOT count strength/stretching toward this)"
-                prompt += f"\nAdditionally, schedule (if specified):"
-                prompt += f"\n- Strength: (if include_strength=True, specified separately - does NOT count toward running total)"
-                prompt += f"\n- Stretching: (if include_stretching=True, specified separately - does NOT count toward running total)"
-                prompt += f"\n\nCRITICAL: Total workouts in the week = sum of ALL type-specific sessions (running + strength + stretching)."
-                prompt += f"\nNEVER count stretching/strength sessions as running sessions to satisfy the minimums."
-                prompt += f"\nEach category is INDEPENDENT and must be scheduled separately."
+                    prompt += f"\n- Hard runs: AT LEAST {target_sessions.get('hard', 0)} session(s)/week"
+                prompt += f"\n- Long run: AT LEAST {target_sessions.get('long', 0)} session(s)/week"
+                prompt += f"\n\nCRITICAL: Focus ONLY on running-specific sessions."
                 
                 prompt += f"\n\nINTENSITY DISTRIBUTION:"
                 if normalized_level == "PRINCIPIANTE":
@@ -1345,116 +1334,8 @@ PARAMETERS:
             prompt += f"\n\nMANDATORY: Generate cycling workouts with TSS targets and power zones for {normalized_level} level."
             prompt += f"\n"
         
-        # [MANDATORY] Stretching Periodization (solo se include_stretching==True)
-        stretching_freq = 0
-        if include_stretching:
-            # Determina fase e frequenza
-            if weeks_remaining > 8:
-                stretching_freq = 4
-                duration_min = 10
-            elif weeks_remaining > 4:
-                stretching_freq = 4
-                duration_min = 8
-            else:
-                stretching_freq = 2
-                duration_min = 5
-            
-            # Focus muscolare basato su sport
-            sport_lower = (sport_type or "").lower()
-            if "run" in sport_lower or "trail" in sport_lower:
-                focus = "hamstrings,calves,hip_flexors,glutes,IT_band,lower_back"
-            elif "cycl" in sport_lower or "bike" in sport_lower:
-                focus = "quadriceps,hip_flexors,adductors,lower_back,upper_back,chest"
-            elif "swim" in sport_lower:
-                focus = "shoulders(rotations),chest,lats,hip_flexors"
-            elif "triathlon" in sport_lower:
-                focus = "hamstrings,calves,quads,hip_flexors,shoulders,chest,lats"
-            else:
-                focus = "full_body"
-            
-            prompt += f"""[MANDATORY] STRETCHING_PERIODIZATION:
-- Phase: {phase} ({weeks_remaining}w remaining)
-- Frequency: {stretching_freq}x/week MINIMUM
-- Duration: {duration_min}-{duration_min+2}min per session
-- Protocol: 30s hold per exercise, 3-4min per muscle group
-- Timing: MANDATORY separate workout sessions (NOT in cooldown of other workouts)
-- Focus: {focus}
-- Structure: Each stretching session must be a COMPLETE SEPARATE WORKOUT with full structure (warmup, main, cooldown segments)
-- Each exercise: Use step_type "repeat" with repeat: 2-3 and steps: [stretch_step]. The stretch_step: step_type "steady", name "Exercise Name" (REQUIRED), duration {{type:'time', seconds:30}}, notes "Hold 30s, target: [muscle]"
-- NO static pre-race (dynamic warmup only)
-- MUST include {stretching_freq} separate stretching workout sessions this week
-- Each stretching workout must have complete structure with:
-  * warmup segment (dynamic movements, 2-3min)
-  * main segment (6-10 stretching exercises, each as separate step with repeat structure)
-  * cooldown segment (relaxation, 1-2min)
-
-"""
-        
-        # [MANDATORY] Strength Integration (solo se include_strength==True)
-        strength_freq = '0'
-        if include_strength:
-            # Determina fase strength
-            if weeks_remaining > 12:
-                strength_freq = "2-3x/week"
-                strength_intensity = "87-93% 1RM"
-                strength_reps = "3-5"
-            elif weeks_remaining > 8:
-                strength_freq = "1-2x/week"
-                strength_intensity = "70-90% 1RM (explosive)"
-                strength_reps = "ballistic/plyometric"
-            elif weeks_remaining > 4:
-                strength_freq = "1-2x/week"
-                strength_intensity = "70-90% 1RM (explosive)"
-                strength_reps = "explosive"
-            elif weeks_remaining > 1:
-                strength_freq = "1x/week"
-                strength_intensity = "60-80% 1RM"
-                strength_reps = "5"
-            else:
-                strength_freq = "skip"
-                strength_intensity = "N/A"
-                strength_reps = "N/A"
-            
-            if strength_freq != "skip":
-                # Check if user has gym equipment or access mentioned in physical_notes
-                has_equipment = False
-                has_gym = False
-                equipment_info = ""
-                
-                if current_fitness and current_fitness.get('physical_notes'):
-                    physical_notes_lower = str(current_fitness.get('physical_notes', '')).lower()
-                    equipment_keywords = ['palestra', 'gym', 'pesi', 'weights', 'bilanciere', 'barbell', 'manubri', 'dumbbell', 'kettlebell', 'macchinari', 'machines', 'attrezzatura', 'equipment', 'abbonamento']
-                    gym_keywords = ['palestra', 'gym', 'fitness center', 'abbonamento', 'membership']
-                    
-                    for keyword in equipment_keywords:
-                        if keyword in physical_notes_lower:
-                            has_equipment = True
-                            break
-                    
-                    for keyword in gym_keywords:
-                        if keyword in physical_notes_lower:
-                            has_gym = True
-                            break
-                
-                if has_equipment or has_gym:
-                    equipment_info = f"\n- Equipment available: YES (check physical_notes for specific equipment: {current_fitness.get('physical_notes', '')[:100]})"
-                    equipment_instruction = "You can use gym equipment if specified in physical_notes. Otherwise, prefer bodyweight exercises."
-                else:
-                    equipment_info = "\n- Equipment available: NO (use bodyweight exercises only)"
-                    equipment_instruction = "ALL exercises MUST be BODYWEIGHT ONLY. Use exercises like: Push-ups, Pull-ups, Squats (bodyweight), Lunges, Planks, Dips, Burpees, Mountain Climbers, Jump Squats, etc. NO weights, barbells, dumbbells, or gym machines."
-                
-                prompt += f"""[MANDATORY] STRENGTH_INTEGRATION:
-- Frequency: {strength_freq}
-- Intensity: {strength_intensity}
-- Reps: {strength_reps}
-- Timing: separate days preferred, or 90min+ after endurance (strength first)
-- Structure: Use step_type "repeat" with repeat: N (number of sets) and steps: [strength_step, rest_step]. The strength_step: step_type "strength", name "Exercise Name" (REQUIRED), duration {{type:'repetitions', repetitions:Y}}, notes "Intensity: Z% 1RM". The rest_step: step_type "rest", duration {{type:'time', seconds:W}}, notes "Rest between sets"
-- Focus: compound movements
-{equipment_info}
-- MANDATORY: {equipment_instruction}
-- MUST include strength sessions as specified
-
-"""
+        # Stretching and strength are handled algorithmically, not by the AI model
+        # Removed stretching and strength prompt sections
         
         # [MANDATORY] Day constraints
         if unavailable_days:
@@ -1468,73 +1349,28 @@ PARAMETERS:
                     prompt += f"CONFLICT: {', '.join(conflicts)} in both lists. SPORT_SPECIFIC prevails.\n"
             
         # [MANDATORY] Output requirements
-        stretching_min = stretching_freq if include_stretching else 0
-        # strength_freq è una stringa come "2-3x/week" o "skip", quindi per il prompt usiamo direttamente la stringa
-        strength_min_str = strength_freq if (include_strength and strength_freq != 'skip') else '0'
-        
         prompt += f"""
 [MANDATORY] OUTPUT_REQUIREMENTS:
 
 [MANDATORY] SESSION COUNTING RULES:
 - Core sport sessions (run/bike/swim/triathlon-specific) must be generated to meet the MINIMUM requirements specified in the sport-specific guidelines above.
-- Strength sessions (if include_strength=True) are SUPPLEMENTAL and do NOT count toward core sport minimums.
-- Stretching sessions (if include_stretching=True) are SUPPLEMENTAL and do NOT count toward core sport minimums.
-- Total workouts = core sport sessions + strength sessions + stretching sessions.
-- NEVER combine strength or stretching sessions with sport sessions for the purpose of satisfying the minimums.
-- Each category is INDEPENDENT and must be scheduled separately.
-- If available days < total workouts required, prioritize: (1) core sport sessions, (2) strength sessions, (3) stretching sessions.
+- Focus ONLY on the core sport-specific training - do not include stretching or strength sessions.
 
 1. GENERAL: Every step MUST have step_type, duration, target (for endurance), notes. Target is REQUIRED for all endurance steps (run/bike/swim). Format: {{"type": "zone", "zone": "Z1-Z7"}}. NEVER put structure only in notes - each step must be a complete JSON object.
 
 2. INTERVALLI (CRITICAL): Use step_type "repeat" with repeat: N and steps: [interval_step, recovery_step]. Each interval step: step_type "interval", duration {{"type": "time", "seconds": X}}, target {{"type": "zone", "zone": "Z4"}}. Each recovery: step_type "recovery", duration {{"type": "time", "seconds": X}}, target {{"type": "zone", "zone": "Z1"}}. Example "5min Z4/3min Z1 x4": {{"step_type": "repeat", "repeat": 4, "steps": [{{"step_type": "interval", "duration": {{"type": "time", "seconds": 300}}, "target": {{"type": "zone", "zone": "Z4"}}}}, {{"step_type": "recovery", "duration": {{"type": "time", "seconds": 180}}, "target": {{"type": "zone", "zone": "Z1"}}}}]}}.
 
-3. STRENGTH (CRITICAL): Each exercise is a SEPARATE step using step_type "repeat" for sets. Structure: step_type "repeat", repeat: N (number of sets), steps: [strength_step, rest_step]. 
-   - strength_step: step_type "strength", name "Exercise Name" (REQUIRED), duration {{"type": "repetitions", "repetitions": Y}}, notes "Intensity: Z% 1RM"
-   - rest_step: step_type "rest", duration {{"type": "time", "seconds": W}}, notes "Rest between sets"
-   - Example "3 sets of 15 reps with 60s rest": {{"step_type": "repeat", "repeat": 3, "steps": [{{"step_type": "strength", "name": "Bodyweight Squats", "duration": {{"type": "repetitions", "repetitions": 15}}, "notes": "Intensity: Bodyweight"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 60}}, "notes": "Rest between sets"}}]}}
-   - DEFAULT: ALL exercises MUST be BODYWEIGHT ONLY unless user has equipment/gym mentioned in physical_notes.
-   - Bodyweight examples: "Push-ups", "Pull-ups", "Bodyweight Squats", "Lunges", "Planks", "Dips", "Burpees", "Mountain Climbers", "Jump Squats", "Pistol Squats", "Handstand Push-ups", "Single-leg Deadlifts (bodyweight)", etc.
-   - Equipment exercises (ONLY if physical_notes mentions gym/equipment): "Barbell Squat", "Deadlift", "Bench Press", "Dumbbell Rows", etc.
-   - DO NOT combine exercises in one step. Each exercise is a separate repeat block.
+3. BRICK: Create TWO separate workouts on same day (bike first, then run). Both need complete structure (warmup/main/cooldown). NO transition steps.
 
-4. STRETCHING (CRITICAL): When include_stretching=True, stretching MUST be separate workout sessions (NOT in cooldown). Each stretching workout must have complete structure:
-   - warmup segment: dynamic movements (2-3min)
-   - main segment: 6-10 stretching exercises, each as SEPARATE step using step_type "repeat"
-   - cooldown segment: relaxation (1-2min)
-   Each exercise step: Use step_type "repeat" with repeat: 2-3 and steps: [stretch_step]. The stretch_step: step_type "steady", name "Exercise Name" (REQUIRED), duration {{"type": "time", "seconds": 30}}, notes "Hold 30s, target: [muscle]". 
-   Example: {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Hamstring Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: hamstrings"}}]}}
-   Examples: "Hamstring Stretch", "Quad Stretch", "Calf Stretch", "Hip Flexor Stretch". 
-   DO NOT combine exercises in one step. Each stretching workout should be 10-15 minutes total.
+4. SWIM: Use duration {{"type": "distance", "meters": X}} when distance is known. Drills need name field. Main set with repeats: use step_type "repeat" with swim steps. Example "4x200m": {{"step_type": "repeat", "repeat": 4, "steps": [{{"step_type": "swim", "duration": {{"type": "distance", "meters": 200}}, "target": {{"type": "zone", "zone": "Z3"}}}}]}}.
 
-5. BRICK: Create TWO separate workouts on same day (bike first, then run). Both need complete structure (warmup/main/cooldown). NO transition steps.
-
-6. SWIM: Use duration {{"type": "distance", "meters": X}} when distance is known. Drills need name field. Main set with repeats: use step_type "repeat" with swim steps. Example "4x200m": {{"step_type": "repeat", "repeat": 4, "steps": [{{"step_type": "swim", "duration": {{"type": "distance", "meters": 200}}, "target": {{"type": "zone", "zone": "Z3"}}}}]}}.
-
-7. BIKE POWER: Use ONLY target {{"type": "zone", "zone": "Z2-Z7"}}. System calculates watts from FTP. DO NOT specify watts explicitly. Zones: Z2=55-75% FTP, Z3=75-90%, Z4=90-105%, Z5=105-120%, Z6=120-150%, Z7=150%+ FTP.
+5. BIKE POWER: Use ONLY target {{"type": "zone", "zone": "Z2-Z7"}}. System calculates watts from FTP. DO NOT specify watts explicitly. Zones: Z2=55-75% FTP, Z3=75-90%, Z4=90-105%, Z5=105-120%, Z6=120-150%, Z7=150%+ FTP.
 
 MINIMUM REQUIREMENTS:
-- {stretching_min} stretching sessions, {strength_min_str} strength sessions
 - Minimum 1 rest day if weekly_hours allows
 - ALL workouts MUST have complete 'structure' field: {{sport, segments: [{{segment_type, steps: [...]}}], metadata}}
 - Structure: warmup, main, cooldown segments required
-"""
-        
-        # Add explicit summary section if strength or stretching are required
-        if include_strength or include_stretching:
-            prompt += f"""
-[CRITICAL] FINAL WORKOUT COUNT SUMMARY (MANDATORY):
-You MUST generate the following workouts in the "workouts" array:
-- Core sport workouts: As specified in the sport-specific guidelines above (minimum requirements)
-"""
-            if include_strength and strength_freq != 'skip':
-                prompt += f"- Strength workouts: {strength_min_str} separate strength workout sessions (MANDATORY - DO NOT SKIP)\n"
-            if include_stretching:
-                prompt += f"- Stretching workouts: {stretching_min} separate stretching workout sessions (MANDATORY - DO NOT SKIP)\n"
-            prompt += f"""
-TOTAL WORKOUTS REQUIRED = Core sport workouts + Strength workouts + Stretching workouts
-
-CRITICAL: These are NOT optional - they are MANDATORY additions to the core sport workouts.
-If you skip strength or stretching workouts, the plan will be rejected and regenerated.
+- Focus ONLY on core sport-specific workouts - do not include stretching or strength sessions
 """
         
         prompt += f"""
