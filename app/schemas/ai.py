@@ -40,6 +40,11 @@ class WorkoutPlanGenerationRequest(BaseModel):
     # Stretching and Strength flags
     include_stretching: bool = Field(False, description="Include stretching sessions in the plan")
     include_strength: bool = Field(False, description="Include strength training sessions in the plan")
+    # Equipment
+    available_equipment: Optional[List[str]] = Field(
+        None,
+        description="List of available equipment for exercises (e.g. ['body only', 'dumbbell', 'barbell'])"
+    )
     # Day constraints
     unavailable_days: Optional[List[str]] = Field(
         None,
@@ -144,6 +149,11 @@ class ProgressiveWorkoutPlanRequest(BaseModel):
     # Stretching and Strength flags
     include_stretching: bool = Field(False, description="Include stretching sessions in the plan")
     include_strength: bool = Field(False, description="Include strength training sessions in the plan")
+    # Equipment
+    available_equipment: Optional[List[str]] = Field(
+        None,
+        description="List of available equipment for exercises (e.g. ['body only', 'dumbbell', 'barbell'])"
+    )
     # Day constraints
     unavailable_days: Optional[List[str]] = Field(
         None,
@@ -215,6 +225,11 @@ class WeeklyPlanRequest(BaseModel):
     # Stretching and Strength flags
     include_stretching: bool = Field(False, description="Include stretching sessions in the plan")
     include_strength: bool = Field(False, description="Include strength training sessions in the plan")
+    # Equipment
+    available_equipment: Optional[List[str]] = Field(
+        None,
+        description="List of available equipment for exercises (e.g. ['body only', 'dumbbell', 'barbell'])"
+    )
     # Day constraints
     unavailable_days: Optional[List[str]] = Field(
         None,

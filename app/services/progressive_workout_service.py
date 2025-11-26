@@ -6,6 +6,9 @@ from app.models.workout import Workout, WorkoutSession, WorkoutPlan
 from app.services.ai_service import AIService
 from app.services.claude_review_service import ClaudeReviewService
 from app.services.plan_validator import WorkoutPlanValidator, PlanValidationError
+from app.services.stretching_workout_service import StretchingWorkoutService
+from app.services.strength_workout_service import StrengthWorkoutService
+from app.services.workout_config_service import WorkoutConfigService
 from app.schemas.ai import AIRequest, WeeklyPlanRequest, PerformanceAnalysisData
 from app.config import settings
 import json
@@ -36,7 +39,8 @@ class ProgressiveWorkoutPlanService:
                            sport_type: Optional[str] = None,
                            level: Optional[str] = None,
                            goal: Optional[str] = None,
-                           weekly_hours: Optional[float] = None) -> Dict[str, Any]:
+                           weekly_hours: Optional[float] = None,
+                           available_equipment: Optional[List[str]] = None) -> Dict[str, Any]:
         """Genera piano per una settimana specifica basato sui dati precedenti"""
         logger.info(f"[PROGRESSIVE] Generating weekly plan - user_id: {user_id}, week_number: {week_number}, target_date: {target_date}, start_date: {start_date}")
         logger.debug(f"[PROGRESSIVE] Input params: user_id={user_id}, week_number={week_number}, target_date={target_date}, start_date={start_date}, has_previous_week={previous_week_data is not None}, has_fitness_level={current_fitness_level is not None}")
@@ -400,14 +404,132 @@ class ProgressiveWorkoutPlanService:
         else:
             logger.debug("[PROGRESSIVE] Claude review disabled")
         
-        # 8. Aggiunge metadati
+        # 8. Genera stretching e strength workouts se richiesti
+        if include_stretching or include_strength:
+            try:
+                # Calcola weeks_remaining
+                weeks_remaining = self._calculate_weeks_remaining(target_dt, week_number)
+                
+                # Determina fase
+                config_service = WorkoutConfigService()
+                week_phase = config_service.determine_phase(weeks_remaining)
+                
+                # Default equipment se non specificato
+                if available_equipment is None:
+                    from app.services.exercise_service import ExerciseService
+                    exercise_service = ExerciseService(self.db)
+                    available_equipment = exercise_service.get_available_equipment()
+                    # Se ancora None o vuoto, usa "body only" come default
+                    if not available_equipment:
+                        available_equipment = ["body only"]
+                
+                # Normalizza sport_type
+                if not sport_type:
+                    sport_type = "running"  # Default
+                
+                # Normalizza level
+                if not level:
+                    level = "intermediate"  # Default
+                
+                # Ottieni giorni disponibili (escludi unavailable_days)
+                all_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+                available_days_list = [d for d in all_days if not unavailable_days or d not in unavailable_days]
+                
+                # Genera stretching workouts
+                if include_stretching:
+                    stretching_service = StretchingWorkoutService(self.db)
+                    stretching_config = config_service.get_workout_config(
+                        sport_type=sport_type,
+                        phase=week_phase,
+                        workout_type="stretching"
+                    )
+                    
+                    if stretching_config:
+                        num_stretching_sessions = config_service.calculate_sessions_per_week(
+                            stretching_config.frequency,
+                            available_days_list
+                        )
+                        
+                        logger.info(f"[PROGRESSIVE] Generating {num_stretching_sessions} stretching workouts")
+                        
+                        # Genera workout per ogni sessione
+                        stretching_workouts = []
+                        for i in range(num_stretching_sessions):
+                            if i < len(available_days_list):
+                                day = available_days_list[i]
+                                # Evita conflitti con sport_specific_days se non è stretching
+                                if sport_specific_days and day in sport_specific_days:
+                                    continue
+                                
+                                workout = stretching_service.generate_stretching_workout(
+                                    sport_type=sport_type,
+                                    level=level,
+                                    available_equipment=available_equipment,
+                                    week_phase=week_phase
+                                )
+                                workout["day"] = day
+                                stretching_workouts.append(workout)
+                        
+                        # Aggiungi alla lista workouts
+                        if "workouts" not in plan_data:
+                            plan_data["workouts"] = []
+                        plan_data["workouts"].extend(stretching_workouts)
+                        logger.info(f"[PROGRESSIVE] Added {len(stretching_workouts)} stretching workouts to plan")
+                
+                # Genera strength workouts
+                if include_strength:
+                    strength_service = StrengthWorkoutService(self.db)
+                    strength_config = config_service.get_workout_config(
+                        sport_type=sport_type,
+                        phase=week_phase,
+                        workout_type="strength"
+                    )
+                    
+                    if strength_config:
+                        num_strength_sessions = config_service.calculate_sessions_per_week(
+                            strength_config.frequency,
+                            available_days_list
+                        )
+                        
+                        logger.info(f"[PROGRESSIVE] Generating {num_strength_sessions} strength workouts")
+                        
+                        # Genera workout per ogni sessione
+                        strength_workouts = []
+                        for i in range(num_strength_sessions):
+                            if i < len(available_days_list):
+                                day = available_days_list[i]
+                                # Evita conflitti con sport_specific_days se non è strength
+                                if sport_specific_days and day in sport_specific_days:
+                                    continue
+                                
+                                workout = strength_service.generate_strength_workout(
+                                    sport_type=sport_type,
+                                    level=level,
+                                    available_equipment=available_equipment,
+                                    week_phase=week_phase,
+                                    weeks_remaining=weeks_remaining
+                                )
+                                workout["day"] = day
+                                strength_workouts.append(workout)
+                        
+                        # Aggiungi alla lista workouts
+                        if "workouts" not in plan_data:
+                            plan_data["workouts"] = []
+                        plan_data["workouts"].extend(strength_workouts)
+                        logger.info(f"[PROGRESSIVE] Added {len(strength_workouts)} strength workouts to plan")
+            
+            except Exception as e:
+                logger.error(f"[PROGRESSIVE] Error generating stretching/strength workouts: {e}")
+                # Continue without stretching/strength if generation fails
+        
+        # 9. Aggiunge metadati
         plan_data.update({
             "generated_at": datetime.utcnow().isoformat(),
             "week_start_date": self._get_week_start_date(target_dt, week_number, plan_start_date),
             "week_end_date": self._get_week_end_date(target_dt, week_number, plan_start_date)
         })
         
-        logger.info(f"[PROGRESSIVE] Weekly plan generated successfully - week: {plan_data.get('week', 'N/A')}, focus: {plan_data.get('focus', 'N/A')}")
+        logger.info(f"[PROGRESSIVE] Weekly plan generated successfully - week: {plan_data.get('week', 'N/A')}, focus: {plan_data.get('focus', 'N/A')}, total_workouts: {len(plan_data.get('workouts', []))}")
         return plan_data
     
     def adapt_next_week_plan(self, user_id: int, target_date: str) -> Dict[str, Any]:

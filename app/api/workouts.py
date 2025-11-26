@@ -122,7 +122,8 @@ async def generate_progressive_workout_plan(
         sport_type=request.sport_type,
         level=request.level,
         goal=request.goal,
-        weekly_hours=request.weekly_hours
+        weekly_hours=request.weekly_hours,
+        available_equipment=request.available_equipment
     )
     
     # Crea piano base nel database
@@ -212,7 +213,8 @@ async def generate_weekly_plan(
         sport_type=sport_type,
         level=level,
         goal=goal,
-        weekly_hours=None
+        weekly_hours=None,
+        available_equipment=request.available_equipment
     )
     
     logger.info(f"[API] Weekly plan generated successfully - week: {weekly_plan.get('week')}, workouts: {len(weekly_plan.get('workouts', []))}")
@@ -462,7 +464,8 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
             sport_type=ai_request.sport_type,
             level=ai_request.level,
             goal=ai_request.goal,
-            weekly_hours=ai_request.weekly_hours
+            weekly_hours=ai_request.weekly_hours,
+            available_equipment=getattr(ai_request, 'available_equipment', None)
         )
         
         # Create base plan in database
