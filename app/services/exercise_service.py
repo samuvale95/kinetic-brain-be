@@ -3,7 +3,7 @@ Servizio per gestire query e selezione esercizi dalla tabella exercises
 """
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, or_, func, text
 from app.models.exercise import Exercise
 from loguru import logger
 import random
@@ -24,9 +24,12 @@ class ExerciseService:
         """
         try:
             # Query per ottenere tutti i valori unici di equipment
-            equipment_list = self.db.query(Exercise.equipment).distinct().all()
-            # Filtra None e converte in lista di stringhe
-            equipment = [str(eq[0]) for eq in equipment_list if eq[0] is not None]
+            # Usa cast a text direttamente in SQL per evitare problemi di validazione SQLAlchemy
+            # Questo bypassa la validazione enum di SQLAlchemy e legge direttamente dal database
+            result = self.db.execute(
+                text("SELECT DISTINCT equipment::text FROM exercises WHERE equipment IS NOT NULL")
+            )
+            equipment = [row[0] for row in result]
             return sorted(equipment)
         except Exception as e:
             logger.error(f"Error getting available equipment: {e}")
