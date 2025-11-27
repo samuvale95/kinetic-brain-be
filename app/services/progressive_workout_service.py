@@ -462,10 +462,36 @@ class ProgressiveWorkoutPlanService:
                 if not level:
                     level = "intermediate"  # Default
                 
-                # Ottieni giorni disponibili (escludi unavailable_days)
+                # Ottieni giorni disponibili per stretching/strength
                 all_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-                available_days_list = [d for d in all_days if not unavailable_days or d not in unavailable_days]
-                logger.info(f"[PROGRESSIVE][STEP 8] Available days: {available_days_list}")
+                
+                # Se è la prima settimana e abbiamo available_days_in_week, usali invece di tutti i giorni
+                if week_number == 1 and available_days_in_week:
+                    # Filtra anche per unavailable_days se specificati
+                    base_available_days = [d for d in available_days_in_week if not unavailable_days or d not in unavailable_days]
+                    logger.info(f"[PROGRESSIVE][STEP 8] First week partial - starting with available_days_in_week: {base_available_days}")
+                else:
+                    # Settimana normale: usa tutti i giorni escludendo unavailable_days
+                    base_available_days = [d for d in all_days if not unavailable_days or d not in unavailable_days]
+                    logger.info(f"[PROGRESSIVE][STEP 8] Full week - starting with all days (excluding unavailable): {base_available_days}")
+                
+                # Escludi giorni già occupati da workout sport-specific generati dall'AI
+                if sport_specific_days:
+                    occupied_days = set(sport_specific_days.keys())
+                    base_available_days = [d for d in base_available_days if d not in occupied_days]
+                    logger.info(f"[PROGRESSIVE][STEP 8] After excluding sport_specific_days ({len(occupied_days)} days): {base_available_days}")
+                
+                # Escludi giorni già occupati dai workout nel plan_data (workouts generati dall'AI)
+                if plan_data and "workouts" in plan_data:
+                    existing_workout_days = {w.get("day") for w in plan_data["workouts"] if w.get("day")}
+                    if existing_workout_days:
+                        base_available_days = [d for d in base_available_days if d not in existing_workout_days]
+                        logger.info(f"[PROGRESSIVE][STEP 8] After excluding existing AI workout days ({len(existing_workout_days)} days): {base_available_days}")
+                
+                available_days_list = base_available_days
+                
+                # Inizializza giorni usati (per evitare duplicati tra stretching e strength)
+                used_days_stretching = set()
                 
                 # Genera stretching workouts
                 if include_stretching:
@@ -479,35 +505,38 @@ class ProgressiveWorkoutPlanService:
                     )
                     
                     if stretching_config:
+                        # Calcola numero di sessioni ma rispetta i giorni disponibili
                         num_stretching_sessions = config_service.calculate_sessions_per_week(
                             stretching_config.frequency,
                             available_days_list
                         )
                         
-                        logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING] Generating {num_stretching_sessions} stretching workouts")
+                        # Non superare il numero di giorni disponibili
+                        num_stretching_sessions = min(num_stretching_sessions, len(available_days_list))
+                        
+                        logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING] Generating {num_stretching_sessions} stretching workouts (max {len(available_days_list)} days available)")
                         
                         # Genera workout per ogni sessione
                         stretching_workouts = []
-                        for i in range(num_stretching_sessions):
+                        
+                        # Iteriamo solo sui giorni effettivamente disponibili (già inizializzato sopra)
+                        days_for_stretching = [d for d in available_days_list if d not in used_days_stretching][:num_stretching_sessions]
+                        
+                        for idx, day in enumerate(days_for_stretching, 1):
                             workout_start = time.time()
-                            if i < len(available_days_list):
-                                day = available_days_list[i]
-                                logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{i+1}/{num_stretching_sessions}] Generating workout for {day} - timestamp: {datetime.utcnow().isoformat()}")
-                                # Evita conflitti con sport_specific_days se non è stretching
-                                if sport_specific_days and day in sport_specific_days:
-                                    logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{i+1}/{num_stretching_sessions}] Skipping {day} (conflict with sport_specific_days)")
-                                    continue
-                                
-                                workout = stretching_service.generate_stretching_workout(
-                                    sport_type=sport_type,
-                                    level=level,
-                                    available_equipment=available_equipment,
-                                    week_phase=week_phase
-                                )
-                                workout["day"] = day
-                                stretching_workouts.append(workout)
-                                workout_duration = time.time() - workout_start
-                                logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{i+1}/{num_stretching_sessions}] Workout generated for {day} - duration: {workout_duration:.2f}s")
+                            logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{idx}/{num_stretching_sessions}] Generating workout for {day} - timestamp: {datetime.utcnow().isoformat()}")
+                            
+                            workout = stretching_service.generate_stretching_workout(
+                                sport_type=sport_type,
+                                level=level,
+                                available_equipment=available_equipment,
+                                week_phase=week_phase
+                            )
+                            workout["day"] = day
+                            stretching_workouts.append(workout)
+                            used_days_stretching.add(day)
+                            workout_duration = time.time() - workout_start
+                            logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{idx}/{num_stretching_sessions}] Workout generated for {day} - duration: {workout_duration:.2f}s")
                         
                         # Aggiungi alla lista workouts
                         if "workouts" not in plan_data:
@@ -528,36 +557,46 @@ class ProgressiveWorkoutPlanService:
                     )
                     
                     if strength_config:
+                        # Calcola numero di sessioni ma rispetta i giorni disponibili
                         num_strength_sessions = config_service.calculate_sessions_per_week(
                             strength_config.frequency,
                             available_days_list
                         )
                         
-                        logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH] Generating {num_strength_sessions} strength workouts")
+                        # Non superare il numero di giorni disponibili
+                        num_strength_sessions = min(num_strength_sessions, len(available_days_list))
+                        
+                        logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH] Generating {num_strength_sessions} strength workouts (max {len(available_days_list)} days available)")
                         
                         # Genera workout per ogni sessione
                         strength_workouts = []
-                        for i in range(num_strength_sessions):
+                        
+                        # Evita giorni già usati per stretching
+                        used_days_strength = set(used_days_stretching)
+                        if include_stretching and stretching_workouts:
+                            stretching_days = {w.get("day") for w in stretching_workouts}
+                            used_days_strength.update(stretching_days)
+                            logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH] Days already used by stretching: {stretching_days}")
+                        
+                        # Filtra giorni disponibili per strength (escludi quelli già usati)
+                        days_for_strength = [d for d in available_days_list if d not in used_days_strength][:num_strength_sessions]
+                        
+                        for idx, day in enumerate(days_for_strength, 1):
                             workout_start = time.time()
-                            if i < len(available_days_list):
-                                day = available_days_list[i]
-                                logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][{i+1}/{num_strength_sessions}] Generating workout for {day} - timestamp: {datetime.utcnow().isoformat()}")
-                                # Evita conflitti con sport_specific_days se non è strength
-                                if sport_specific_days and day in sport_specific_days:
-                                    logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][{i+1}/{num_strength_sessions}] Skipping {day} (conflict with sport_specific_days)")
-                                    continue
-                                
-                                workout = strength_service.generate_strength_workout(
-                                    sport_type=sport_type,
-                                    level=level,
-                                    available_equipment=available_equipment,
-                                    week_phase=week_phase,
-                                    weeks_remaining=weeks_remaining
-                                )
-                                workout["day"] = day
-                                strength_workouts.append(workout)
-                                workout_duration = time.time() - workout_start
-                                logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][{i+1}/{num_strength_sessions}] Workout generated for {day} - duration: {workout_duration:.2f}s")
+                            logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][{idx}/{num_strength_sessions}] Generating workout for {day} - timestamp: {datetime.utcnow().isoformat()}")
+                            
+                            workout = strength_service.generate_strength_workout(
+                                sport_type=sport_type,
+                                level=level,
+                                available_equipment=available_equipment,
+                                week_phase=week_phase,
+                                weeks_remaining=weeks_remaining
+                            )
+                            workout["day"] = day
+                            strength_workouts.append(workout)
+                            used_days_strength.add(day)
+                            workout_duration = time.time() - workout_start
+                            logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][{idx}/{num_strength_sessions}] Workout generated for {day} - duration: {workout_duration:.2f}s")
                         
                         # Aggiungi alla lista workouts
                         if "workouts" not in plan_data:
@@ -860,8 +899,6 @@ PARAMETERS:
 - level: {level or 'not specified'}
 - goal: {goal or 'not specified'}
 - weekly_hours: {weekly_hours or 'not specified'}
-- include_stretching: {include_stretching}
-- include_strength: {include_strength}
 - performance_trends: {json.dumps(performance_trends) if performance_trends else 'improving'}
 
 """
@@ -998,11 +1035,9 @@ PARAMETERS:
             target_sessions = session_matrix.get(normalized_level, {}).get(race_distance, {}).get(phase, {})
             
             if target_sessions:
-                # Calculate CORE sessions (sport-specific only, excluding strength)
+                # Calculate CORE sessions (sport-specific only)
                 core_sessions = sum([target_sessions.get("swim", 0), target_sessions.get("bike", 0), 
                                    target_sessions.get("run", 0), target_sessions.get("brick", 0)])
-                # Strength is auxiliary and does NOT count toward core minimum
-                strength_sessions = target_sessions.get("strength", 0)
                 
                 prompt += f"\n\n=== TRIATHLON TRAINING GUIDELINES (MANDATORY) ==="
                 prompt += f"\nBased on scientific triathlon training guide for {normalized_level} level, {race_distance} distance, {phase} phase:"
@@ -1012,8 +1047,6 @@ PARAMETERS:
                 prompt += f"\n- Run: {target_sessions.get('run', 0)} sessions/week"
                 if target_sessions.get('brick', 0) > 0:
                     prompt += f"\n- Brick workouts: {target_sessions.get('brick', 0)} session(s)/week"
-                if strength_sessions > 0:
-                    prompt += f"\n- Strength: {strength_sessions} session(s)/week (AUXILIARY - does NOT count toward core minimum)"
                 prompt += f"\n- CORE SPORT SESSIONS TOTAL: {core_sessions} minimum per week (swim+bike+run+brick only)"
                 
                 prompt += f"\n\n[MANDATORY] SESSION COUNTING LOGIC:"
@@ -1056,7 +1089,7 @@ PARAMETERS:
                     prompt += f"\n- 4-5 double sessions/week"
                     prompt += f"\n- Back-to-back days for easy sessions"
                 
-                prompt += f"\n\nMANDATORY: Generate {core_sessions} CORE sport workouts minimum this week (swim+bike+run+brick), PLUS any required strength/stretching sessions as specified separately."
+                prompt += f"\n\nMANDATORY: Generate {core_sessions} CORE sport workouts minimum this week (swim+bike+run+brick only)."
                 prompt += f"\n"
         
         # Running-specific guidelines based on running_session_guide.md
@@ -1200,18 +1233,15 @@ PARAMETERS:
                 elif normalized_level == "INTERMEDIO":
                     prompt += f"\n- 2 quality sessions (1 intervals, 1 tempo)"
                     prompt += f"\n- 1 long run weekly"
-                    prompt += f"\n- 1 strength core/glute recommended"
                 elif normalized_level == "AVANZATO":
                     prompt += f"\n- 2 hard sessions (VO2max + threshold)"
                     prompt += f"\n- 1 long run 18-20 km weekly"
-                    prompt += f"\n- 1-2 strength sessions"
                 elif normalized_level == "ELITE":
                     prompt += f"\n- 2-3 hard sessions (VO2max, threshold, marathon pace)"
                     prompt += f"\n- 1 long run 25-27 km weekly"
-                    prompt += f"\n- 1-2 strength sessions"
                     prompt += f"\n- Back-to-back easy sessions possible"
                 
-                prompt += f"\n\nMANDATORY: Generate {total_sessions} running workouts minimum this week (easy+moderate+hard+long), PLUS any required strength/stretching sessions as specified separately."
+                prompt += f"\n\nMANDATORY: Generate {total_sessions} running workouts minimum this week (easy+moderate+hard+long only)."
                 prompt += f"\n"
         
         # Trail Running-specific guidelines based on trail_running_session_guide.md
@@ -1283,12 +1313,7 @@ PARAMETERS:
                 prompt += f"\n- Trail sessions: AT LEAST 4-5 sessions/week (do NOT count strength/stretching toward this)"
             elif normalized_level == "ELITE":
                 prompt += f"\n- Trail sessions: AT LEAST 5-7 sessions/week (do NOT count strength/stretching toward this)"
-            prompt += f"\nAdditionally, schedule (if specified):"
-            prompt += f"\n- Strength: (if include_strength=True, specified separately - does NOT count toward trail total)"
-            prompt += f"\n- Stretching: (if include_stretching=True, specified separately - does NOT count toward trail total)"
-            prompt += f"\n\nCRITICAL: Total workouts in the week = sum of ALL type-specific sessions (trail + strength + stretching)."
-            prompt += f"\nNEVER count stretching/strength sessions as trail sessions to satisfy the minimums."
-            prompt += f"\nEach category is INDEPENDENT and must be scheduled separately."
+            prompt += f"\n\nCRITICAL: Focus ONLY on trail running sessions. Do not include stretching or strength workouts."
             
             prompt += f"\n\nELEVATION SAFETY RULES:"
             prompt += f"\n- Max D+ per session: PRINCIPIANTE=600m, INTERMEDIO=1000m, AVANZATO=1500m, ELITE=2500m"
@@ -1367,12 +1392,7 @@ PARAMETERS:
                 prompt += f"\n- Swim sessions: AT LEAST 4-5 sessions/week (do NOT count strength/stretching toward this)"
             elif normalized_level == "ELITE":
                 prompt += f"\n- Swim sessions: AT LEAST 6-7 sessions/week (do NOT count strength/stretching toward this)"
-            prompt += f"\nAdditionally, schedule (if specified):"
-            prompt += f"\n- Strength: (if include_strength=True, specified separately - does NOT count toward swim total)"
-            prompt += f"\n- Stretching: (if include_stretching=True, specified separately - does NOT count toward swim total)"
-            prompt += f"\n\nCRITICAL: Total workouts in the week = sum of ALL type-specific sessions (swim + strength + stretching)."
-            prompt += f"\nNEVER count stretching/strength sessions as swim sessions to satisfy the minimums."
-            prompt += f"\nEach category is INDEPENDENT and must be scheduled separately."
+            prompt += f"\n\nCRITICAL: Focus ONLY on swimming sessions. Do not include stretching or strength workouts."
             
             prompt += f"\n\nINTENSITY DISTRIBUTION:"
             if normalized_level == "PRINCIPIANTE":
@@ -1395,8 +1415,6 @@ PARAMETERS:
             prompt += f"\n\nSPECIFIC RULES:"
             prompt += f"\n- Always include warm-up (400-600m) and cool-down (300-600m)"
             prompt += f"\n- Include drills for technique (kick, pull, stroke focus)"
-            if normalized_level in ["INTERMEDIO", "AVANZATO", "ELITE"]:
-                prompt += f"\n- 1 strength session/week (shoulder-focused)"
             if race_distance == "DISTANCE" and normalized_level in ["AVANZATO", "ELITE"]:
                 prompt += f"\n- Include 1-2 open water sessions/week in season"
             
@@ -1472,12 +1490,7 @@ PARAMETERS:
                 prompt += f"\n- Bike sessions: AT LEAST 5-6 sessions/week (do NOT count strength/stretching toward this)"
             elif normalized_level == "ELITE":
                 prompt += f"\n- Bike sessions: AT LEAST 6-8 sessions/week (do NOT count strength/stretching toward this)"
-            prompt += f"\nAdditionally, schedule (if specified):"
-            prompt += f"\n- Strength: (if include_strength=True, specified separately - does NOT count toward bike total)"
-            prompt += f"\n- Stretching: (if include_stretching=True, specified separately - does NOT count toward bike total)"
-            prompt += f"\n\nCRITICAL: Total workouts in the week = sum of ALL type-specific sessions (bike + strength + stretching)."
-            prompt += f"\nNEVER count stretching/strength sessions as bike sessions to satisfy the minimums."
-            prompt += f"\nEach category is INDEPENDENT and must be scheduled separately."
+            prompt += f"\n\nCRITICAL: Focus ONLY on cycling sessions. Do not include stretching or strength workouts."
             
             prompt += f"\n\nINTENSITY DISTRIBUTION:"
             if normalized_level == "PRINCIPIANTE":
@@ -1500,8 +1513,6 @@ PARAMETERS:
             prompt += f"\n\nSPECIFIC RULES:"
             prompt += f"\n- Hard sessions should not be back-to-back (max same day easy+hard)"
             prompt += f"\n- Long ride weekly in all phases"
-            if normalized_level in ["INTERMEDIO", "AVANZATO", "ELITE"]:
-                prompt += f"\n- 1 strength session/week (cycling-specific: glutes, quads, core)"
             if normalized_level == "ELITE":
                 prompt += f"\n- 3-4 double sessions/week possible"
                 prompt += f"\n- Back-to-back hard possible with adequate recovery (48h+)"
@@ -1584,31 +1595,6 @@ OUTPUT_FORMAT (JSON only, no markdown):
                     }}
                 }},
                 {{
-                    "day": "Wednesday",
-                    "type": "Strength",
-                    "duration_minutes": 45,
-                    "intensity": "High",
-                    "target_hr": "N/A",
-                    "rpe_target": 7,
-                    "description": "Bodyweight strength training",
-                    "key_focus": "Compound movements - bodyweight only",
-                    "structure": {{
-                        "sport": "strength",
-                        "segments": [
-                            {{"segment_type": "warmup", "steps": [{{"step_type": "dynamic", "duration": {{"type": "time", "seconds": 300}}, "notes": "Dynamic warm-up: arm circles, leg swings"}}]}},
-                            {{"segment_type": "main", "steps": [
-                                {{"step_type": "repeat", "repeat": 3, "steps": [{{"step_type": "strength", "name": "Bodyweight Squats", "duration": {{"type": "repetitions", "repetitions": 15}}, "notes": "Intensity: Bodyweight"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 60}}, "notes": "Rest between sets"}}]}},
-                                {{"step_type": "repeat", "repeat": 3, "steps": [{{"step_type": "strength", "name": "Push-ups", "duration": {{"type": "repetitions", "repetitions": 12}}, "notes": "Intensity: Bodyweight"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 60}}, "notes": "Rest between sets"}}]}},
-                                {{"step_type": "repeat", "repeat": 3, "steps": [{{"step_type": "strength", "name": "Lunges", "duration": {{"type": "repetitions", "repetitions": 10}}, "notes": "Intensity: Bodyweight, per leg"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 60}}, "notes": "Rest between sets"}}]}},
-                                {{"step_type": "repeat", "repeat": 3, "steps": [{{"step_type": "strength", "name": "Plank", "duration": {{"type": "time", "seconds": 60}}, "notes": "Intensity: Bodyweight"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 60}}, "notes": "Rest between sets"}}]}},
-                                {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "strength", "name": "Burpees", "duration": {{"type": "repetitions", "repetitions": 10}}, "notes": "Intensity: Bodyweight"}}, {{"step_type": "rest", "duration": {{"type": "time", "seconds": 90}}, "notes": "Rest between sets"}}]}}
-                            ]}},
-                            {{"segment_type": "cooldown", "steps": [{{"step_type": "steady", "name": "Quad Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: quads"}}]}}
-                        ],
-                        "metadata": {{"focus": "Bodyweight Strength", "rpe_target": 7}}
-                    }}
-                }},
-                {{
                     "day": "Friday",
                     "type": "Swim",
                     "duration_minutes": 60,
@@ -1626,47 +1612,6 @@ OUTPUT_FORMAT (JSON only, no markdown):
                         ],
                         "metadata": {{"focus": "Swim technique", "rpe_target": 6}}
                     }}
-                }},
-                {{
-                    "day": "Thursday",
-                    "type": "Stretching",
-                    "duration_minutes": 12,
-                    "intensity": "Low",
-                    "target_hr": "N/A",
-                    "rpe_target": 2,
-                    "description": "Post-workout stretching session",
-                    "key_focus": "Flexibility and recovery",
-                    "structure": {{
-                        "sport": "stretching",
-                        "segments": [
-                            {{
-                                "segment_type": "warmup",
-                                "steps": [
-                                    {{"step_type": "dynamic", "duration": {{"type": "time", "seconds": 120}}, "notes": "Light dynamic movements"}},
-                                    {{"step_type": "dynamic", "duration": {{"type": "time", "seconds": 60}}, "notes": "Arm circles and leg swings"}}
-                                ]
-                            }},
-                            {{
-                                "segment_type": "main",
-                                "steps": [
-                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Hamstring Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: hamstrings"}}]}},
-                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Quad Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: quadriceps"}}]}},
-                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Calf Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: calves"}}]}},
-                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Hip Flexor Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: hip_flexors"}}]}},
-                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Shoulder Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: shoulders"}}]}},
-                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Chest Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: chest"}}]}},
-                                    {{"step_type": "repeat", "repeat": 2, "steps": [{{"step_type": "steady", "name": "Lat Stretch", "duration": {{"type": "time", "seconds": 30}}, "notes": "Hold 30s, target: lats"}}]}}
-                                ]
-                            }},
-                            {{
-                                "segment_type": "cooldown",
-                                "steps": [
-                                    {{"step_type": "steady", "duration": {{"type": "time", "seconds": 60}}, "notes": "Deep breathing and relaxation"}}
-                                ]
-                            }}
-                        ],
-                        "metadata": {{"focus": "Flexibility", "rpe_target": 2}}
-                    }}
                 }}
             ],
             "recovery_notes": "...",
@@ -1674,7 +1619,7 @@ OUTPUT_FORMAT (JSON only, no markdown):
             "adaptation_rationale": "..."
         }}
 
-NOTE: For brick workouts, create TWO separate workouts on the same day (bike first, then run). For stretching when include_stretching=True, ALWAYS create separate workout sessions with complete structure (warmup/main/cooldown). Each stretching exercise must be a separate step with name field. For bike, use zone-based target only.
+NOTE: For brick workouts, create TWO separate workouts on the same day (bike first, then run). For bike, use zone-based target only. DO NOT include stretching or strength workouts - these are handled separately by the system.
 
 ERROR_HANDLING: If constraints impossible (too few days, insufficient weekly_hours), return:
 {{"error": true, "reason": "...", "suggestion": "..."}}

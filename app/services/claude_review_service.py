@@ -263,23 +263,30 @@ VALIDATOR RESULTS:
 {validator_json}
 """
             
-            # Check for missing workouts
+            # Check for missing workouts - NOTE: stretching/strength are handled separately
             if validator_results.get("missing_workouts"):
                 missing = validator_results["missing_workouts"]
-                prompt += f"""
+                has_missing_stretching = missing.get('stretching', 0) > 0
+                has_missing_strength = missing.get('strength', 0) > 0
+                
+                if has_missing_stretching or has_missing_strength:
+                    prompt += f"""
 
-CRITICAL: MISSING REQUIRED WORKOUTS DETECTED:
+NOTE: Missing stretching/strength workouts detected:
 - Missing {missing.get('strength', 0)} strength workout(s) (required: {missing.get('required_strength', 0)})
 - Missing {missing.get('stretching', 0)} stretching workout(s) (required: {missing.get('required_stretching', 0)})
 
-YOU MUST:
-1. Add the missing strength workouts if strength > 0
-2. Add the missing stretching workouts if stretching > 0
-3. Ensure each workout has complete structure (warmup/main/cooldown)
-4. Follow the format specified in the original prompt for strength/stretching workouts
-5. Use step_type "repeat" for strength sets and stretching repetitions as specified
+CRITICAL: DO NOT add stretching or strength workouts to the improved_plan. 
+These are handled separately by the system (STEP 8) and will be added automatically after your review.
+Focus ONLY on reviewing and improving the core sport-specific workouts (running/cycling/swimming/triathlon).
 
-The improved_plan MUST include all required workouts. This is MANDATORY.
+You should only review:
+- Core sport-specific workout progression, safety, and structure
+- Distribution of intensity zones
+- Recovery days between hard sessions
+- Volume and intensity progression
+
+The missing stretching/strength workouts are expected to be missing at this stage and will be added automatically by the system.
 """
         
         prompt += """

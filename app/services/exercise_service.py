@@ -77,21 +77,21 @@ class ExerciseService:
             
             # Filtro gruppi muscolari (primary o secondary)
             if target_muscles:
-                # Crea condizioni OR per ogni muscolo (può essere in primary o secondary)
-                # Usa l'operatore PostgreSQL @> (contains) per verificare se l'array contiene il muscolo
-                from sqlalchemy.dialects.postgresql import ARRAY
+                # Usa una query SQL raw per gestire correttamente l'operatore PostgreSQL @>
+                # L'operatore @> verifica se l'array contiene il valore specificato
+                # Costruisci le condizioni per ogni muscolo
                 muscle_conditions = []
                 for muscle in target_muscles:
-                    # Verifica se il muscolo è in primary_muscles o secondary_muscles
-                    # Usa cast per convertire il muscolo in array e verifica se è contenuto
-                    muscle_conditions.append(
-                        Exercise.primary_muscles.contains([muscle])
-                    )
-                    muscle_conditions.append(
-                        Exercise.secondary_muscles.contains([muscle])
-                    )
+                    # Escape delle virgolette nel nome del muscolo (se necessario)
+                    muscle_escaped = muscle.replace("'", "''")
+                    # Condizioni per primary_muscles e secondary_muscles
+                    muscle_conditions.append(f"primary_muscles @> ARRAY['{muscle_escaped}']::muscle[]")
+                    muscle_conditions.append(f"secondary_muscles @> ARRAY['{muscle_escaped}']::muscle[]")
+                
                 if muscle_conditions:
-                    query = query.filter(or_(*muscle_conditions))
+                    # Combina tutte le condizioni con OR
+                    muscle_filter_sql = " OR ".join(muscle_conditions)
+                    query = query.filter(text(muscle_filter_sql))
             
             # Filtro mechanic
             if mechanic:

@@ -135,16 +135,11 @@ class StretchingWorkoutService:
         config,
         sport_type: str
     ) -> Dict[str, Any]:
-        """Costruisce la struttura JSON del workout"""
+        """Costruisce la struttura JSON del workout - solo parte principale per stretching"""
         
-        # Calcola durata per esercizio (approssimativa)
-        # Warmup: 2-3 min, Cooldown: 1-2 min, resto per esercizi
-        warmup_minutes = min(3, max(2, duration_minutes // 6))
-        cooldown_minutes = min(2, max(1, duration_minutes // 8))
-        main_minutes = duration_minutes - warmup_minutes - cooldown_minutes
-        
+        # Per stretching: tutta la durata è per gli esercizi (nessun warmup/cooldown)
         # Durata per esercizio (secondi)
-        time_per_exercise = (main_minutes * 60) // len(exercises) if exercises else 60
+        time_per_exercise = (duration_minutes * 60) // len(exercises) if exercises else 60
         # Per stretching: 30-60 secondi per esercizio, 2-3 serie
         exercise_duration = min(60, max(30, time_per_exercise))
         sets = 2 if duration_minutes < 15 else 3
@@ -167,37 +162,14 @@ class StretchingWorkoutService:
                 exercise_data["description"] = exercise.description
             exercise_list.append(exercise_data)
         
+        # Stretching: solo segmento main, senza warmup e cooldown
         return {
             "sport": "stretching",
             "segments": [
                 {
-                    "segment_type": "warmup",
-                    "name": "Warm-up",
-                    "steps": [
-                        {
-                            "step_type": "steady",
-                            "duration": {"type": "time", "seconds": warmup_minutes * 60},
-                            "target": {"type": "zone", "zone": "Z1"},
-                            "notes": "Gentle warm-up movements"
-                        }
-                    ]
-                },
-                {
                     "segment_type": "main",
                     "name": "Stretching Exercises",
                     "exercises": exercise_list
-                },
-                {
-                    "segment_type": "cooldown",
-                    "name": "Cool-down",
-                    "steps": [
-                        {
-                            "step_type": "steady",
-                            "duration": {"type": "time", "seconds": cooldown_minutes * 60},
-                            "target": {"type": "zone", "zone": "Z1"},
-                            "notes": "Relaxation and breathing"
-                        }
-                    ]
                 }
             ],
             "metadata": {
