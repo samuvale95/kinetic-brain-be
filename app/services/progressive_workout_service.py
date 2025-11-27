@@ -1313,7 +1313,7 @@ PARAMETERS:
                 prompt += f"\n- Trail sessions: AT LEAST 4-5 sessions/week (do NOT count strength/stretching toward this)"
             elif normalized_level == "ELITE":
                 prompt += f"\n- Trail sessions: AT LEAST 5-7 sessions/week (do NOT count strength/stretching toward this)"
-            prompt += f"\n\nCRITICAL: Focus ONLY on trail running sessions. Do not include stretching or strength workouts."
+            prompt += f"\n\nCRITICAL: Focus ONLY on trail running sessions."
             
             prompt += f"\n\nELEVATION SAFETY RULES:"
             prompt += f"\n- Max D+ per session: PRINCIPIANTE=600m, INTERMEDIO=1000m, AVANZATO=1500m, ELITE=2500m"
@@ -1392,7 +1392,7 @@ PARAMETERS:
                 prompt += f"\n- Swim sessions: AT LEAST 4-5 sessions/week (do NOT count strength/stretching toward this)"
             elif normalized_level == "ELITE":
                 prompt += f"\n- Swim sessions: AT LEAST 6-7 sessions/week (do NOT count strength/stretching toward this)"
-            prompt += f"\n\nCRITICAL: Focus ONLY on swimming sessions. Do not include stretching or strength workouts."
+            prompt += f"\n\nCRITICAL: Focus ONLY on swimming sessions."
             
             prompt += f"\n\nINTENSITY DISTRIBUTION:"
             if normalized_level == "PRINCIPIANTE":
@@ -1490,7 +1490,7 @@ PARAMETERS:
                 prompt += f"\n- Bike sessions: AT LEAST 5-6 sessions/week (do NOT count strength/stretching toward this)"
             elif normalized_level == "ELITE":
                 prompt += f"\n- Bike sessions: AT LEAST 6-8 sessions/week (do NOT count strength/stretching toward this)"
-            prompt += f"\n\nCRITICAL: Focus ONLY on cycling sessions. Do not include stretching or strength workouts."
+            prompt += f"\n\nCRITICAL: Focus ONLY on cycling sessions."
             
             prompt += f"\n\nINTENSITY DISTRIBUTION:"
             if normalized_level == "PRINCIPIANTE":
@@ -1540,7 +1540,7 @@ PARAMETERS:
 
 [MANDATORY] SESSION COUNTING RULES:
 - Core sport sessions (run/bike/swim/triathlon-specific) must be generated to meet the MINIMUM requirements specified in the sport-specific guidelines above.
-- Focus ONLY on the core sport-specific training - do not include stretching or strength sessions.
+- Focus ONLY on the core sport-specific training.
 
 1. GENERAL: Every step MUST have step_type, duration, target (for endurance), notes. Target is REQUIRED for all endurance steps (run/bike/swim). Format: {{"type": "zone", "zone": "Z1-Z7"}}. NEVER put structure only in notes - each step must be a complete JSON object.
 
@@ -1556,7 +1556,7 @@ MINIMUM REQUIREMENTS:
 - Minimum 1 rest day if weekly_hours allows
 - ALL workouts MUST have complete 'structure' field: {{sport, segments: [{{segment_type, steps: [...]}}], metadata}}
 - Structure: warmup, main, cooldown segments required
-- Focus ONLY on core sport-specific workouts - do not include stretching or strength sessions
+- Focus ONLY on core sport-specific workouts
 """
         
         prompt += f"""
@@ -1619,7 +1619,7 @@ OUTPUT_FORMAT (JSON only, no markdown):
             "adaptation_rationale": "..."
         }}
 
-NOTE: For brick workouts, create TWO separate workouts on the same day (bike first, then run). For bike, use zone-based target only. DO NOT include stretching or strength workouts - these are handled separately by the system.
+NOTE: For brick workouts, create TWO separate workouts on the same day (bike first, then run). For bike, use zone-based target only.
 
 ERROR_HANDLING: If constraints impossible (too few days, insufficient weekly_hours), return:
 {{"error": true, "reason": "...", "suggestion": "..."}}

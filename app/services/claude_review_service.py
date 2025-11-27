@@ -272,21 +272,13 @@ VALIDATOR RESULTS:
                 if has_missing_stretching or has_missing_strength:
                     prompt += f"""
 
-NOTE: Missing stretching/strength workouts detected:
-- Missing {missing.get('strength', 0)} strength workout(s) (required: {missing.get('required_strength', 0)})
-- Missing {missing.get('stretching', 0)} stretching workout(s) (required: {missing.get('required_stretching', 0)})
+NOTE: Missing stretching/strength workouts detected. These are handled separately by the system and will be added automatically after your review.
 
-CRITICAL: DO NOT add stretching or strength workouts to the improved_plan. 
-These are handled separately by the system (STEP 8) and will be added automatically after your review.
-Focus ONLY on reviewing and improving the core sport-specific workouts (running/cycling/swimming/triathlon).
-
-You should only review:
+Focus ONLY on reviewing and improving the core sport-specific workouts (running/cycling/swimming/triathlon):
 - Core sport-specific workout progression, safety, and structure
 - Distribution of intensity zones
 - Recovery days between hard sessions
 - Volume and intensity progression
-
-The missing stretching/strength workouts are expected to be missing at this stage and will be added automatically by the system.
 """
         
         prompt += """
