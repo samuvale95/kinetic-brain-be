@@ -6,6 +6,7 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from loguru import logger
 from sqlalchemy.orm import Session
@@ -806,7 +807,11 @@ class AIService:
     def __init__(self, db: Optional[Session] = None):
         self.db = db
         openai.api_key = settings.openai_api_key
-        self.client = openai.OpenAI(api_key=settings.openai_api_key)
+        # Configure OpenAI client with timeout
+        self.client = openai.OpenAI(
+            api_key=settings.openai_api_key,
+            timeout=settings.openai_timeout_seconds
+        )
         self.mock_mode = settings.mock_llm
         self.plan_validator = WorkoutPlanValidator()
     
@@ -838,6 +843,12 @@ class AIService:
 
         logger.bind(**log_ctx).info("[AI] Starting OpenAI API call")
         
+        # Store prompt for logging in case of timeout
+        full_prompt = request.prompt
+        user_id_for_logging = None  # Will be set if available from context
+        if request.context and isinstance(request.context, dict):
+            user_id_for_logging = request.context.get("user_id")
+        
         try:
             request_kwargs = dict(
                 model=settings.openai_model,
@@ -852,7 +863,38 @@ class AIService:
             if request.response_format:
                 request_kwargs["response_format"] = request.response_format
 
-            response = self.client.chat.completions.create(**request_kwargs)
+            # Make API call with explicit timeout wrapper for better error handling
+            timeout_seconds = settings.openai_timeout_seconds
+            logger.debug(f"[AI] Making API call with timeout: {timeout_seconds}s")
+            
+            # Use ThreadPoolExecutor to enforce timeout even if client timeout fails
+            def make_api_call():
+                return self.client.chat.completions.create(**request_kwargs)
+            
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(make_api_call)
+                try:
+                    response = future.result(timeout=timeout_seconds)
+                except FutureTimeoutError:
+                    # Timeout occurred - log and raise
+                    logger.warning(f"[AI] OpenAI API call timed out after {timeout_seconds} seconds (future timeout)")
+                    # Log the prompt before raising
+                    self._log_ai_response(
+                        request_type="generate_response",
+                        user_id=user_id_for_logging,
+                        prompt=full_prompt,
+                        request_payload={
+                            "model": settings.openai_model,
+                            "max_tokens": request.max_tokens or settings.openai_max_tokens,
+                            "temperature": request.temperature or 0.7,
+                            "has_context": request.context is not None,
+                        },
+                        response_text=None,
+                        model=settings.openai_model,
+                        parse_success=False,
+                        error_message=f"TIMEOUT: Request timed out after {timeout_seconds} seconds",
+                    )
+                    raise TimeoutError(f"OpenAI API call timed out after {timeout_seconds} seconds")
             
             # Log response details
             response_content = response.choices[0].message.content
@@ -877,10 +919,71 @@ class AIService:
             
             return ai_response
             
+        except (TimeoutError, FutureTimeoutError) as e:
+            # Explicit timeout error
+            timeout_seconds = settings.openai_timeout_seconds
+            error_context = {**log_ctx, "error": str(e), "is_timeout": True, "timeout_seconds": timeout_seconds}
+            logger.bind(**error_context).warning(f"[AI] OpenAI API call timed out after {timeout_seconds} seconds - PROMPT LOGGED TO DATABASE")
+            
+            # Ensure prompt is logged (already done in the timeout handler above, but do it again here as fallback)
+            self._log_ai_response(
+                request_type="generate_response",
+                user_id=user_id_for_logging,
+                prompt=full_prompt,
+                request_payload={
+                    "model": settings.openai_model,
+                    "max_tokens": request.max_tokens or settings.openai_max_tokens,
+                    "temperature": request.temperature or 0.7,
+                    "has_context": request.context is not None,
+                },
+                response_text=None,
+                model=settings.openai_model,
+                parse_success=False,
+                error_message=f"TIMEOUT: Request timed out after {timeout_seconds} seconds",
+            )
+            
+            raise Exception(f"AI service error: Request timed out after {timeout_seconds} seconds. Prompt has been logged to database.")
+            
         except Exception as e:
-            error_context = {**log_ctx, "error": str(e)}
-            logger.bind(**error_context).exception("[AI] OpenAI API call failed")
-            raise Exception(f"AI service error: {str(e)}")
+            # Check if it's a timeout error (from client-side timeout)
+            is_timeout = (
+                isinstance(e, TimeoutError) or 
+                isinstance(e, FutureTimeoutError) or
+                "timeout" in str(e).lower() or 
+                "timed out" in str(e).lower() or
+                (hasattr(e, 'response') and e.response is not None and e.response.status_code == 408)
+            )
+            
+            error_context = {**log_ctx, "error": str(e), "is_timeout": is_timeout}
+            if is_timeout:
+                timeout_seconds = settings.openai_timeout_seconds
+                logger.bind(**error_context).warning(f"[AI] OpenAI API call timed out after {timeout_seconds} seconds - PROMPT LOGGED TO DATABASE")
+            else:
+                logger.bind(**error_context).exception("[AI] OpenAI API call failed")
+            
+            # Log to database even if timeout occurred
+            timeout_seconds = settings.openai_timeout_seconds
+            error_message = f"TIMEOUT: Request timed out after {timeout_seconds} seconds" if is_timeout else str(e)
+            self._log_ai_response(
+                request_type="generate_response",
+                user_id=user_id_for_logging,
+                prompt=full_prompt,
+                request_payload={
+                    "model": settings.openai_model,
+                    "max_tokens": request.max_tokens or settings.openai_max_tokens,
+                    "temperature": request.temperature or 0.7,
+                    "has_context": request.context is not None,
+                },
+                response_text=None,
+                model=settings.openai_model,
+                parse_success=False,
+                error_message=error_message,
+            )
+            
+            if is_timeout:
+                raise Exception(f"AI service error: Request timed out after {timeout_seconds} seconds. Prompt has been logged to database.")
+            else:
+                raise Exception(f"AI service error: {error_message}")
     
     def generate_workout_plan(
         self,

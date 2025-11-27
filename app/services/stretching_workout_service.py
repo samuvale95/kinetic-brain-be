@@ -2,11 +2,13 @@
 Servizio per generare allenamenti di stretching usando la tabella exercises
 """
 from typing import Dict, Any, List, Optional
+from datetime import datetime
 from sqlalchemy.orm import Session
 from app.services.exercise_service import ExerciseService
 from app.services.workout_config_service import WorkoutConfigService
 from loguru import logger
 import random
+import time
 
 
 class StretchingWorkoutService:
@@ -40,16 +42,22 @@ class StretchingWorkoutService:
         Returns:
             Dict con struttura workout compatibile con create_workouts_from_progressive_week
         """
+        gen_start = time.time()
+        logger.info(f"[STRETCHING][START] Generating stretching workout - sport: {sport_type}, level: {level}, phase: {week_phase}, equipment: {len(available_equipment) if available_equipment else 0}, timestamp: {datetime.utcnow().isoformat()}")
         try:
             # Carica configurazione
+            config_start = time.time()
+            logger.debug(f"[STRETCHING] Loading config for sport={sport_type}, phase={week_phase}")
             config = self.config_service.get_workout_config(
                 sport_type=sport_type,
                 phase=week_phase,
                 workout_type="stretching"
             )
+            config_duration = time.time() - config_start
+            logger.debug(f"[STRETCHING] Config loaded - duration: {config_duration:.2f}s")
             
             if not config:
-                logger.error(f"No stretching config found for sport={sport_type}, phase={week_phase}")
+                logger.error(f"[STRETCHING] No stretching config found for sport={sport_type}, phase={week_phase}")
                 return self._create_fallback_workout(sport_type, level)
             
             # Determina durata
@@ -61,6 +69,7 @@ class StretchingWorkoutService:
                 config.exercise_count,
                 duration_minutes
             )
+            logger.debug(f"[STRETCHING] Calculated: duration={duration_minutes}min, num_exercises={num_exercises}")
             
             # Determina target muscles
             if target_muscles is None:
@@ -68,8 +77,11 @@ class StretchingWorkoutService:
                     sport_type,
                     week_phase
                 )
+            logger.debug(f"[STRETCHING] Target muscles: {target_muscles}")
             
             # Seleziona esercizi
+            exercise_start = time.time()
+            logger.info(f"[STRETCHING] Selecting exercises - category: stretching, level: {level}, num_exercises: {num_exercises}, timestamp: {datetime.utcnow().isoformat()}")
             exercises = self.exercise_service.select_exercises_for_workout(
                 category="stretching",
                 level=level,
@@ -78,20 +90,27 @@ class StretchingWorkoutService:
                 num_exercises=num_exercises,
                 focus_type=config.focus_type
             )
+            exercise_duration = time.time() - exercise_start
+            logger.info(f"[STRETCHING] Exercises selected - count: {len(exercises) if exercises else 0}, duration: {exercise_duration:.2f}s")
             
             if not exercises:
-                logger.warning(f"No exercises found for stretching workout, using fallback")
+                logger.warning(f"[STRETCHING] No exercises found for stretching workout, using fallback")
                 return self._create_fallback_workout(sport_type, level)
             
             # Costruisci struttura workout
+            structure_start = time.time()
+            logger.debug(f"[STRETCHING] Building workout structure - timestamp: {datetime.utcnow().isoformat()}")
             workout_structure = self._build_workout_structure(
                 exercises=exercises,
                 duration_minutes=duration_minutes,
                 config=config,
                 sport_type=sport_type
             )
+            structure_duration = time.time() - structure_start
+            logger.debug(f"[STRETCHING] Workout structure built - duration: {structure_duration:.2f}s")
             
-            return {
+            gen_duration = time.time() - gen_start
+            result = {
                 "type": "stretching",
                 "sport": sport_type.lower(),
                 "duration_minutes": duration_minutes,
@@ -101,9 +120,12 @@ class StretchingWorkoutService:
                 "description": f"Stretching session focusing on {', '.join(target_muscles[:3])}",
                 "structure": workout_structure
             }
+            logger.info(f"[STRETCHING][END] Stretching workout generated - duration: {gen_duration:.2f}s, exercises: {len(exercises)}, timestamp: {datetime.utcnow().isoformat()}")
+            return result
         
         except Exception as e:
-            logger.error(f"Error generating stretching workout: {e}")
+            gen_duration = time.time() - gen_start
+            logger.error(f"[STRETCHING][ERROR] Error generating stretching workout after {gen_duration:.2f}s: {e}", exc_info=True)
             return self._create_fallback_workout(sport_type, level)
     
     def _build_workout_structure(

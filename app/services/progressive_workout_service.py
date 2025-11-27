@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, func, desc
 from typing import Dict, Any, List, Optional
 from datetime import datetime, date, timedelta
+import time
 from app.models.workout import Workout, WorkoutSession, WorkoutPlan
 from app.services.ai_service import AIService
 from app.services.claude_review_service import ClaudeReviewService
@@ -42,16 +43,22 @@ class ProgressiveWorkoutPlanService:
                            weekly_hours: Optional[float] = None,
                            available_equipment: Optional[List[str]] = None) -> Dict[str, Any]:
         """Genera piano per una settimana specifica basato sui dati precedenti"""
-        logger.info(f"[PROGRESSIVE] Generating weekly plan - user_id: {user_id}, week_number: {week_number}, target_date: {target_date}, start_date: {start_date}")
+        generation_start_time = time.time()
+        logger.info(f"[PROGRESSIVE][START] Generating weekly plan - user_id: {user_id}, week_number: {week_number}, target_date: {target_date}, start_date: {start_date}, include_stretching: {include_stretching}, include_strength: {include_strength}, timestamp: {datetime.utcnow().isoformat()}")
         logger.debug(f"[PROGRESSIVE] Input params: user_id={user_id}, week_number={week_number}, target_date={target_date}, start_date={start_date}, has_previous_week={previous_week_data is not None}, has_fitness_level={current_fitness_level is not None}")
         
         # 1. Raccoglie dati storici dell'utente (same for mock and real)
-        logger.debug(f"[PROGRESSIVE] Collecting user workout history (weeks_back=4)")
+        step_start = time.time()
+        logger.info(f"[PROGRESSIVE][STEP 1] Collecting user workout history (weeks_back=4) - timestamp: {datetime.utcnow().isoformat()}")
         user_history = self._get_user_workout_history(user_id, weeks_back=4)
-        logger.debug(f"[PROGRESSIVE] Collected {len(user_history)} weeks of history")
+        step_duration = time.time() - step_start
+        logger.info(f"[PROGRESSIVE][STEP 1] Collected {len(user_history)} weeks of history - duration: {step_duration:.2f}s")
         
+        step_start = time.time()
+        logger.info(f"[PROGRESSIVE][STEP 2] Analyzing performance trends - timestamp: {datetime.utcnow().isoformat()}")
         performance_trends = self._analyze_performance_trends(user_history)
-        logger.debug(f"[PROGRESSIVE] Performance trends: completion_rate={performance_trends.get('completion_rate', 0):.1f}%, fatigue_level={performance_trends.get('fatigue_level', 'N/A')}")
+        step_duration = time.time() - step_start
+        logger.info(f"[PROGRESSIVE][STEP 2] Performance trends: completion_rate={performance_trends.get('completion_rate', 0):.1f}%, fatigue_level={performance_trends.get('fatigue_level', 'N/A')} - duration: {step_duration:.2f}s")
         
         # 2. Calcola date della settimana e giorni disponibili per prima settimana
         target_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
@@ -70,7 +77,8 @@ class ProgressiveWorkoutPlanService:
             logger.info(f"[PROGRESSIVE] First week partial: start_date={start_date}, available_days={available_days_in_week}")
         
         # 3. Costruisce prompt contestualizzato (same for mock and real)
-        logger.debug(f"[PROGRESSIVE] Building progressive prompt")
+        step_start = time.time()
+        logger.info(f"[PROGRESSIVE][STEP 3] Building progressive prompt - timestamp: {datetime.utcnow().isoformat()}")
         prompt = self._build_progressive_prompt(
             week_number=week_number,
             weeks_remaining=weeks_remaining,
@@ -89,6 +97,8 @@ class ProgressiveWorkoutPlanService:
             goal=goal,
             weekly_hours=weekly_hours
         )
+        step_duration = time.time() - step_start
+        logger.info(f"[PROGRESSIVE][STEP 3] Prompt built - length: {len(prompt)} chars - duration: {step_duration:.2f}s")
         logger.debug(f"[PROGRESSIVE] Prompt built - length: {len(prompt)} characters")
         
         # 4. Create AIRequest (same for mock and real)
@@ -125,8 +135,13 @@ class ProgressiveWorkoutPlanService:
             logger.info(f"[PROGRESSIVE][MOCK] Mock weekly plan generated successfully - week: {result.get('week', 'N/A')}, workouts_count: {len(result.get('workouts', []))}")
             return result
         
-        logger.info(f"[PROGRESSIVE] Calling AI service for weekly plan generation")
+        # 4. Chiamata AI
+        step_start = time.time()
+        logger.info(f"[PROGRESSIVE][STEP 4] Calling AI service for weekly plan generation - timestamp: {datetime.utcnow().isoformat()}")
+        logger.info(f"[PROGRESSIVE][STEP 4] AI Request params - prompt_length: {len(prompt)}, max_tokens: {ai_request.max_tokens}, temperature: {ai_request.temperature}")
         response = self.ai_service.generate_response(ai_request)
+        step_duration = time.time() - step_start
+        logger.info(f"[PROGRESSIVE][STEP 4] AI service call completed - duration: {step_duration:.2f}s, response_length: {len(response.response) if response and response.response else 0}")
         
         # Check if response is valid
         if not response or not response.response:
@@ -152,6 +167,8 @@ class ProgressiveWorkoutPlanService:
             logger.info(f"[PROGRESSIVE] Using fallback parser due to empty response")
         else:
             # 5. Parsing e strutturazione della risposta
+            step_start = time.time()
+            logger.info(f"[PROGRESSIVE][STEP 5] Parsing AI response - timestamp: {datetime.utcnow().isoformat()}")
             try:
                 # Strip any markdown code blocks if present
                 response_text = response.response.strip()
@@ -163,8 +180,10 @@ class ProgressiveWorkoutPlanService:
                     response_text = response_text[:-3]  # Remove trailing ```
                 response_text = response_text.strip()
                 
+                parse_start = time.time()
                 plan_data = json.loads(response_text)
-                logger.info(f"[PROGRESSIVE] Successfully parsed AI response as JSON")
+                parse_duration = time.time() - parse_start
+                logger.info(f"[PROGRESSIVE][STEP 5] Successfully parsed AI response as JSON - duration: {parse_duration:.2f}s")
                 logger.debug(f"[PROGRESSIVE] Plan data keys: {list(plan_data.keys())}")
                 if 'workouts' in plan_data:
                     logger.info(f"[PROGRESSIVE] Plan contains {len(plan_data.get('workouts', []))} workouts")
@@ -212,6 +231,8 @@ class ProgressiveWorkoutPlanService:
                 logger.info(f"[PROGRESSIVE] Using fallback text response parser")
         
         # 6. Validator deterministico
+        step_start = time.time()
+        logger.info(f"[PROGRESSIVE][STEP 6] Running deterministic validator - timestamp: {datetime.utcnow().isoformat()}")
         validator_has_errors = False
         validator_has_warnings = False
         validator_results = None
@@ -229,16 +250,18 @@ class ProgressiveWorkoutPlanService:
             
             # Validate the plan
             self.plan_validator.validate(plan_data, user_state=user_state)
-            logger.info("[PROGRESSIVE] Plan passed deterministic validator")
+            step_duration = time.time() - step_start
+            logger.info(f"[PROGRESSIVE][STEP 6] Plan passed deterministic validator - duration: {step_duration:.2f}s")
             validator_results = {"status": "passed", "violations": []}
             
         except PlanValidationError as e:
+            step_duration = time.time() - step_start
             validator_has_errors = True
             validator_results = {
                 "status": "failed",
                 "violations": e.violations,
             }
-            logger.warning(f"[PROGRESSIVE] Plan validation failed: {e.violations}")
+            logger.warning(f"[PROGRESSIVE][STEP 6] Plan validation failed after {step_duration:.2f}s: {e.violations}")
             # Continue anyway - we'll let Claude review it
         
         # Check for missing required workouts (strength/stretching)
@@ -406,6 +429,8 @@ class ProgressiveWorkoutPlanService:
         
         # 8. Genera stretching e strength workouts se richiesti
         if include_stretching or include_strength:
+            step_start = time.time()
+            logger.info(f"[PROGRESSIVE][STEP 8][START] Generating stretching/strength workouts - include_stretching: {include_stretching}, include_strength: {include_strength}, timestamp: {datetime.utcnow().isoformat()}")
             try:
                 # Calcola weeks_remaining
                 weeks_remaining = self._calculate_weeks_remaining(target_dt, week_number)
@@ -413,15 +438,21 @@ class ProgressiveWorkoutPlanService:
                 # Determina fase
                 config_service = WorkoutConfigService()
                 week_phase = config_service.determine_phase(weeks_remaining)
+                logger.info(f"[PROGRESSIVE][STEP 8] Phase determined: {week_phase}, weeks_remaining: {weeks_remaining}")
                 
                 # Default equipment se non specificato
                 if available_equipment is None:
+                    eq_start = time.time()
+                    logger.info(f"[PROGRESSIVE][STEP 8] Fetching available equipment - timestamp: {datetime.utcnow().isoformat()}")
                     from app.services.exercise_service import ExerciseService
                     exercise_service = ExerciseService(self.db)
                     available_equipment = exercise_service.get_available_equipment()
+                    eq_duration = time.time() - eq_start
+                    logger.info(f"[PROGRESSIVE][STEP 8] Equipment fetched - count: {len(available_equipment) if available_equipment else 0}, duration: {eq_duration:.2f}s")
                     # Se ancora None o vuoto, usa "body only" come default
                     if not available_equipment:
                         available_equipment = ["body only"]
+                        logger.info(f"[PROGRESSIVE][STEP 8] Using default equipment: ['body only']")
                 
                 # Normalizza sport_type
                 if not sport_type:
@@ -434,9 +465,12 @@ class ProgressiveWorkoutPlanService:
                 # Ottieni giorni disponibili (escludi unavailable_days)
                 all_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
                 available_days_list = [d for d in all_days if not unavailable_days or d not in unavailable_days]
+                logger.info(f"[PROGRESSIVE][STEP 8] Available days: {available_days_list}")
                 
                 # Genera stretching workouts
                 if include_stretching:
+                    stretch_start = time.time()
+                    logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][START] Starting stretching workout generation - timestamp: {datetime.utcnow().isoformat()}")
                     stretching_service = StretchingWorkoutService(self.db)
                     stretching_config = config_service.get_workout_config(
                         sport_type=sport_type,
@@ -450,15 +484,18 @@ class ProgressiveWorkoutPlanService:
                             available_days_list
                         )
                         
-                        logger.info(f"[PROGRESSIVE] Generating {num_stretching_sessions} stretching workouts")
+                        logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING] Generating {num_stretching_sessions} stretching workouts")
                         
                         # Genera workout per ogni sessione
                         stretching_workouts = []
                         for i in range(num_stretching_sessions):
+                            workout_start = time.time()
                             if i < len(available_days_list):
                                 day = available_days_list[i]
+                                logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{i+1}/{num_stretching_sessions}] Generating workout for {day} - timestamp: {datetime.utcnow().isoformat()}")
                                 # Evita conflitti con sport_specific_days se non è stretching
                                 if sport_specific_days and day in sport_specific_days:
+                                    logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{i+1}/{num_stretching_sessions}] Skipping {day} (conflict with sport_specific_days)")
                                     continue
                                 
                                 workout = stretching_service.generate_stretching_workout(
@@ -469,15 +506,20 @@ class ProgressiveWorkoutPlanService:
                                 )
                                 workout["day"] = day
                                 stretching_workouts.append(workout)
+                                workout_duration = time.time() - workout_start
+                                logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{i+1}/{num_stretching_sessions}] Workout generated for {day} - duration: {workout_duration:.2f}s")
                         
                         # Aggiungi alla lista workouts
                         if "workouts" not in plan_data:
                             plan_data["workouts"] = []
                         plan_data["workouts"].extend(stretching_workouts)
-                        logger.info(f"[PROGRESSIVE] Added {len(stretching_workouts)} stretching workouts to plan")
+                        stretch_duration = time.time() - stretch_start
+                        logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][END] Added {len(stretching_workouts)} stretching workouts to plan - total duration: {stretch_duration:.2f}s")
                 
                 # Genera strength workouts
                 if include_strength:
+                    strength_start = time.time()
+                    logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][START] Starting strength workout generation - timestamp: {datetime.utcnow().isoformat()}")
                     strength_service = StrengthWorkoutService(self.db)
                     strength_config = config_service.get_workout_config(
                         sport_type=sport_type,
@@ -491,15 +533,18 @@ class ProgressiveWorkoutPlanService:
                             available_days_list
                         )
                         
-                        logger.info(f"[PROGRESSIVE] Generating {num_strength_sessions} strength workouts")
+                        logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH] Generating {num_strength_sessions} strength workouts")
                         
                         # Genera workout per ogni sessione
                         strength_workouts = []
                         for i in range(num_strength_sessions):
+                            workout_start = time.time()
                             if i < len(available_days_list):
                                 day = available_days_list[i]
+                                logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][{i+1}/{num_strength_sessions}] Generating workout for {day} - timestamp: {datetime.utcnow().isoformat()}")
                                 # Evita conflitti con sport_specific_days se non è strength
                                 if sport_specific_days and day in sport_specific_days:
+                                    logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][{i+1}/{num_strength_sessions}] Skipping {day} (conflict with sport_specific_days)")
                                     continue
                                 
                                 workout = strength_service.generate_strength_workout(
@@ -511,15 +556,22 @@ class ProgressiveWorkoutPlanService:
                                 )
                                 workout["day"] = day
                                 strength_workouts.append(workout)
+                                workout_duration = time.time() - workout_start
+                                logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][{i+1}/{num_strength_sessions}] Workout generated for {day} - duration: {workout_duration:.2f}s")
                         
                         # Aggiungi alla lista workouts
                         if "workouts" not in plan_data:
                             plan_data["workouts"] = []
                         plan_data["workouts"].extend(strength_workouts)
-                        logger.info(f"[PROGRESSIVE] Added {len(strength_workouts)} strength workouts to plan")
+                        strength_duration = time.time() - strength_start
+                        logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][END] Added {len(strength_workouts)} strength workouts to plan - total duration: {strength_duration:.2f}s")
+                
+                step_duration = time.time() - step_start
+                logger.info(f"[PROGRESSIVE][STEP 8][END] Stretching/strength generation completed - total duration: {step_duration:.2f}s")
             
             except Exception as e:
-                logger.error(f"[PROGRESSIVE] Error generating stretching/strength workouts: {e}")
+                step_duration = time.time() - step_start
+                logger.error(f"[PROGRESSIVE][STEP 8][ERROR] Error generating stretching/strength workouts after {step_duration:.2f}s: {e}", exc_info=True)
                 # Continue without stretching/strength if generation fails
         
         # 9. Aggiunge metadati
@@ -529,7 +581,8 @@ class ProgressiveWorkoutPlanService:
             "week_end_date": self._get_week_end_date(target_dt, week_number, plan_start_date)
         })
         
-        logger.info(f"[PROGRESSIVE] Weekly plan generated successfully - week: {plan_data.get('week', 'N/A')}, focus: {plan_data.get('focus', 'N/A')}, total_workouts: {len(plan_data.get('workouts', []))}")
+        generation_duration = time.time() - generation_start_time
+        logger.info(f"[PROGRESSIVE][END] Weekly plan generated successfully - week: {plan_data.get('week', 'N/A')}, focus: {plan_data.get('focus', 'N/A')}, total_workouts: {len(plan_data.get('workouts', []))}, total_duration: {generation_duration:.2f}s, timestamp: {datetime.utcnow().isoformat()}")
         return plan_data
     
     def adapt_next_week_plan(self, user_id: int, target_date: str) -> Dict[str, Any]:

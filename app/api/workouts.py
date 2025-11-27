@@ -502,27 +502,31 @@ async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
         plan_dict = {
             "id": plan.id,
             "user_id": plan.user_id,
-            "title": plan.title,
-            "description": plan.description,
+            "title": plan.title or "",
+            "description": plan.description or "",
             "start_date": plan.start_date.isoformat() if plan.start_date else None,
             "end_date": plan.end_date.isoformat() if plan.end_date else None,
-            "total_weeks": plan.total_weeks,
-            "goal": plan.goal,
-            "sport_type": plan.sport_type,
-            "level": plan.level,
-            "status": plan.status,
+            "total_weeks": total_weeks_calculated,
+            "goal": plan.goal or "",
+            "sport_type": plan.sport_type or "",
+            "level": plan.level or "",
+            "status": plan.status or "active",
             "created_at": plan.created_at.isoformat() if plan.created_at else None,
             "updated_at": plan.updated_at.isoformat() if plan.updated_at else None
         }
         
+        # Ensure first_week_plan has all required fields
+        if not isinstance(first_week_plan, dict):
+            first_week_plan = {}
+        
         result = {
             "plan": plan_dict,
-            "first_week": first_week_plan,
-            "target_date": ai_request.target_date,
-            "total_weeks": first_week_plan.get("weeks_remaining", 12),
+            "first_week": first_week_plan or {},
+            "target_date": ai_request.target_date or "",
+            "total_weeks": total_weeks_calculated,
             "is_progressive": True,
-            "workouts_created": len(workouts),
-            "calendar_events_created": len(calendar_events)
+            "workouts_created": len(workouts) if workouts else 0,
+            "calendar_events_created": len(calendar_events) if calendar_events else 0
         }
         logger.info(f"[API] Progressive plan generated successfully - plan_id: {plan_dict.get('id')}, workouts: {len(workouts)}, events: {len(calendar_events)}")
         logger.debug(f"[API] Response summary: plan_id={plan_dict.get('id')}, total_weeks={result.get('total_weeks')}, is_progressive={result.get('is_progressive')}")

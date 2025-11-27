@@ -3,6 +3,7 @@ from datetime import datetime
 import json
 import random
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from anthropic import Anthropic
 from loguru import logger
@@ -76,18 +77,55 @@ class ClaudeReviewService:
             log_ctx["prompt_length"] = len(prompt)
             logger.bind(**log_ctx).debug("[CLAUDE_REVIEW] Review prompt built")
             
-            # Call Claude API
-            message = self.client.messages.create(
-                model=settings.anthropic_model,
-                max_tokens=16000,  # Increased to handle large JSON responses
-                temperature=0.3,  # Lower temperature for more consistent reviews
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            )
+            # Store full prompt for logging in case of timeout
+            full_prompt = prompt
+            
+            # Call Claude API with explicit timeout wrapper
+            timeout_seconds = settings.anthropic_timeout_seconds
+            logger.debug(f"[CLAUDE_REVIEW] Making API call with timeout: {timeout_seconds}s")
+            
+            def make_claude_call():
+                return self.client.messages.create(
+                    model=settings.anthropic_model,
+                    max_tokens=16000,  # Increased to handle large JSON responses
+                    temperature=0.3,  # Lower temperature for more consistent reviews
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ]
+                )
+            
+            # Use ThreadPoolExecutor to enforce timeout
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(make_claude_call)
+                try:
+                    message = future.result(timeout=timeout_seconds)
+                except FutureTimeoutError:
+                    # Timeout occurred - log prompt and raise
+                    logger.warning(f"[CLAUDE_REVIEW] Claude API call timed out after {timeout_seconds} seconds - PROMPT LOGGED TO DATABASE")
+                    # Log the prompt before raising
+                    if self.db and user_id:
+                        try:
+                            from app.services.ai_service import AIService
+                            ai_service = AIService(self.db)
+                            ai_service._log_ai_response(
+                                request_type="claude_plan_review",
+                                user_id=user_id,
+                                prompt=full_prompt,
+                                request_payload={
+                                    "plan_keys": list(plan.keys()) if isinstance(plan, dict) else None,
+                                    "has_validator_results": validator_results is not None,
+                                },
+                                response_text="",
+                                model=settings.anthropic_model,
+                                parse_success=False,
+                                error_message=f"TIMEOUT: Request timed out after {timeout_seconds} seconds",
+                            )
+                        except Exception as log_error:
+                            logger.warning(f"[CLAUDE_REVIEW] Failed to log timeout to database: {log_error}")
+                    raise TimeoutError(f"Claude API call timed out after {timeout_seconds} seconds")
             
             # Parse response
             response_text = message.content[0].text if message.content else ""
@@ -126,24 +164,53 @@ class ClaudeReviewService:
                 usage=usage_info,
             )
             
-        except Exception as e:
-            error_context = {**log_ctx, "error": str(e)}
-            logger.bind(**error_context).exception("[CLAUDE_REVIEW] Claude API call failed")
+        except (TimeoutError, FutureTimeoutError) as e:
+            # Explicit timeout error - prompt already logged in the timeout handler above
+            timeout_seconds = settings.anthropic_timeout_seconds
+            error_context = {**log_ctx, "error": str(e), "is_timeout": True, "timeout_seconds": timeout_seconds}
+            logger.bind(**error_context).warning(f"[CLAUDE_REVIEW] Claude API call timed out after {timeout_seconds} seconds - PROMPT ALREADY LOGGED")
             
-            # Log error to database if available
-            if self.db and user_id:
+            # Fallback: approve plan if Claude times out
+            return ClaudeReviewResponse(
+                approved=True,
+                improved_plan=None,
+                review_notes=f"Claude review timed out after {timeout_seconds} seconds. Plan approved by default. Prompt has been logged to database.",
+                changelog=None,
+                model=settings.anthropic_model,
+                usage=None,
+            )
+            
+        except Exception as e:
+            # Check if it's a timeout error (from client-side timeout)
+            is_timeout = (
+                isinstance(e, TimeoutError) or 
+                isinstance(e, FutureTimeoutError) or
+                "timeout" in str(e).lower() or 
+                "timed out" in str(e).lower()
+            )
+            
+            error_context = {**log_ctx, "error": str(e), "is_timeout": is_timeout}
+            if is_timeout:
+                timeout_seconds = settings.anthropic_timeout_seconds
+                logger.bind(**error_context).warning(f"[CLAUDE_REVIEW] Claude API call timed out after {timeout_seconds} seconds - PROMPT LOGGED TO DATABASE")
+            else:
+                logger.bind(**error_context).exception("[CLAUDE_REVIEW] Claude API call failed")
+            
+            # Log error to database if available (with full prompt) - only if not already logged by timeout handler
+            if self.db and user_id and not is_timeout:
                 try:
                     from app.services.ai_service import AIService
                     ai_service = AIService(self.db)
                     
-                    prompt_summary = f"Review plan with {len(plan.get('workouts', []))} workouts"
+                    # Build full prompt for logging (if timeout already logged it, skip)
+                    full_prompt = self._build_review_prompt(plan, validator_results)
                     
                     ai_service._log_ai_response(
                         request_type="claude_plan_review",
                         user_id=user_id,
-                        prompt=prompt_summary,
+                        prompt=full_prompt,
                         request_payload={
-                            "plan_keys": list(plan.keys()),
+                            "plan_keys": list(plan.keys()) if isinstance(plan, dict) else None,
                             "has_validator_results": validator_results is not None,
                         },
                         response_text="",
@@ -153,12 +220,16 @@ class ClaudeReviewService:
                     )
                 except Exception as log_error:
                     logger.warning(f"[CLAUDE_REVIEW] Failed to log error to database: {log_error}")
+            elif is_timeout:
+                # Timeout was already logged in the timeout handler above
+                logger.debug("[CLAUDE_REVIEW] Timeout already logged to database")
             
             # Fallback: approve plan if Claude fails
+            timeout_note = f" (timed out after {settings.anthropic_timeout_seconds}s)" if is_timeout else ""
             return ClaudeReviewResponse(
                 approved=True,
                 improved_plan=None,
-                review_notes=f"Claude review failed: {str(e)}. Plan approved by default.",
+                review_notes=f"Claude review failed{timeout_note}: {str(e)}. Plan approved by default.",
                 changelog=None,
                 model=settings.anthropic_model,
                 usage=None,
