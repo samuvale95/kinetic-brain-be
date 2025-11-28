@@ -128,23 +128,31 @@ class ProgressiveWorkoutPlanService:
             logger.debug(f"[PROGRESSIVE][MOCK] Full prompt that would be sent to LLM: {prompt[:1000]}...")
             logger.debug(f"[PROGRESSIVE][MOCK] AIRequest - prompt_length: {len(ai_request.prompt)}, max_tokens: {ai_request.max_tokens}, temperature: {ai_request.temperature}")
             
-            result = self._generate_mock_weekly_plan(
+            plan_data = self._generate_mock_weekly_plan(
                 week_number, target_date, previous_week_data, current_fitness_level,
                 prompt, ai_request, user_history, performance_trends, weeks_remaining
             )
-            logger.info(f"[PROGRESSIVE][MOCK] Mock weekly plan generated successfully - week: {result.get('week', 'N/A')}, workouts_count: {len(result.get('workouts', []))}")
-            return result
+            logger.info(f"[PROGRESSIVE][MOCK] Mock weekly plan generated successfully - week: {plan_data.get('week', 'N/A')}, workouts_count: {len(plan_data.get('workouts', []))}")
+            # NOTE: Non ritorniamo qui - continuiamo con validazione e generazione stretching/strength
+            # così anche in modalità mock, stretching e strength vengono generati realmente
+            logger.info(f"[PROGRESSIVE][MOCK] Continuing with validation and stretching/strength generation (if requested)")
+            # Salta la chiamata AI reale (step 4 e 5) in modalità mock
+            response = None
+        else:
+            # 4. Chiamata AI (solo se NON siamo in modalità mock)
+            step_start = time.time()
+            logger.info(f"[PROGRESSIVE][STEP 4] Calling AI service for weekly plan generation - timestamp: {datetime.utcnow().isoformat()}")
+            logger.info(f"[PROGRESSIVE][STEP 4] AI Request params - prompt_length: {len(prompt)}, max_tokens: {ai_request.max_tokens}, temperature: {ai_request.temperature}")
+            response = self.ai_service.generate_response(ai_request)
+            step_duration = time.time() - step_start
+            logger.info(f"[PROGRESSIVE][STEP 4] AI service call completed - duration: {step_duration:.2f}s, response_length: {len(response.response) if response and response.response else 0}")
         
-        # 4. Chiamata AI
-        step_start = time.time()
-        logger.info(f"[PROGRESSIVE][STEP 4] Calling AI service for weekly plan generation - timestamp: {datetime.utcnow().isoformat()}")
-        logger.info(f"[PROGRESSIVE][STEP 4] AI Request params - prompt_length: {len(prompt)}, max_tokens: {ai_request.max_tokens}, temperature: {ai_request.temperature}")
-        response = self.ai_service.generate_response(ai_request)
-        step_duration = time.time() - step_start
-        logger.info(f"[PROGRESSIVE][STEP 4] AI service call completed - duration: {step_duration:.2f}s, response_length: {len(response.response) if response and response.response else 0}")
-        
-        # Check if response is valid
-        if not response or not response.response:
+        # 5. Parsing della risposta AI (solo se non siamo in modalità mock)
+        if self.mock_mode:
+            # In modalità mock, plan_data è già stato generato, saltiamo il parsing
+            logger.info(f"[PROGRESSIVE][MOCK] Skipping AI response parsing (using mock plan_data)")
+        elif not response or not response.response:
+            # Check if response is valid
             error_msg = "AI service returned empty or None response"
             logger.error(f"[PROGRESSIVE] {error_msg}")
             self.ai_service._log_ai_response(

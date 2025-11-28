@@ -12,6 +12,64 @@ import random
 class ExerciseService:
     """Servizio per gestire esercizi"""
     
+    # Mappatura muscoli non standard a valori validi dell'enum muscle
+    MUSCLE_MAPPING = {
+        "core": "abdominals",  # "core" mappato a "abdominals"
+        "hip flexors": "adductors",  # "hip flexors" mappato a "adductors"
+    }
+    
+    # Valori validi dell'enum muscle nel database
+    VALID_MUSCLES = {
+        'abdominals', 'hamstrings', 'adductors', 'quadriceps', 'biceps', 
+        'shoulders', 'chest', 'middle back', 'calves', 'glutes', 
+        'lower back', 'lats', 'triceps', 'traps', 'forearms', 'neck', 'abductors'
+    }
+    
+    @staticmethod
+    def normalize_muscle_name(muscle: str) -> Optional[str]:
+        """
+        Normalizza il nome del muscolo mappando valori non standard a valori validi dell'enum
+        
+        Args:
+            muscle: Nome muscolo (può essere non standard come "core" o "hip flexors")
+        
+        Returns:
+            Nome muscolo normalizzato o None se non valido
+        """
+        muscle_lower = muscle.lower().strip()
+        
+        # Se è già un valore valido, ritorna così com'è
+        if muscle_lower in ExerciseService.VALID_MUSCLES:
+            return muscle_lower
+        
+        # Prova mappatura
+        if muscle_lower in ExerciseService.MUSCLE_MAPPING:
+            mapped = ExerciseService.MUSCLE_MAPPING[muscle_lower]
+            logger.debug(f"Mapped muscle '{muscle}' to '{mapped}'")
+            return mapped
+        
+        # Se non è mappabile, logga warning e ritorna None
+        logger.warning(f"Invalid muscle name '{muscle}' - not in enum and no mapping found. Skipping.")
+        return None
+    
+    @staticmethod
+    def normalize_muscle_list(muscles: List[str]) -> List[str]:
+        """
+        Normalizza una lista di nomi muscoli, rimuovendo quelli non validi
+        
+        Args:
+            muscles: Lista di nomi muscoli
+        
+        Returns:
+            Lista di nomi muscoli normalizzati e validi
+        """
+        normalized = []
+        for muscle in muscles:
+            normalized_muscle = ExerciseService.normalize_muscle_name(muscle)
+            if normalized_muscle:
+                normalized.append(normalized_muscle)
+        return normalized
+    
     def __init__(self, db: Session):
         self.db = db
     
@@ -77,11 +135,18 @@ class ExerciseService:
             
             # Filtro gruppi muscolari (primary o secondary)
             if target_muscles:
+                # Normalizza i nomi dei muscoli (mappa "core" -> "abdominals", etc.)
+                normalized_muscles = self.normalize_muscle_list(target_muscles)
+                
+                if not normalized_muscles:
+                    logger.warning(f"All target muscles were invalid after normalization: {target_muscles}")
+                    return []
+                
                 # Usa una query SQL raw per gestire correttamente l'operatore PostgreSQL @>
                 # L'operatore @> verifica se l'array contiene il valore specificato
                 # Costruisci le condizioni per ogni muscolo
                 muscle_conditions = []
-                for muscle in target_muscles:
+                for muscle in normalized_muscles:
                     # Escape delle virgolette nel nome del muscolo (se necessario)
                     muscle_escaped = muscle.replace("'", "''")
                     # Condizioni per primary_muscles e secondary_muscles
@@ -109,6 +174,11 @@ class ExerciseService:
         
         except Exception as e:
             logger.error(f"Error querying exercises: {e}")
+            # Rollback esplicito per evitare transazioni abortite
+            try:
+                self.db.rollback()
+            except Exception as rollback_error:
+                logger.error(f"Error during rollback: {rollback_error}")
             return []
     
     def select_exercises_for_workout(
