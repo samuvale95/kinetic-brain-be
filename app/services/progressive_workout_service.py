@@ -473,87 +473,57 @@ class ProgressiveWorkoutPlanService:
                 # Ottieni giorni disponibili per stretching/strength
                 all_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
                 
-                # Se è la prima settimana e abbiamo available_days_in_week, usali invece di tutti i giorni
-                if week_number == 1 and available_days_in_week:
-                    # Filtra anche per unavailable_days se specificati
+                # 1. Determina se è prima settimana e calcola scaling factor
+                is_first_week = (week_number == 1 and available_days_in_week)
+                if is_first_week:
+                    actual_days_count = len(available_days_in_week)
+                    scaling_factor = actual_days_count / 7.0
+                    logger.info(f"[PROGRESSIVE][STEP 8] First week detected: actual_days={actual_days_count}, scaling_factor={scaling_factor:.2f}")
+                else:
+                    actual_days_count = 7
+                    scaling_factor = 1.0
+                    logger.info(f"[PROGRESSIVE][STEP 8] Full week: actual_days={actual_days_count}, scaling_factor={scaling_factor:.2f}")
+                
+                # 2. Calcola giorni base disponibili (escludendo unavailable_days)
+                if is_first_week:
                     base_available_days = [d for d in available_days_in_week if not unavailable_days or d not in unavailable_days]
                     logger.info(f"[PROGRESSIVE][STEP 8] First week partial - starting with available_days_in_week: {base_available_days}")
                 else:
-                    # Settimana normale: usa tutti i giorni escludendo unavailable_days
                     base_available_days = [d for d in all_days if not unavailable_days or d not in unavailable_days]
                     logger.info(f"[PROGRESSIVE][STEP 8] Full week - starting with all days (excluding unavailable): {base_available_days}")
                 
-                # Escludi giorni già occupati da workout sport-specific generati dall'AI
+                # 3. Escludi giorni già occupati da workout sport-specific generati dall'AI
                 if sport_specific_days:
                     occupied_days = set(sport_specific_days.keys())
                     base_available_days = [d for d in base_available_days if d not in occupied_days]
                     logger.info(f"[PROGRESSIVE][STEP 8] After excluding sport_specific_days ({len(occupied_days)} days): {base_available_days}")
                 
-                # Escludi giorni già occupati dai workout nel plan_data (workouts generati dall'AI)
+                # 4. Escludi giorni già occupati dai workout nel plan_data (workouts generati dall'AI)
+                existing_workout_days = set()
                 if plan_data and "workouts" in plan_data:
                     existing_workout_days = {w.get("day") for w in plan_data["workouts"] if w.get("day")}
                     if existing_workout_days:
                         base_available_days = [d for d in base_available_days if d not in existing_workout_days]
                         logger.info(f"[PROGRESSIVE][STEP 8] After excluding existing AI workout days ({len(existing_workout_days)} days): {base_available_days}")
                 
-                available_days_list = base_available_days
+                # 5. Prepara giorni disponibili per strength (solo giorni liberi)
+                available_days_for_strength = base_available_days.copy()
                 
-                # Inizializza giorni usati (per evitare duplicati tra stretching e strength)
-                used_days_stretching = set()
+                # 6. Prepara giorni disponibili per stretching
+                # Settimana 1: solo giorni liberi (per non sovraccaricare)
+                # Settimana 2+: può usare tutti i giorni (anche occupati) - stretching può essere "on top"
+                if is_first_week:
+                    available_days_for_stretching = base_available_days.copy()
+                else:
+                    # Settimana 2+: stretching può essere aggiunto anche su giorni occupati
+                    # Usa tutti i giorni della settimana (escludendo solo unavailable_days)
+                    available_days_for_stretching = [d for d in all_days if not unavailable_days or d not in unavailable_days]
                 
-                # Genera stretching workouts
-                if include_stretching:
-                    stretch_start = time.time()
-                    logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][START] Starting stretching workout generation - timestamp: {datetime.utcnow().isoformat()}")
-                    stretching_service = StretchingWorkoutService(self.db)
-                    stretching_config = config_service.get_workout_config(
-                        sport_type=sport_type,
-                        phase=week_phase,
-                        workout_type="stretching"
-                    )
-                    
-                    if stretching_config:
-                        # Calcola numero di sessioni ma rispetta i giorni disponibili
-                        num_stretching_sessions = config_service.calculate_sessions_per_week(
-                            stretching_config.frequency,
-                            available_days_list
-                        )
-                        
-                        # Non superare il numero di giorni disponibili
-                        num_stretching_sessions = min(num_stretching_sessions, len(available_days_list))
-                        
-                        logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING] Generating {num_stretching_sessions} stretching workouts (max {len(available_days_list)} days available)")
-                        
-                        # Genera workout per ogni sessione
-                        stretching_workouts = []
-                        
-                        # Iteriamo solo sui giorni effettivamente disponibili (già inizializzato sopra)
-                        days_for_stretching = [d for d in available_days_list if d not in used_days_stretching][:num_stretching_sessions]
-                        
-                        for idx, day in enumerate(days_for_stretching, 1):
-                            workout_start = time.time()
-                            logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{idx}/{num_stretching_sessions}] Generating workout for {day} - timestamp: {datetime.utcnow().isoformat()}")
-                            
-                            workout = stretching_service.generate_stretching_workout(
-                                sport_type=sport_type,
-                                level=level,
-                                available_equipment=available_equipment,
-                                week_phase=week_phase
-                            )
-                            workout["day"] = day
-                            stretching_workouts.append(workout)
-                            used_days_stretching.add(day)
-                            workout_duration = time.time() - workout_start
-                            logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{idx}/{num_stretching_sessions}] Workout generated for {day} - duration: {workout_duration:.2f}s")
-                        
-                        # Aggiungi alla lista workouts
-                        if "workouts" not in plan_data:
-                            plan_data["workouts"] = []
-                        plan_data["workouts"].extend(stretching_workouts)
-                        stretch_duration = time.time() - stretch_start
-                        logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][END] Added {len(stretching_workouts)} stretching workouts to plan - total duration: {stretch_duration:.2f}s")
+                # Inizializza giorni usati (per tracking)
+                used_days_strength = set()
+                strength_workouts = []
                 
-                # Genera strength workouts
+                # 7. GENERA STRENGTH PRIMA (priorità più alta)
                 if include_strength:
                     strength_start = time.time()
                     logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][START] Starting strength workout generation - timestamp: {datetime.utcnow().isoformat()}")
@@ -565,29 +535,26 @@ class ProgressiveWorkoutPlanService:
                     )
                     
                     if strength_config:
-                        # Calcola numero di sessioni ma rispetta i giorni disponibili
-                        num_strength_sessions = config_service.calculate_sessions_per_week(
-                            strength_config.frequency,
-                            available_days_list
-                        )
+                        # Calcola target sessioni per settimana piena
+                        target_sessions_full_week = strength_config.frequency.preferred_sessions
                         
-                        # Non superare il numero di giorni disponibili
-                        num_strength_sessions = min(num_strength_sessions, len(available_days_list))
+                        # Scala per settimana 1
+                        if is_first_week:
+                            target_sessions_scaled = round(target_sessions_full_week * scaling_factor)
+                            # Applica minimo sensato: almeno 1 se BASE/BUILD
+                            if week_phase in ["BASE", "BUILD"]:
+                                target_sessions_scaled = max(1, target_sessions_scaled)
+                            logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH] First week scaling: {target_sessions_full_week} -> {target_sessions_scaled} (factor={scaling_factor:.2f})")
+                        else:
+                            target_sessions_scaled = target_sessions_full_week
                         
-                        logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH] Generating {num_strength_sessions} strength workouts (max {len(available_days_list)} days available)")
+                        # Limita ai giorni disponibili (solo giorni liberi)
+                        num_strength_sessions = min(target_sessions_scaled, len(available_days_for_strength))
                         
-                        # Genera workout per ogni sessione
-                        strength_workouts = []
+                        logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH] Generating {num_strength_sessions} strength workouts (target: {target_sessions_scaled}, available days: {len(available_days_for_strength)})")
                         
-                        # Evita giorni già usati per stretching
-                        used_days_strength = set(used_days_stretching)
-                        if include_stretching and stretching_workouts:
-                            stretching_days = {w.get("day") for w in stretching_workouts}
-                            used_days_strength.update(stretching_days)
-                            logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH] Days already used by stretching: {stretching_days}")
-                        
-                        # Filtra giorni disponibili per strength (escludi quelli già usati)
-                        days_for_strength = [d for d in available_days_list if d not in used_days_strength][:num_strength_sessions]
+                        # Genera workout per ogni sessione su giorni liberi
+                        days_for_strength = available_days_for_strength[:num_strength_sessions]
                         
                         for idx, day in enumerate(days_for_strength, 1):
                             workout_start = time.time()
@@ -612,6 +579,72 @@ class ProgressiveWorkoutPlanService:
                         plan_data["workouts"].extend(strength_workouts)
                         strength_duration = time.time() - strength_start
                         logger.info(f"[PROGRESSIVE][STEP 8][STRENGTH][END] Added {len(strength_workouts)} strength workouts to plan - total duration: {strength_duration:.2f}s")
+                
+                # 8. GENERA STRETCHING DOPO (può essere "on top" dalla settimana 2+)
+                if include_stretching:
+                    stretch_start = time.time()
+                    logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][START] Starting stretching workout generation - timestamp: {datetime.utcnow().isoformat()}")
+                    stretching_service = StretchingWorkoutService(self.db)
+                    stretching_config = config_service.get_workout_config(
+                        sport_type=sport_type,
+                        phase=week_phase,
+                        workout_type="stretching"
+                    )
+                    
+                    if stretching_config:
+                        # Calcola target sessioni per settimana piena
+                        target_sessions_full_week = stretching_config.frequency.preferred_sessions
+                        
+                        # Scala per settimana 1
+                        if is_first_week:
+                            target_sessions_scaled = max(2, round(target_sessions_full_week * scaling_factor))
+                            logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING] First week scaling: {target_sessions_full_week} -> {target_sessions_scaled} (factor={scaling_factor:.2f}, min=2)")
+                        else:
+                            target_sessions_scaled = target_sessions_full_week
+                        
+                        # Determina giorni per stretching
+                        if is_first_week:
+                            # Settimana 1: solo giorni liberi (non sovraccaricare)
+                            num_stretching_sessions = min(target_sessions_scaled, len(available_days_for_stretching))
+                            days_for_stretching = available_days_for_stretching[:num_stretching_sessions]
+                            logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING] First week: generating {num_stretching_sessions} workouts on free days only")
+                        else:
+                            # Settimana 2+: può aggiungere stretching anche su giorni occupati
+                            # Preferisci giorni liberi, poi riempi con giorni occupati
+                            free_days = [d for d in available_days_for_stretching if d not in used_days_strength and d not in existing_workout_days]
+                            occupied_days_for_stretching = [d for d in available_days_for_stretching if d in used_days_strength or d in existing_workout_days]
+                            
+                            # Prendi prima giorni liberi, poi giorni occupati fino al target
+                            days_for_stretching = (free_days + occupied_days_for_stretching)[:target_sessions_scaled]
+                            num_stretching_sessions = len(days_for_stretching)
+                            logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING] Full week: generating {num_stretching_sessions} workouts (free days: {len(free_days)}, can use occupied: {len(occupied_days_for_stretching)})")
+                        
+                        logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING] Generating {num_stretching_sessions} stretching workouts (target: {target_sessions_scaled})")
+                        
+                        # Genera workout per ogni sessione
+                        stretching_workouts = []
+                        
+                        for idx, day in enumerate(days_for_stretching, 1):
+                            workout_start = time.time()
+                            logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{idx}/{num_stretching_sessions}] Generating workout for {day} - timestamp: {datetime.utcnow().isoformat()}")
+                            
+                            workout = stretching_service.generate_stretching_workout(
+                                sport_type=sport_type,
+                                level=level,
+                                available_equipment=available_equipment,
+                                week_phase=week_phase
+                            )
+                            workout["day"] = day
+                            stretching_workouts.append(workout)
+                            workout_duration = time.time() - workout_start
+                            logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][{idx}/{num_stretching_sessions}] Workout generated for {day} - duration: {workout_duration:.2f}s")
+                        
+                        # Aggiungi alla lista workouts
+                        if "workouts" not in plan_data:
+                            plan_data["workouts"] = []
+                        plan_data["workouts"].extend(stretching_workouts)
+                        stretch_duration = time.time() - stretch_start
+                        logger.info(f"[PROGRESSIVE][STEP 8][STRETCHING][END] Added {len(stretching_workouts)} stretching workouts to plan - total duration: {stretch_duration:.2f}s")
                 
                 step_duration = time.time() - step_start
                 logger.info(f"[PROGRESSIVE][STEP 8][END] Stretching/strength generation completed - total duration: {step_duration:.2f}s")
