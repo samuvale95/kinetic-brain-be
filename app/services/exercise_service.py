@@ -25,6 +25,46 @@ class ExerciseService:
         'lower back', 'lats', 'triceps', 'traps', 'forearms', 'neck', 'abductors'
     }
     
+    # Mappatura livelli non standard a valori validi dell'enum leveltype
+    LEVEL_MAPPING = {
+        "advanced": "expert",  # "advanced" mappato a "expert"
+    }
+    
+    # Valori validi dell'enum leveltype nel database
+    VALID_LEVELS = {
+        'beginner', 'intermediate', 'expert'
+    }
+    
+    @staticmethod
+    def normalize_level(level: str) -> Optional[str]:
+        """
+        Normalizza il livello mappando valori non standard a valori validi dell'enum
+        
+        Args:
+            level: Livello (può essere non standard come "advanced")
+        
+        Returns:
+            Livello normalizzato o None se non valido
+        """
+        if not level:
+            return None
+        
+        level_lower = level.lower().strip()
+        
+        # Se è già un valore valido, ritorna così com'è
+        if level_lower in ExerciseService.VALID_LEVELS:
+            return level_lower
+        
+        # Prova mappatura
+        if level_lower in ExerciseService.LEVEL_MAPPING:
+            mapped = ExerciseService.LEVEL_MAPPING[level_lower]
+            logger.debug(f"Mapped level '{level}' to '{mapped}'")
+            return mapped
+        
+        # Se non è mappabile, logga warning e ritorna None
+        logger.warning(f"Invalid level name '{level}' - not in enum and no mapping found. Skipping.")
+        return None
+    
     @staticmethod
     def normalize_muscle_name(muscle: str) -> Optional[str]:
         """
@@ -119,6 +159,13 @@ class ExerciseService:
             Lista di Exercise
         """
         try:
+            # Normalizza il livello se presente
+            normalized_level = None
+            if level:
+                normalized_level = self.normalize_level(level)
+                if not normalized_level:
+                    logger.warning(f"Invalid level '{level}' - cannot normalize. Skipping level filter.")
+            
             # Se ci sono target_muscles, usa una query SQL completa per evitare problemi con enum
             if target_muscles:
                 # Normalizza i nomi dei muscoli (mappa "core" -> "abdominals", etc.)
@@ -134,7 +181,7 @@ class ExerciseService:
                     logger.warning(f"No valid muscles after filtering: {normalized_muscles}")
                     return []
                 
-                logger.debug(f"Querying exercises with target_muscles: {valid_muscles}, category: {category}, level: {level}, equipment: {available_equipment}")
+                logger.debug(f"Querying exercises with target_muscles: {valid_muscles}, category: {category}, level: {normalized_level} (original: {level}), equipment: {available_equipment}")
                 
                 # Costruisci le condizioni WHERE
                 where_conditions = []
@@ -144,10 +191,10 @@ class ExerciseService:
                     cat_escaped = category.replace("'", "''")
                     where_conditions.append(f"category = '{cat_escaped}'")
                 
-                # Filtro livello
-                if level:
-                    level_escaped = level.replace("'", "''")
-                    where_conditions.append(f"level = '{level_escaped}'")
+                # Filtro livello (usa il livello normalizzato)
+                if normalized_level:
+                    level_escaped = normalized_level.replace("'", "''")
+                    where_conditions.append(f"level = '{level_escaped}'::leveltype")
                 
                 # Filtro attrezzi disponibili
                 if available_equipment:
@@ -227,9 +274,9 @@ class ExerciseService:
                 if category:
                     query = query.filter(Exercise.category == category)
                 
-                # Filtro livello
-                if level:
-                    query = query.filter(Exercise.level == level)
+                # Filtro livello (usa il livello normalizzato)
+                if normalized_level:
+                    query = query.filter(Exercise.level == normalized_level)
                 
                 # Filtro attrezzi disponibili
                 if available_equipment:

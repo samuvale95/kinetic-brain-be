@@ -206,28 +206,68 @@ class WorkoutService:
             "notes": "Gradual cool-down",
         }
 
-        structure_payload = {
-            "sport": normalized_sport,
-            "segments": [
-                {
-                    "segment_type": "warmup",
-                    "name": "Warm-up",
-                    "steps": [warmup_step],
-                },
-                {
-                    "segment_type": "main",
-                    "name": workout_data.get("title") or workout_data.get("type") or "Session",
-                    "steps": [main_step],
-                    "notes": workout_data.get("modifications"),
-                },
-                {
-                    "segment_type": "cooldown",
-                    "name": "Cool-down",
-                    "steps": [cooldown_step],
-                },
-            ],
-            "metadata": {k: v for k, v in metadata.items() if v is not None},
-        }
+        # Per strength e stretching, non aggiungere warmup e cooldown
+        workout_type = workout_data.get("type", "").lower()
+        is_strength_or_stretching = workout_type in ["strength", "stretching"]
+        
+        if is_strength_or_stretching:
+            # Solo segmento main per strength e stretching
+            # Se c'è già una struttura con esercizi, preservala
+            existing_structure = workout_data.get("structure", {})
+            existing_segments = existing_structure.get("segments", [])
+            main_segment = None
+            if existing_segments:
+                # Cerca il segmento main nella struttura esistente
+                for seg in existing_segments:
+                    if seg.get("segment_type") == "main":
+                        main_segment = seg
+                        break
+            
+            if main_segment:
+                # Usa il segmento main esistente (con esercizi)
+                structure_payload = {
+                    "sport": normalized_sport,
+                    "segments": [main_segment],
+                    "metadata": {k: v for k, v in metadata.items() if v is not None},
+                }
+            else:
+                # Crea un segmento main vuoto (fallback)
+                structure_payload = {
+                    "sport": normalized_sport,
+                    "segments": [
+                        {
+                            "segment_type": "main",
+                            "name": workout_data.get("title") or workout_data.get("type") or "Session",
+                            "exercises": [],
+                            "notes": workout_data.get("modifications"),
+                        },
+                    ],
+                    "metadata": {k: v for k, v in metadata.items() if v is not None},
+                }
+        else:
+            # Per altri sport, includi warmup e cooldown
+            structure_payload = {
+                "sport": normalized_sport,
+                "segments": [
+                    {
+                        "segment_type": "warmup",
+                        "name": "Warm-up",
+                        "steps": [warmup_step],
+                    },
+                    {
+                        "segment_type": "main",
+                        "name": workout_data.get("title") or workout_data.get("type") or "Session",
+                        "steps": [main_step],
+                        "notes": workout_data.get("modifications"),
+                    },
+                    {
+                        "segment_type": "cooldown",
+                        "name": "Cool-down",
+                        "steps": [cooldown_step],
+                    },
+                ],
+                "metadata": {k: v for k, v in metadata.items() if v is not None},
+            }
 
         self._normalize_structure_targets(structure_payload)
 
