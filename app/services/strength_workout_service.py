@@ -160,11 +160,6 @@ class StrengthWorkoutService:
     ) -> Dict[str, Any]:
         """Costruisce la struttura JSON del workout"""
         
-        # Calcola durata per esercizio
-        warmup_minutes = min(5, max(3, duration_minutes // 8))
-        cooldown_minutes = min(3, max(2, duration_minutes // 10))
-        main_minutes = duration_minutes - warmup_minutes - cooldown_minutes
-        
         # Determina serie e ripetizioni in base alla fase
         if week_phase == "BASE":
             sets = 3
@@ -227,33 +222,9 @@ class StrengthWorkoutService:
             "sport": "strength",
             "segments": [
                 {
-                    "segment_type": "warmup",
-                    "name": "Warm-up",
-                    "steps": [
-                        {
-                            "step_type": "steady",
-                            "duration": {"type": "time", "seconds": warmup_minutes * 60},
-                            "target": {"type": "zone", "zone": "Z1"},
-                            "notes": "Dynamic warm-up and activation"
-                        }
-                    ]
-                },
-                {
                     "segment_type": "main",
                     "name": "Strength Exercises",
                     "exercises": exercise_list
-                },
-                {
-                    "segment_type": "cooldown",
-                    "name": "Cool-down",
-                    "steps": [
-                        {
-                            "step_type": "steady",
-                            "duration": {"type": "time", "seconds": cooldown_minutes * 60},
-                            "target": {"type": "zone", "zone": "Z1"},
-                            "notes": "Stretching and recovery"
-                        }
-                    ]
                 }
             ],
             "metadata": {
