@@ -81,7 +81,7 @@ class StretchingWorkoutService:
             
             # Seleziona esercizi
             exercise_start = time.time()
-            logger.info(f"[STRETCHING] Selecting exercises - category: stretching, level: {level}, num_exercises: {num_exercises}, timestamp: {datetime.utcnow().isoformat()}")
+            logger.info(f"[STRETCHING] Selecting exercises - category: stretching, level: {level}, num_exercises: {num_exercises}, equipment: {available_equipment}, timestamp: {datetime.utcnow().isoformat()}")
             exercises = self.exercise_service.select_exercises_for_workout(
                 category="stretching",
                 level=level,

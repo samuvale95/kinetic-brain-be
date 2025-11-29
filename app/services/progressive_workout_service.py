@@ -448,19 +448,17 @@ class ProgressiveWorkoutPlanService:
                 week_phase = config_service.determine_phase(weeks_remaining)
                 logger.info(f"[PROGRESSIVE][STEP 8] Phase determined: {week_phase}, weeks_remaining: {weeks_remaining}")
                 
-                # Default equipment se non specificato
-                if available_equipment is None:
-                    eq_start = time.time()
-                    logger.info(f"[PROGRESSIVE][STEP 8] Fetching available equipment - timestamp: {datetime.utcnow().isoformat()}")
-                    from app.services.exercise_service import ExerciseService
-                    exercise_service = ExerciseService(self.db)
-                    available_equipment = exercise_service.get_available_equipment()
-                    eq_duration = time.time() - eq_start
-                    logger.info(f"[PROGRESSIVE][STEP 8] Equipment fetched - count: {len(available_equipment) if available_equipment else 0}, duration: {eq_duration:.2f}s")
-                    # Se ancora None o vuoto, usa "body only" come default
-                    if not available_equipment:
-                        available_equipment = ["body only"]
-                        logger.info(f"[PROGRESSIVE][STEP 8] Using default equipment: ['body only']")
+                # Default equipment se non specificato: usa solo "body only" per sicurezza
+                # Non prendiamo tutti gli attrezzi dal database perché l'utente potrebbe non averli
+                if available_equipment is None or not available_equipment:
+                    available_equipment = ["body only"]
+                    logger.info(f"[PROGRESSIVE][STEP 8] No equipment specified, using safe default: ['body only']")
+                else:
+                    # Assicurati che "body only" sia sempre incluso (una persona può sempre usare solo il corpo)
+                    if "body only" not in available_equipment:
+                        available_equipment.append("body only")
+                        logger.info(f"[PROGRESSIVE][STEP 8] Added 'body only' to equipment list (always available)")
+                    logger.info(f"[PROGRESSIVE][STEP 8] Using user-specified equipment: {available_equipment}")
                 
                 # Normalizza sport_type
                 if not sport_type:

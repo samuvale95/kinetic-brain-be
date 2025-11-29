@@ -99,7 +99,7 @@ class StrengthWorkoutService:
             
             # Seleziona esercizi
             exercise_start = time.time()
-            logger.info(f"[STRENGTH] Selecting exercises - category: strength, level: {level}, num_exercises: {num_exercises}, mechanic: {mechanic}, timestamp: {datetime.utcnow().isoformat()}")
+            logger.info(f"[STRENGTH] Selecting exercises - category: strength, level: {level}, num_exercises: {num_exercises}, mechanic: {mechanic}, equipment: {available_equipment}, timestamp: {datetime.utcnow().isoformat()}")
             exercises = self.exercise_service.select_exercises_for_workout(
                 category="strength",
                 level=level,
