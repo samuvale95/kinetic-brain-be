@@ -119,21 +119,7 @@ class ExerciseService:
             Lista di Exercise
         """
         try:
-            query = self.db.query(Exercise)
-            
-            # Filtro categoria
-            if category:
-                query = query.filter(Exercise.category == category)
-            
-            # Filtro livello
-            if level:
-                query = query.filter(Exercise.level == level)
-            
-            # Filtro attrezzi disponibili
-            if available_equipment:
-                query = query.filter(Exercise.equipment.in_(available_equipment))
-            
-            # Filtro gruppi muscolari (primary o secondary)
+            # Se ci sono target_muscles, usa una query SQL completa per evitare problemi con enum
             if target_muscles:
                 # Normalizza i nomi dei muscoli (mappa "core" -> "abdominals", etc.)
                 normalized_muscles = self.normalize_muscle_list(target_muscles)
@@ -142,35 +128,126 @@ class ExerciseService:
                     logger.warning(f"All target muscles were invalid after normalization: {target_muscles}")
                     return []
                 
-                # Usa una query SQL raw per gestire correttamente l'operatore PostgreSQL @>
-                # L'operatore @> verifica se l'array contiene il valore specificato
-                # Costruisci le condizioni per ogni muscolo
+                # Filtra solo i muscoli validi
+                valid_muscles = [m for m in normalized_muscles if m in ExerciseService.VALID_MUSCLES]
+                if not valid_muscles:
+                    logger.warning(f"No valid muscles after filtering: {normalized_muscles}")
+                    return []
+                
+                logger.debug(f"Querying exercises with target_muscles: {valid_muscles}, category: {category}, level: {level}, equipment: {available_equipment}")
+                
+                # Costruisci le condizioni WHERE
+                where_conditions = []
+                
+                # Filtro categoria
+                if category:
+                    cat_escaped = category.replace("'", "''")
+                    where_conditions.append(f"category = '{cat_escaped}'")
+                
+                # Filtro livello
+                if level:
+                    level_escaped = level.replace("'", "''")
+                    where_conditions.append(f"level = '{level_escaped}'")
+                
+                # Filtro attrezzi disponibili
+                if available_equipment:
+                    eq_escaped = [eq.replace("'", "''") for eq in available_equipment]
+                    eq_list = ",".join([f"'{eq}'" for eq in eq_escaped])
+                    where_conditions.append(f"equipment IN ({eq_list})")
+                
+                # Filtro gruppi muscolari (primary o secondary)
                 muscle_conditions = []
-                for muscle in normalized_muscles:
-                    # Escape delle virgolette nel nome del muscolo (se necessario)
+                for muscle in valid_muscles:
+                    # Escape delle virgolette nel nome del muscolo
                     muscle_escaped = muscle.replace("'", "''")
-                    # Condizioni per primary_muscles e secondary_muscles
-                    muscle_conditions.append(f"primary_muscles @> ARRAY['{muscle_escaped}']::muscle[]")
-                    muscle_conditions.append(f"secondary_muscles @> ARRAY['{muscle_escaped}']::muscle[]")
+                    # Usa la sintassi con cast esplicito per i valori enum
+                    muscle_conditions.append(f"(primary_muscles @> ARRAY['{muscle_escaped}'::muscle])")
+                    muscle_conditions.append(f"(secondary_muscles @> ARRAY['{muscle_escaped}'::muscle])")
                 
                 if muscle_conditions:
-                    # Combina tutte le condizioni con OR
-                    muscle_filter_sql = " OR ".join(muscle_conditions)
-                    query = query.filter(text(muscle_filter_sql))
+                    where_conditions.append("(" + " OR ".join(muscle_conditions) + ")")
+                
+                # Filtro mechanic
+                if mechanic:
+                    mech_escaped = mechanic.replace("'", "''")
+                    where_conditions.append(f"mechanic = '{mech_escaped}'")
+                
+                # Filtro force
+                if force:
+                    force_escaped = force.replace("'", "''")
+                    where_conditions.append(f"force = '{force_escaped}'")
+                
+                # Costruisci la query SQL completa
+                where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
+                limit_clause = f"LIMIT {limit}" if limit else ""
+                
+                sql_query = f"""
+                    SELECT * FROM exercises 
+                    WHERE {where_clause}
+                    {limit_clause}
+                """
+                
+                logger.debug(f"Executing raw SQL query for exercises with target_muscles")
+                
+                # Esegui la query completamente raw per evitare validazione enum di SQLAlchemy
+                # Usa execute() direttamente e mappa manualmente i risultati
+                try:
+                    result = self.db.execute(text(sql_query))
+                    exercises = []
+                    for row in result:
+                        # Crea un oggetto Exercise dal risultato
+                        # Usa _mapping per accedere ai valori come dizionario
+                        exercise_dict = dict(row._mapping)
+                        exercise = Exercise()
+                        for key, value in exercise_dict.items():
+                            setattr(exercise, key, value)
+                        # Disconnetti l'oggetto dalla sessione per evitare validazione enum
+                        # Questo permette di usare l'oggetto senza che SQLAlchemy validi i tipi
+                        from sqlalchemy.orm import make_transient
+                        make_transient(exercise)
+                        exercises.append(exercise)
+                    
+                    logger.debug(f"Raw SQL query returned {len(exercises)} exercises")
+                    return exercises
+                except Exception as sql_error:
+                    logger.error(f"Error executing raw SQL query for exercises: {sql_error}")
+                    logger.debug(f"SQL query was: {sql_query}")
+                    # Rollback e ritorna lista vuota
+                    try:
+                        self.db.rollback()
+                    except:
+                        pass
+                    return []
             
-            # Filtro mechanic
-            if mechanic:
-                query = query.filter(Exercise.mechanic == mechanic)
-            
-            # Filtro force
-            if force:
-                query = query.filter(Exercise.force == force)
-            
-            # Limite risultati
-            if limit:
-                query = query.limit(limit)
-            
-            return query.all()
+            else:
+                # Query normale senza target_muscles (usa SQLAlchemy ORM)
+                query = self.db.query(Exercise)
+                
+                # Filtro categoria
+                if category:
+                    query = query.filter(Exercise.category == category)
+                
+                # Filtro livello
+                if level:
+                    query = query.filter(Exercise.level == level)
+                
+                # Filtro attrezzi disponibili
+                if available_equipment:
+                    query = query.filter(Exercise.equipment.in_(available_equipment))
+                
+                # Filtro mechanic
+                if mechanic:
+                    query = query.filter(Exercise.mechanic == mechanic)
+                
+                # Filtro force
+                if force:
+                    query = query.filter(Exercise.force == force)
+                
+                # Limite risultati
+                if limit:
+                    query = query.limit(limit)
+                
+                return query.all()
         
         except Exception as e:
             logger.error(f"Error querying exercises: {e}")
@@ -228,6 +305,7 @@ class ExerciseService:
             
             # 1. Seleziona esercizi sport-specifici (target muscles)
             if num_sport_specific > 0 and target_muscles:
+                logger.debug(f"Selecting sport-specific exercises: category={category}, level={level}, target_muscles={target_muscles}, num_needed={num_sport_specific}")
                 sport_specific = self.get_exercises_by_criteria(
                     category=category,
                     level=level,
@@ -236,15 +314,31 @@ class ExerciseService:
                     mechanic=mechanic,
                     limit=num_sport_specific * 3  # Prendi più opzioni per varietà
                 )
+                logger.debug(f"Sport-specific query returned {len(sport_specific) if sport_specific else 0} exercises")
+                
+                # Se la query con target_muscles non trova risultati, prova senza target_muscles come fallback
+                if not sport_specific:
+                    logger.warning(f"No exercises found with target_muscles {target_muscles}, trying without muscle filter")
+                    sport_specific = self.get_exercises_by_criteria(
+                        category=category,
+                        level=level,
+                        available_equipment=available_equipment,
+                        target_muscles=None,  # Fallback: senza filtro muscoli
+                        mechanic=mechanic,
+                        limit=num_sport_specific * 3
+                    )
+                    logger.debug(f"Fallback query (no target_muscles) returned {len(sport_specific) if sport_specific else 0} exercises")
                 
                 # Filtra esclusi e randomizza
                 sport_specific = [e for e in sport_specific if str(e.id) not in exclude_ids]
                 random.shuffle(sport_specific)
                 selected_exercises.extend(sport_specific[:num_sport_specific])
                 exclude_ids.extend([str(e.id) for e in selected_exercises])
+                logger.debug(f"Added {len(selected_exercises)} sport-specific exercises, total selected: {len(selected_exercises)}")
             
             # 2. Seleziona esercizi bilanciati (tutti i gruppi muscolari)
             if num_balanced > 0:
+                logger.debug(f"Selecting balanced exercises: category={category}, level={level}, num_needed={num_balanced}")
                 # Per bilanciamento, prendi esercizi che coprono vari gruppi muscolari
                 balanced = self.get_exercises_by_criteria(
                     category=category,
@@ -254,11 +348,13 @@ class ExerciseService:
                     mechanic=mechanic,
                     limit=num_balanced * 3
                 )
+                logger.debug(f"Balanced query returned {len(balanced) if balanced else 0} exercises")
                 
                 # Filtra esclusi e randomizza
                 balanced = [e for e in balanced if str(e.id) not in exclude_ids]
                 random.shuffle(balanced)
                 selected_exercises.extend(balanced[:num_balanced])
+                logger.debug(f"Added {len(balanced[:num_balanced])} balanced exercises, total selected: {len(selected_exercises)}")
             
             # Se non abbiamo abbastanza esercizi, riempi con qualsiasi disponibile
             if len(selected_exercises) < num_exercises:

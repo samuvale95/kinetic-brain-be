@@ -147,16 +147,33 @@ class StretchingWorkoutService:
         # Costruisci lista esercizi
         exercise_list = []
         for exercise in exercises:
+            # Gestisci correttamente gli array di muscoli (potrebbero essere array PostgreSQL)
+            def normalize_muscle_array(muscle_array):
+                """Normalizza un array di muscoli in una lista di stringhe"""
+                if not muscle_array:
+                    return []
+                # Se è già una lista, converti ogni elemento in stringa
+                if isinstance(muscle_array, list):
+                    return [str(m) for m in muscle_array if m]
+                # Se è una stringa (array PostgreSQL serializzato come {valore1,valore2})
+                if isinstance(muscle_array, str):
+                    # Rimuovi parentesi graffe e split per virgola
+                    cleaned = muscle_array.strip('{}')
+                    if cleaned:
+                        # Split per virgola e rimuovi spazi
+                        return [m.strip().strip('"').strip("'") for m in cleaned.split(',') if m.strip()]
+                return []
+            
             exercise_data = {
                 "exercise_id": str(exercise.id),
                 "name": exercise.name,
                 "sets": sets,
-                "reps": f"{exercise_duration} seconds",
+                "reps": exercise_duration,  # Numero di secondi (non stringa)
                 "rest_seconds": 10,  # Breve pausa tra serie
                 "instructions": exercise.instructions or [],
                 "equipment": str(exercise.equipment) if exercise.equipment else "body only",
-                "primary_muscles": [str(m) for m in (exercise.primary_muscles or [])],
-                "secondary_muscles": [str(m) for m in (exercise.secondary_muscles or [])]
+                "primary_muscles": normalize_muscle_array(exercise.primary_muscles),
+                "secondary_muscles": normalize_muscle_array(exercise.secondary_muscles)
             }
             if exercise.description:
                 exercise_data["description"] = exercise.description

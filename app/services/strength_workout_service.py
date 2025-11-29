@@ -186,18 +186,36 @@ class StrengthWorkoutService:
         # Costruisci lista esercizi
         exercise_list = []
         for exercise in exercises:
-            reps = f"{reps_range[0]}-{reps_range[1]}"
+            # Calcola numero medio di ripetizioni (non range stringa)
+            avg_reps = (reps_range[0] + reps_range[1]) // 2
+            
+            # Gestisci correttamente gli array di muscoli (potrebbero essere array PostgreSQL)
+            def normalize_muscle_array(muscle_array):
+                """Normalizza un array di muscoli in una lista di stringhe"""
+                if not muscle_array:
+                    return []
+                # Se è già una lista, converti ogni elemento in stringa
+                if isinstance(muscle_array, list):
+                    return [str(m) for m in muscle_array if m]
+                # Se è una stringa (array PostgreSQL serializzato come {valore1,valore2})
+                if isinstance(muscle_array, str):
+                    # Rimuovi parentesi graffe e split per virgola
+                    cleaned = muscle_array.strip('{}')
+                    if cleaned:
+                        # Split per virgola e rimuovi spazi e virgolette
+                        return [m.strip().strip('"').strip("'") for m in cleaned.split(',') if m.strip()]
+                return []
             
             exercise_data = {
                 "exercise_id": str(exercise.id),
                 "name": exercise.name,
                 "sets": sets,
-                "reps": reps,
+                "reps": avg_reps,  # Numero di ripetizioni (non stringa)
                 "rest_seconds": rest_seconds,
                 "instructions": exercise.instructions or [],
                 "equipment": str(exercise.equipment) if exercise.equipment else "body only",
-                "primary_muscles": [str(m) for m in (exercise.primary_muscles or [])],
-                "secondary_muscles": [str(m) for m in (exercise.secondary_muscles or [])]
+                "primary_muscles": normalize_muscle_array(exercise.primary_muscles),
+                "secondary_muscles": normalize_muscle_array(exercise.secondary_muscles)
             }
             if exercise.description:
                 exercise_data["description"] = exercise.description
