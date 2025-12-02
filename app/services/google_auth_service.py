@@ -17,6 +17,13 @@ class GoogleAuthService:
         self.client_id = settings.google_client_id
         self.client_secret = settings.google_client_secret
         self.redirect_uri = settings.google_redirect_uri
+        
+        # Log configuration (masked for security)
+        if self.client_id:
+            masked_id = f"{self.client_id[:20]}..." if len(self.client_id) > 20 else self.client_id
+            print(f"[Google OAuth] Service initialized with client_id: {masked_id}")
+        else:
+            print("[Google OAuth] WARNING: No client_id configured!")
     
     async def get_google_user_info(self, access_token: str) -> Optional[GoogleUserInfo]:
         """Get user information from Google using access token"""
@@ -44,6 +51,11 @@ class GoogleAuthService:
         """Exchange authorization code for access token"""
         try:
             redirect_uri = redirect_uri or self.redirect_uri
+            masked_client_id = f"{self.client_id[:20]}..." if self.client_id and len(self.client_id) > 20 else self.client_id
+            print(f"[Google OAuth] Exchanging code for token")
+            print(f"[Google OAuth]   - redirect_uri: {redirect_uri}")
+            print(f"[Google OAuth]   - client_id: {masked_client_id}")
+            print(f"[Google OAuth]   - client_secret configured: {'Yes' if self.client_secret else 'No'}")
             
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -56,11 +68,26 @@ class GoogleAuthService:
                         "redirect_uri": redirect_uri
                     }
                 )
+                
+                if response.status_code != 200:
+                    error_data = response.text
+                    print(f"[Google OAuth] Token exchange failed: {response.status_code} - {error_data}")
+                    return None
+                
                 response.raise_for_status()
                 data = response.json()
-                return data.get("access_token")
+                access_token = data.get("access_token")
+                if access_token:
+                    print(f"[Google OAuth] Token exchange successful")
+                else:
+                    print(f"[Google OAuth] No access_token in response: {data}")
+                return access_token
+        except httpx.HTTPStatusError as e:
+            error_data = e.response.text if e.response else "No response"
+            print(f"[Google OAuth] HTTP error exchanging code for token: {e.response.status_code} - {error_data}")
+            return None
         except Exception as e:
-            print(f"Error exchanging code for token: {e}")
+            print(f"[Google OAuth] Error exchanging code for token: {type(e).__name__}: {e}")
             return None
     
     async def authenticate_google_user(self, code: str, redirect_uri: str = None) -> Optional[Dict[str, Any]]:
@@ -139,6 +166,10 @@ class GoogleAuthService:
     
     def get_google_auth_url(self, state: str = None) -> str:
         """Generate Google OAuth authorization URL"""
+        masked_client_id = f"{self.client_id[:20]}..." if self.client_id and len(self.client_id) > 20 else self.client_id
+        print(f"[Google OAuth] Generating auth URL with client_id: {masked_client_id}")
+        print(f"[Google OAuth] Using redirect_uri: {self.redirect_uri}")
+        
         params = {
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,

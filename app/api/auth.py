@@ -145,6 +145,13 @@ async def get_google_auth_url():
 @router.get("/google/callback")
 async def google_auth_callback_get(code: str, db: Session = Depends(get_db)):
     """Handle Google OAuth callback from browser redirect (GET)"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"[Google OAuth] Callback received with code (length: {len(code) if code else 0})")
+    logger.info(f"[Google OAuth] Using redirect_uri: {settings.google_redirect_uri}")
+    logger.info(f"[Google OAuth] Using client_id: {settings.google_client_id[:20]}...")
+    
     google_service = GoogleAuthService(db)
     
     # Use configured redirect URI (env-configurable) instead of hardcoded localhost
@@ -154,6 +161,7 @@ async def google_auth_callback_get(code: str, db: Session = Depends(get_db)):
     )
     
     if not result:
+        logger.error(f"[Google OAuth] Authentication failed - redirecting to frontend with error")
         # Redirect to frontend with error
         return RedirectResponse(
             url=f"{settings.frontend_callback_uri}?error=authentication_failed",
