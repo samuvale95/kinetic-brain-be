@@ -27,11 +27,30 @@ A comprehensive Python backend API for the Kinetic Brain sports training managem
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.13+
 - PostgreSQL 15+
 - Docker & Docker Compose (optional)
 
-### Installation
+### Quick Start (Automated)
+
+The easiest way to get started is using the automated startup script:
+
+```bash
+./start.sh
+```
+
+This script will automatically:
+- ✅ Check Python 3.13 installation
+- ✅ Create/update virtual environment with Python 3.13
+- ✅ Install all dependencies
+- ✅ Check database connection
+- ✅ Run database migrations
+- ✅ Verify all services (Redis, OpenAI, etc.)
+- ✅ Start the FastAPI server
+
+### Manual Installation
+
+If you prefer to set up manually:
 
 1. **Clone the repository**
    ```bash
@@ -39,18 +58,24 @@ A comprehensive Python backend API for the Kinetic Brain sports training managem
    cd kinetic-brain-backend
    ```
 
-2. **Install dependencies**
+2. **Create virtual environment**
+   ```bash
+   python3.13 -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Set up environment variables**
+4. **Set up environment variables**
    ```bash
    cp env.example .env
    # Edit .env with your configuration
    ```
 
-4. **Set up the database**
+5. **Set up the database**
    ```bash
    # Create database
    createdb kinetic_brain
@@ -59,8 +84,10 @@ A comprehensive Python backend API for the Kinetic Brain sports training managem
    alembic upgrade head
    ```
 
-5. **Run the application**
+6. **Run the application**
    ```bash
+   python run.py
+   # or
    uvicorn app.main:app --reload
    ```
 
