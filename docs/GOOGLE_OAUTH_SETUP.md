@@ -17,12 +17,15 @@
 ### 1.3 Crea Credenziali OAuth 2.0
 1. Vai a "API e servizi" → "Credenziali"
 2. Clicca "Crea credenziali" → "ID client OAuth 2.0"
-3. Seleziona "Applicazione web"
+3. Seleziona "Applicazione web" (per backend e React Native)
 4. Configura:
    - **Nome**: Kinetic Brain
    - **URI di reindirizzamento autorizzati**:
-     - `http://localhost:3000/auth/google/callback` (sviluppo)
-     - `https://yourdomain.com/auth/google/callback` (produzione)
+     - `http://localhost:3000/auth/google/callback` (sviluppo web)
+     - `https://yourdomain.com/auth/google/callback` (produzione web)
+   - **Per React Native**: Non serve aggiungere redirect URI specifici, usa lo stesso Client ID
+
+**Nota**: Per React Native, puoi usare lo stesso Client ID dell'applicazione web. Google Sign-In SDK gestisce l'autenticazione nativamente senza bisogno di redirect URI.
 
 ### 1.4 Ottieni le Credenziali
 1. Dopo la creazione, copia:
@@ -147,9 +150,157 @@ export const useGoogleAuth = () => {
 };
 ```
 
+### 3.3 React Native (Consigliato per App Mobile)
+
+Per le app React Native, usa Google Sign-In SDK nativo che fornisce un ID token invece del flusso OAuth web.
+
+#### Installazione
+```bash
+npm install @react-native-google-signin/google-signin
+# oppure
+yarn add @react-native-google-signin/google-signin
+```
+
+#### Configurazione iOS
+1. Aggiungi il `GoogleService-Info.plist` al progetto iOS
+2. Configura l'URL scheme nel `Info.plist`
+
+#### Configurazione Android
+1. Aggiungi il `google-services.json` al progetto Android
+2. Configura il SHA-1 fingerprint in Google Cloud Console
+
+#### Implementazione
+```javascript
+// services/authService.js
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// Configura Google Sign-In
+GoogleSignin.configure({
+  webClientId: 'YOUR_GOOGLE_CLIENT_ID', // Dal Google Cloud Console
+  offlineAccess: true,
+});
+
+export const signInWithGoogle = async () => {
+  try {
+    // Verifica se Google Play Services è disponibile
+    await GoogleSignin.hasPlayServices();
+    
+    // Ottieni le informazioni utente
+    const userInfo = await GoogleSignin.signIn();
+    
+    // Ottieni l'ID token
+    const idToken = userInfo.data?.idToken;
+    
+    if (!idToken) {
+      throw new Error('ID token non disponibile');
+    }
+    
+    // Invia l'ID token al backend
+    const response = await fetch('https://your-api.com/auth/google/verify-id-token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        id_token: idToken,
+      }),
+    });
+    
+    if (!response.ok) {
+      throw new Error('Autenticazione fallita');
+    }
+    
+    const tokens = await response.json();
+    
+    // Salva i token in modo sicuro
+    await AsyncStorage.setItem('access_token', tokens.access_token);
+    await AsyncStorage.setItem('refresh_token', tokens.refresh_token);
+    
+    return tokens;
+  } catch (error) {
+    console.error('Google Sign-In Error:', error);
+    throw error;
+  }
+};
+
+export const signOut = async () => {
+  try {
+    await GoogleSignin.signOut();
+    await AsyncStorage.removeItem('access_token');
+    await AsyncStorage.removeItem('refresh_token');
+  } catch (error) {
+    console.error('Sign out error:', error);
+  }
+};
+
+// Hook React
+import { useState } from 'react';
+
+export const useGoogleAuth = () => {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  
+  const signIn = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const tokens = await signInWithGoogle();
+      return tokens;
+    } catch (err) {
+      setError(err.message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  return { signIn, signOut, loading, error };
+};
+```
+
+#### Uso nel Componente
+```javascript
+// components/LoginScreen.js
+import React from 'react';
+import { View, Button, Text } from 'react-native';
+import { useGoogleAuth } from '../services/authService';
+
+export const LoginScreen = () => {
+  const { signIn, loading, error } = useGoogleAuth();
+  
+  const handleGoogleSignIn = async () => {
+    try {
+      await signIn();
+      // Naviga alla schermata principale
+      navigation.navigate('Home');
+    } catch (err) {
+      console.error('Login error:', err);
+    }
+  };
+  
+  return (
+    <View>
+      <Button
+        title={loading ? 'Caricamento...' : 'Accedi con Google'}
+        onPress={handleGoogleSignIn}
+        disabled={loading}
+      />
+      {error && <Text style={{ color: 'red' }}>{error}</Text>}
+    </View>
+  );
+};
+```
+
+#### Note Importanti per React Native
+1. **Client ID**: Usa lo stesso `GOOGLE_CLIENT_ID` del backend (quello per applicazioni web)
+2. **SHA-1 Fingerprint**: Per Android, aggiungi il fingerprint SHA-1 del tuo keystore in Google Cloud Console
+3. **Bundle ID/Package Name**: Assicurati che corrispondano a quelli configurati in Google Cloud Console
+4. **Sicurezza**: L'ID token viene verificato lato server, quindi è sicuro inviarlo al backend
+
 ## Passo 4: Test Completo
 
-### 4.1 Test Manuale
+### 4.1 Test Manuale (Web)
 1. Avvia il backend: `python run.py`
 2. Vai a `http://localhost:8000/docs`
 3. Testa l'endpoint `GET /auth/google/url`
@@ -158,7 +309,14 @@ export const useGoogleAuth = () => {
 6. Copia il codice dalla URL di callback
 7. Testa `POST /auth/google/callback` con il codice
 
-### 4.2 Test Automatico
+### 4.2 Test ID Token (React Native)
+1. Avvia il backend: `python run.py`
+2. Vai a `http://localhost:8000/docs`
+3. Testa l'endpoint `POST /auth/google/verify-id-token`
+4. Inserisci un ID token valido ottenuto da Google Sign-In SDK
+5. Verifica che vengano restituiti i JWT tokens
+
+### 4.3 Test Automatico
 ```bash
 python examples/google_auth_example.py
 ```
@@ -200,6 +358,11 @@ python examples/google_auth_example.py
 4. **"invalid_grant"**
    - Il codice di autorizzazione è scaduto o già utilizzato
    - I codici scadono dopo 10 minuti
+
+5. **"Invalid or expired Google ID token"** (React Native)
+   - L'ID token è scaduto o non valido
+   - Verifica che il Client ID corrisponda a quello configurato nel backend
+   - Assicurati che Google Sign-In SDK sia configurato correttamente
 
 ### Debug
 ```python

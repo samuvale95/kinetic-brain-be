@@ -207,6 +207,10 @@ class GoogleAuthRequest(BaseModel):
     redirect_uri: Optional[str] = None
 
 
+class GoogleIdTokenRequest(BaseModel):
+    id_token: str = Field(..., description="Google ID token from React Native")
+
+
 class GoogleUserInfo(BaseModel):
     id: str
     email: str

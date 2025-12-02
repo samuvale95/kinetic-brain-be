@@ -2,6 +2,8 @@ import httpx
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from google.auth.transport import requests
+from google.oauth2 import id_token
 from app.config import settings
 from app.models.user import User, OAuthAccount
 from app.schemas.user import GoogleUserInfo
@@ -151,3 +153,101 @@ class GoogleAuthService:
         
         query_string = "&".join([f"{k}={v}" for k, v in params.items()])
         return f"https://accounts.google.com/o/oauth2/v2/auth?{query_string}"
+    
+    async def verify_google_id_token(self, id_token_string: str) -> Optional[Dict[str, Any]]:
+        """Verify Google ID token and authenticate user (for React Native)"""
+        try:
+            # Verify the ID token
+            request = requests.Request()
+            id_info = id_token.verify_oauth2_token(
+                id_token_string, 
+                request, 
+                self.client_id
+            )
+            
+            # Extract user information from ID token
+            google_user_id = id_info.get("sub")
+            email = id_info.get("email")
+            name = id_info.get("name")
+            picture = id_info.get("picture")
+            email_verified = id_info.get("email_verified", False)
+            
+            if not email or not email_verified:
+                print("Email not verified or missing in ID token")
+                return None
+            
+            # Check if user exists
+            user = self.db.execute(
+                select(User).where(User.email == email)
+            ).scalar_one_or_none()
+            
+            if not user:
+                # Create new user
+                user = User(
+                    email=email,
+                    name=name or email.split("@")[0],
+                    avatar_url=picture,
+                    auth_provider="google",
+                    is_verified=True,
+                    is_active=True
+                )
+                self.db.add(user)
+                self.db.commit()
+                self.db.refresh(user)
+            else:
+                # Update user info if needed
+                if name and user.name != name:
+                    user.name = name
+                if picture and user.avatar_url != picture:
+                    user.avatar_url = picture
+            
+            # Create or update OAuth account
+            oauth_account = self.db.execute(
+                select(OAuthAccount).where(
+                    OAuthAccount.user_id == user.id,
+                    OAuthAccount.provider == "google"
+                )
+            ).scalar_one_or_none()
+            
+            if not oauth_account:
+                oauth_account = OAuthAccount(
+                    user_id=user.id,
+                    provider="google",
+                    provider_account_id=google_user_id,
+                    access_token=None,  # ID token doesn't provide access token
+                    token_expires_at=None
+                )
+                self.db.add(oauth_account)
+            else:
+                # Update provider account ID if changed
+                if oauth_account.provider_account_id != google_user_id:
+                    oauth_account.provider_account_id = google_user_id
+            
+            self.db.commit()
+            
+            # Update last login
+            user.last_login = datetime.utcnow()
+            self.db.commit()
+            
+            # Create JWT tokens
+            tokens = {
+                "access_token": create_access_token(
+                    data={"sub": str(user.id), "email": user.email}
+                ),
+                "refresh_token": create_refresh_token(
+                    data={"sub": str(user.id), "email": user.email}
+                ),
+                "token_type": "bearer"
+            }
+            
+            return {
+                "user": user,
+                "tokens": tokens
+            }
+        except ValueError as e:
+            # Invalid token
+            print(f"Error verifying Google ID token: {e}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error verifying Google ID token: {e}")
+            return None

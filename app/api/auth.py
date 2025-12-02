@@ -4,7 +4,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.schemas.auth import Token
-from app.schemas.user import UserCreate, UserLogin, UserResponse, GoogleAuthRequest
+from app.schemas.user import UserCreate, UserLogin, UserResponse, GoogleAuthRequest, GoogleIdTokenRequest
 from app.services.auth_service import AuthService
 from app.services.google_auth_service import GoogleAuthService
 from app.utils.security import verify_token
@@ -215,6 +215,22 @@ async def google_login(request: GoogleAuthRequest, db: Session = Depends(get_db)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Google authentication failed"
+        )
+    
+    return result["tokens"]
+
+
+@router.post("/google/verify-id-token", response_model=Token)
+async def verify_google_id_token(request: GoogleIdTokenRequest, db: Session = Depends(get_db)):
+    """Verify Google ID token from React Native and return JWT tokens"""
+    google_service = GoogleAuthService(db)
+    
+    result = await google_service.verify_google_id_token(request.id_token)
+    
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired Google ID token"
         )
     
     return result["tokens"]
