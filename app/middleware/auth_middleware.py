@@ -21,6 +21,7 @@ class AuthMiddleware:
         "/auth/google/url",
         "/auth/google/callback",
         "/auth/google/login",
+        "/auth/google/verify-id-token",  # iOS/React Native ID token verification
         "/profile/calculate-zones",  # Public endpoint for zone calculations
         "/strava/webhook",  # Strava webhook endpoint
         "/strava/auth/callback"  # Strava OAuth callback
