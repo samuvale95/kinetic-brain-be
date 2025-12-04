@@ -57,12 +57,24 @@ async def options_strava_activities():
 
 # Strava OAuth
 @router.get("/auth/url", response_model=StravaAuthResponse)
-async def get_strava_auth_url(current_user: dict = Depends(get_current_user),
-                             db: Session = Depends(get_db)):
-    """Get Strava OAuth authorization URL"""
-    logger.info(f"[STRAVA_AUTH][AUTH_URL] Generating Strava auth URL for user {current_user['user_id']}")
+async def get_strava_auth_url(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    redirect_uri: Optional[str] = Query(None, description="Optional redirect URI for mobile apps (e.g., kineticbrain://oauth)")
+):
+    """Get Strava OAuth authorization URL
+    
+    Args:
+        redirect_uri: Optional redirect URI. If provided, will be used instead of the default web app redirect URI.
+                      Use this for mobile apps (e.g., kineticbrain://oauth).
+                      If not provided, uses the default web app redirect URI from settings.
+    """
+    logger.info(
+        f"[STRAVA_AUTH][AUTH_URL] Generating Strava auth URL for user {current_user['user_id']} "
+        f"(redirect_uri={'custom' if redirect_uri else 'default'})"
+    )
     strava_service = StravaService(db)
-    auth_url = strava_service.get_auth_url(current_user["user_id"])
+    auth_url = strava_service.get_auth_url(current_user["user_id"], redirect_uri=redirect_uri)
     logger.debug(
         f"[STRAVA_AUTH][AUTH_URL] Generated URL for user {current_user['user_id']}: {auth_url}"
     )
@@ -80,20 +92,38 @@ async def strava_auth_callback_get(
     state: str = Query(...),
     db: Session = Depends(get_db)
 ):
-    """Handle Strava OAuth callback (GET request)"""
+    """Handle Strava OAuth callback (GET request)
+    
+    This endpoint receives the callback from Strava and:
+    1. Decodes the state parameter to extract user_id and mobile_redirect_uri
+    2. Exchanges the authorization code for an access token
+    3. Redirects to the appropriate destination:
+       - Mobile app deep link (e.g., kineticbrain://oauth?code=...) if mobile_redirect_uri is set
+       - Web app callback URL if mobile_redirect_uri is None
+    """
     masked_code = f"{code[:6]}..." if len(code) > 6 else code
     logger.info(
-        f"[STRAVA_AUTH][CALLBACK][GET] Received callback for state={state} with code={masked_code}"
+        f"[STRAVA_AUTH][CALLBACK][GET] Received callback for state={state[:50]}... with code={masked_code}"
     )
     try:
         strava_service = StravaService(db)
-        user_id = int(state)
+        
+        # Decode state to get user_id and mobile_redirect_uri
+        state_data = strava_service.decode_state(state)
+        user_id = state_data["user_id"]
+        mobile_redirect_uri = state_data.get("mobile_redirect_uri")
+        
+        logger.info(
+            f"[STRAVA_AUTH][CALLBACK][GET] Decoded state: user_id={user_id}, "
+            f"mobile_redirect_uri={mobile_redirect_uri}"
+        )
+        
         result = strava_service.exchange_code_for_token(
             code=code,
             user_id=user_id
         )
         logger.info(
-            f"[STRAVA_AUTH][CALLBACK][GET] Token exchange succeeded for user {state} "
+            f"[STRAVA_AUTH][CALLBACK][GET] Token exchange succeeded for user {user_id} "
             f"(account={result.get('strava_account_id')}, first_connection={result.get('is_first_connection')})"
         )
         sync_job_id = None
@@ -109,25 +139,65 @@ async def strava_auth_callback_get(
             sync_job_id = sync_job.id
             logger.info(
                 f"[STRAVA_AUTH][CALLBACK][GET] Scheduled initial sync job {sync_job_id} for user {user_id}"
-        )
+            )
         
-        # Redirect to frontend with success message
+        # Redirect to appropriate destination
         from fastapi.responses import RedirectResponse
-        redirect_url = f"{settings.frontend_callback_uri}?success=true&strava_connected=true"
-        if sync_job_id:
-            redirect_url += f"&sync_job_id={sync_job_id}"
-        return RedirectResponse(
-            url=redirect_url
-        )
+        from urllib.parse import urlencode
+        
+        if mobile_redirect_uri:
+            # Mobile app: redirect to deep link with code and state
+            mobile_params = {
+                "code": code,
+                "state": state,
+                "success": "true",
+                "strava_connected": "true"
+            }
+            if sync_job_id:
+                mobile_params["sync_job_id"] = str(sync_job_id)
+            
+            redirect_url = f"{mobile_redirect_uri}?{urlencode(mobile_params)}"
+            logger.info(
+                f"[STRAVA_AUTH][CALLBACK][GET] Redirecting to mobile app: {mobile_redirect_uri}"
+            )
+        else:
+            # Web app: redirect to frontend callback URL
+            redirect_url = f"{settings.frontend_callback_uri}?success=true&strava_connected=true"
+            if sync_job_id:
+                redirect_url += f"&sync_job_id={sync_job_id}"
+            logger.info(
+                f"[STRAVA_AUTH][CALLBACK][GET] Redirecting to web app: {settings.frontend_callback_uri}"
+            )
+        
+        return RedirectResponse(url=redirect_url)
     except Exception as e:
         logger.exception(
-            f"[STRAVA_AUTH][CALLBACK][GET] Token exchange failed for state={state}: {e}"
+            f"[STRAVA_AUTH][CALLBACK][GET] Token exchange failed for state={state[:50]}...: {e}"
         )
-        # Redirect to frontend with error message
+        # Redirect to appropriate destination with error
         from fastapi.responses import RedirectResponse
-        return RedirectResponse(
-            url=f"http://localhost:8080/auth/callback?success=false&error={str(e)}"
-        )
+        from urllib.parse import urlencode
+        
+        try:
+            strava_service = StravaService(db)
+            state_data = strava_service.decode_state(state)
+            mobile_redirect_uri = state_data.get("mobile_redirect_uri")
+            
+            if mobile_redirect_uri:
+                # Mobile app: redirect to deep link with error
+                error_params = {
+                    "success": "false",
+                    "error": str(e)
+                }
+                redirect_url = f"{mobile_redirect_uri}?{urlencode(error_params)}"
+            else:
+                # Web app: redirect to frontend with error
+                redirect_url = f"{settings.frontend_callback_uri}?success=false&error={urlencode({'error': str(e)})}"
+        except:
+            # Fallback: redirect to web app if state decoding fails
+            redirect_url = f"{settings.frontend_callback_uri}?success=false&error={urlencode({'error': str(e)})}"
+        
+        return RedirectResponse(url=redirect_url)
 
 
 @router.post("/auth/callback", response_model=StravaCallbackResponse)

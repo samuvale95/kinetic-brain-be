@@ -1,6 +1,8 @@
 import json
+import base64
 from datetime import datetime, timedelta, date, timezone
 from typing import List, Optional, Dict, Any, Set
+from urllib.parse import urlencode
 
 import requests
 from loguru import logger
@@ -203,18 +205,80 @@ class StravaService:
         
         return result if result else None
     
-    def get_auth_url(self, user_id: int) -> str:
-        """Generate Strava OAuth authorization URL"""
+    def get_auth_url(self, user_id: int, redirect_uri: Optional[str] = None) -> str:
+        """Generate Strava OAuth authorization URL
+        
+        IMPORTANT: Strava requires the redirect_uri in the OAuth URL to match EXACTLY
+        what's configured in the Strava dashboard. Therefore, we ALWAYS use the backend
+        redirect URI for the OAuth request, and encode the mobile redirect URI in the
+        state parameter.
+        
+        Args:
+            user_id: User ID to pass in the state parameter
+            redirect_uri: Optional mobile redirect URI (e.g., kineticbrain://oauth).
+                          This will be encoded in the state parameter, NOT used as the
+                          OAuth redirect_uri. The OAuth redirect_uri is always the
+                          backend callback URL from settings.
+        
+        Returns:
+            Strava OAuth authorization URL
+        """
+        # ALWAYS use the backend redirect URI for Strava OAuth (must match dashboard config)
+        oauth_redirect_uri = settings.strava_redirect_uri
+        
+        # Encode user_id and mobile redirect_uri in state parameter
+        state_data = {
+            "user_id": user_id,
+            "mobile_redirect_uri": redirect_uri  # None for web app, kineticbrain://oauth for mobile
+        }
+        # Encode state as base64 JSON for security
+        state_json = json.dumps(state_data)
+        state_encoded = base64.urlsafe_b64encode(state_json.encode()).decode()
+        
+        logger.debug(
+            f"[STRAVA_AUTH] Generating auth URL for user {user_id} "
+            f"(oauth_redirect_uri={oauth_redirect_uri}, mobile_redirect_uri={redirect_uri})"
+        )
+        
         params = {
             "client_id": settings.strava_client_id,
-            "redirect_uri": settings.strava_redirect_uri,
+            "redirect_uri": oauth_redirect_uri,  # Always backend callback URL
             "response_type": "code",
             "scope": "read,activity:read_all,activity:write",
-            "state": str(user_id)  # Pass user_id in state
+            "state": state_encoded  # Encoded JSON with user_id and mobile_redirect_uri
         }
         
-        query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+        # Use urlencode to properly encode the redirect_uri (handles special characters like ://)
+        query_string = urlencode(params)
         return f"{self.auth_url}/authorize?{query_string}"
+    
+    def decode_state(self, state: str) -> Dict[str, Any]:
+        """Decode the state parameter to extract user_id and mobile_redirect_uri
+        
+        Args:
+            state: Base64-encoded JSON string containing user_id and mobile_redirect_uri
+        
+        Returns:
+            Dict with 'user_id' and 'mobile_redirect_uri' (None if web app)
+        """
+        try:
+            # Try to decode as base64 JSON (new format)
+            state_json = base64.urlsafe_b64decode(state.encode()).decode()
+            state_data = json.loads(state_json)
+            return {
+                "user_id": int(state_data["user_id"]),
+                "mobile_redirect_uri": state_data.get("mobile_redirect_uri")
+            }
+        except (ValueError, json.JSONDecodeError, KeyError):
+            # Fallback: treat as plain user_id (backward compatibility)
+            try:
+                user_id = int(state)
+                return {
+                    "user_id": user_id,
+                    "mobile_redirect_uri": None
+                }
+            except ValueError:
+                raise ValueError(f"Invalid state parameter: {state}")
     
     def exchange_code_for_token(self, code: str, user_id: int) -> Dict[str, Any]:
         """Exchange authorization code for access token"""
