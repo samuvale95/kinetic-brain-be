@@ -114,3 +114,54 @@ def run_metrics_jobs_once(limit: int = 3) -> None:
     finally:
         db.close()
 
+
+def run_disconnect_cleanup_job(user_id: int, activity_dates: list) -> None:
+    """
+    Background task to clean up after Strava account disconnection.
+    Recalculates daily metrics for affected dates without blocking the request.
+    
+    This is optimized for scalability: instead of blocking the HTTP response for
+    minutes while recalculating metrics for potentially hundreds of dates, we
+    do it asynchronously in the background.
+    
+    Args:
+        user_id: User ID
+        activity_dates: List of dates (date objects) that had activities and need
+                       daily metrics recalculation
+    """
+    db = SessionLocal()
+    try:
+        logger.info(
+            f"[DISCONNECT][CLEANUP] Starting cleanup for user {user_id} "
+            f"({len(activity_dates)} dates to update)"
+        )
+        
+        from app.services.daily_metrics_service import DailyMetricsService
+        daily_metrics_service = DailyMetricsService(db)
+        
+        updated_count = 0
+        errors_count = 0
+        
+        for activity_date in activity_dates:
+            try:
+                daily_metrics_service.update_daily_metrics(user_id, activity_date)
+                updated_count += 1
+            except Exception as e:
+                logger.warning(
+                    f"[DISCONNECT][CLEANUP] Failed to update daily metrics "
+                    f"for {activity_date} after disconnect: {e}"
+                )
+                errors_count += 1
+        
+        db.commit()
+        logger.info(
+            f"[DISCONNECT][CLEANUP] Completed cleanup for user {user_id}: "
+            f"{updated_count}/{len(activity_dates)} dates updated successfully "
+            f"({errors_count} errors)"
+        )
+    except Exception as exc:
+        logger.exception(f"[DISCONNECT][CLEANUP] Cleanup failed for user {user_id}: {exc}")
+        db.rollback()
+    finally:
+        db.close()
+

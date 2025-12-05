@@ -25,7 +25,7 @@ from app.schemas.strava import (
     StravaUnsyncedCheckResponse,
 )
 from app.services.strava_service import StravaService
-from app.tasks.strava_tasks import run_strava_sync_job, run_recalculate_metrics_job
+from app.tasks.strava_tasks import run_strava_sync_job, run_recalculate_metrics_job, run_disconnect_cleanup_job
 
 router = APIRouter(prefix="/strava", tags=["strava"])
 
@@ -275,16 +275,18 @@ async def get_strava_account(current_user: dict = Depends(get_current_user),
 
 
 @router.delete("/account")
-async def disconnect_strava_account(current_user: dict = Depends(get_current_user),
-                                  db: Session = Depends(get_db)):
-    """Disconnect Strava account"""
-    from app.models.strava import StravaActivity
-    from sqlalchemy import func
-    from datetime import date
-    import logging
+async def disconnect_strava_account(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks()
+):
+    """
+    Disconnect Strava account - returns immediately, cleanup happens in background.
     
-    logger = logging.getLogger(__name__)
-    
+    Optimized for scalability: only essential operations are synchronous.
+    Heavy operations (daily metrics recalculation) are moved to background task
+    to avoid blocking the HTTP response for minutes.
+    """
     strava_account = db.execute(
         select(StravaAccount)
         .where(StravaAccount.user_id == current_user["user_id"])
@@ -297,43 +299,53 @@ async def disconnect_strava_account(current_user: dict = Depends(get_current_use
         )
     
     user_id = current_user["user_id"]
+    strava_account_id = strava_account.id
     
-    # Get all activity dates before deletion to recalculate daily metrics
+    # Get activity dates BEFORE deletion (for background cleanup)
     from app.models.strava import StravaActivity
+    from sqlalchemy import func
     activity_dates_result = db.execute(
         select(func.date(StravaActivity.start_date).label('activity_date'))
-        .where(StravaActivity.strava_account_id == strava_account.id)
+        .where(StravaActivity.strava_account_id == strava_account_id)
         .distinct()
     )
     activity_dates = [row[0] for row in activity_dates_result.fetchall()]
     
-    # Set strava_account_id to NULL for all activities to preserve historical data
-    # Activities will remain in the database but won't be linked to the account
+    # Fast operations: Update activities and delete account (synchronous)
     from sqlalchemy import update
     db.execute(
         update(StravaActivity)
-        .where(StravaActivity.strava_account_id == strava_account.id)
+        .where(StravaActivity.strava_account_id == strava_account_id)
         .values(strava_account_id=None)
     )
+    
+    # Delete sync jobs
+    from app.models.strava import StravaSyncJob
+    sync_jobs = db.execute(
+        select(StravaSyncJob)
+        .where(StravaSyncJob.strava_account_id == strava_account_id)
+    ).scalars().all()
+    
+    for sync_job in sync_jobs:
+        db.delete(sync_job)
     
     # Delete Strava account (activities are preserved with strava_account_id = NULL)
     db.delete(strava_account)
     db.commit()
     
-    # Recalculate daily metrics for all dates that had activities
-    # This will set TSS to 0 for days that had only Strava activities
-    from app.services.daily_metrics_service import DailyMetricsService
-    daily_metrics_service = DailyMetricsService(db)
+    # Schedule background task for expensive operations (daily metrics recalculation)
+    if activity_dates:
+        background_tasks.add_task(run_disconnect_cleanup_job, user_id, activity_dates)
+        logger.info(
+            f"[DISCONNECT] Scheduled cleanup task for user {user_id} "
+            f"({len(activity_dates)} dates)"
+        )
     
-    for activity_date in activity_dates:
-        try:
-            daily_metrics_service.update_daily_metrics(user_id, activity_date)
-        except Exception as e:
-            logger.warning(f"Failed to update daily metrics for {activity_date} after disconnect: {e}")
-    
-    db.commit()
-    
-    return {"message": "Strava account disconnected successfully"}
+    return {
+        "message": "Strava account disconnected successfully",
+        "cleanup_scheduled": len(activity_dates) > 0,
+        "dates_to_update": len(activity_dates)
+    }
 
 
 # Activity Synchronization

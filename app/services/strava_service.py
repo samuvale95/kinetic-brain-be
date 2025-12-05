@@ -317,27 +317,69 @@ class StravaService:
             f"athlete_id={token_data.get('athlete', {}).get('id')}"
         )
         
-        # Check if this is a reconnection (account already exists for this user)
-        existing_account = self.db.execute(
+        strava_athlete_id = token_data["athlete"]["id"]
+        
+        # Check if account already exists for this user
+        existing_account_by_user = self.db.execute(
             select(StravaAccount)
             .where(StravaAccount.user_id == user_id)
         ).scalar_one_or_none()
         
-        is_first_connection = existing_account is None
+        # Check if account already exists with this strava_id (for any user)
+        existing_account_by_strava_id = self.db.execute(
+            select(StravaAccount)
+            .where(StravaAccount.strava_id == strava_athlete_id)
+        ).scalar_one_or_none()
         
-        if existing_account:
-            # Update existing account tokens
+        is_first_connection = existing_account_by_user is None
+        
+        if existing_account_by_user:
+            # Update existing account tokens for this user
             logger.info(f"[STRAVA_AUTH] Reconnecting existing Strava account for user {user_id}")
-            existing_account.access_token = token_data["access_token"]
-            existing_account.refresh_token = token_data["refresh_token"]
-            existing_account.token_expires_at = datetime.fromtimestamp(token_data["expires_at"])
-            strava_account = existing_account
+            existing_account_by_user.access_token = token_data["access_token"]
+            existing_account_by_user.refresh_token = token_data["refresh_token"]
+            existing_account_by_user.token_expires_at = datetime.fromtimestamp(token_data["expires_at"])
+            # Update profile info in case it changed
+            existing_account_by_user.firstname = token_data["athlete"].get("firstname")
+            existing_account_by_user.lastname = token_data["athlete"].get("lastname")
+            existing_account_by_user.profile_medium = token_data["athlete"].get("profile_medium")
+            existing_account_by_user.profile = token_data["athlete"].get("profile")
+            existing_account_by_user.city = token_data["athlete"].get("city")
+            existing_account_by_user.state = token_data["athlete"].get("state")
+            existing_account_by_user.country = token_data["athlete"].get("country")
+            existing_account_by_user.sex = token_data["athlete"].get("sex")
+            existing_account_by_user.premium = token_data["athlete"].get("premium", False)
+            existing_account_by_user.summit = token_data["athlete"].get("summit", False)
+            strava_account = existing_account_by_user
+        elif existing_account_by_strava_id:
+            # Account exists but for a different user - transfer it to the current user
+            old_user_id = existing_account_by_strava_id.user_id
+            logger.info(
+                f"[STRAVA_AUTH] Strava account {strava_athlete_id} already exists for user {old_user_id}, "
+                f"transferring to user {user_id}"
+            )
+            existing_account_by_strava_id.user_id = user_id
+            existing_account_by_strava_id.access_token = token_data["access_token"]
+            existing_account_by_strava_id.refresh_token = token_data["refresh_token"]
+            existing_account_by_strava_id.token_expires_at = datetime.fromtimestamp(token_data["expires_at"])
+            # Update profile info
+            existing_account_by_strava_id.firstname = token_data["athlete"].get("firstname")
+            existing_account_by_strava_id.lastname = token_data["athlete"].get("lastname")
+            existing_account_by_strava_id.profile_medium = token_data["athlete"].get("profile_medium")
+            existing_account_by_strava_id.profile = token_data["athlete"].get("profile")
+            existing_account_by_strava_id.city = token_data["athlete"].get("city")
+            existing_account_by_strava_id.state = token_data["athlete"].get("state")
+            existing_account_by_strava_id.country = token_data["athlete"].get("country")
+            existing_account_by_strava_id.sex = token_data["athlete"].get("sex")
+            existing_account_by_strava_id.premium = token_data["athlete"].get("premium", False)
+            existing_account_by_strava_id.summit = token_data["athlete"].get("summit", False)
+            strava_account = existing_account_by_strava_id
         else:
             # Create new Strava account (first connection)
             logger.info(f"[STRAVA_AUTH] First time connection for user {user_id}")
             strava_account = StravaAccount(
                 user_id=user_id,
-                strava_id=token_data["athlete"]["id"],
+                strava_id=strava_athlete_id,
                 access_token=token_data["access_token"],
                 refresh_token=token_data["refresh_token"],
                 token_expires_at=datetime.fromtimestamp(token_data["expires_at"]),
@@ -940,7 +982,14 @@ class StravaService:
                     logger.debug(f"[SYNC][METRICS] Processing activity {idx}/{len(new_activities)}: {strava_activity.strava_activity_id} - {strava_activity.name}")
                     
                     # Calculate metrics for this activity
-                    training_metrics = self.calculate_activity_metrics(strava_activity, user_id)
+                    # OPTIMIZATION: Don't fetch streams during sync for performance
+                    # Streams can be fetched later if needed for precise zone calculation
+                    training_metrics = self.calculate_activity_metrics(
+                        strava_activity, 
+                        user_id, 
+                        fetch_streams=False,  # Performance optimization: no API calls during sync
+                        skip_daily_update=True  # Batch update at end for efficiency
+                    )
                     self.db.add(training_metrics)
                     metrics_calculated += 1
                     metrics_processed += 1
@@ -970,8 +1019,13 @@ class StravaService:
                 try:
                     logger.debug(f"[SYNC][METRICS] Recalculating activity {idx}/{len(updated_activities)}: {strava_activity.strava_activity_id} - {strava_activity.name}")
                     
-                    # Recalculate metrics
-                    training_metrics = self.calculate_activity_metrics(strava_activity, user_id)
+                    # Recalculate metrics - no streams fetch for performance
+                    training_metrics = self.calculate_activity_metrics(
+                        strava_activity, 
+                        user_id,
+                        fetch_streams=False,  # Performance optimization: no API calls during sync
+                        skip_daily_update=True  # Batch update at end for efficiency
+                    )
                     # Update existing training metrics or create new
                     existing_metrics = self.db.execute(
                         select(TrainingMetrics)
@@ -1396,7 +1450,7 @@ class StravaService:
         self, 
         strava_activity: StravaActivity, 
         user_id: int, 
-        fetch_streams: bool = True,
+        fetch_streams: bool = False,
         skip_daily_update: bool = False
     ) -> TrainingMetrics:
         """
@@ -1405,7 +1459,11 @@ class StravaService:
         Args:
             strava_activity: Strava activity to calculate metrics for
             user_id: User ID to get threshold values from
-            fetch_streams: Whether to fetch detailed HR streams (default: True, set False for bulk operations)
+            fetch_streams: Whether to fetch detailed HR streams (default: False for performance).
+                          When False, uses average_hr for zone calculation (faster, ~5-10% less precise).
+                          When True, fetches full HR stream from Strava API (slower, more precise).
+                          Set to True only when precise zone calculation is needed (e.g., on-demand recalculation).
+            skip_daily_update: Skip daily metrics update (for batch operations to improve performance)
         
         Returns:
             TrainingMetrics object with calculated values
