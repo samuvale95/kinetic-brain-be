@@ -251,6 +251,35 @@ async def adapt_next_week_plan(
             detail="No active workout plan found"
         )
     
+    # Ensure current week exists before generating next week
+    # This is transparent to the frontend - it automatically generates the current week
+    # if it's missing, taking into account fitness decay (CTL/ATL/TSB)
+    logger.info(f"[API] Ensuring current week exists before generating next week - user_id: {user_id}")
+    current_week_result = progressive_service.ensure_current_week_exists(user_id)
+    
+    # If current week was just generated, save it to database
+    if current_week_result.get("was_generated") and current_week_result.get("plan_data"):
+        current_week_plan_data = current_week_result["plan_data"]
+        logger.info(
+            f"[API] Current week {current_week_result.get('week_number')} was generated, "
+            "saving workouts to database"
+        )
+        current_workouts = workout_service.create_workouts_from_progressive_week(
+            user_id=user_id,
+            plan_id=active_plan.id,
+            week_data=current_week_plan_data
+        )
+        # Create calendar events for current week workouts
+        workout_service.create_calendar_events_from_workouts(
+            user_id=user_id,
+            workouts=current_workouts
+        )
+        # Refresh session to ensure next query sees the new workouts
+        db.expire_all()
+        logger.info(
+            f"[API] Current week workouts saved - workouts_created: {len(current_workouts)}"
+        )
+    
     # Generate next week plan
     next_week_plan = progressive_service.adapt_next_week_plan(
         user_id=current_user["user_id"],

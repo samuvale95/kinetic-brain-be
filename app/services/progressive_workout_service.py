@@ -10,6 +10,7 @@ from app.services.plan_validator import WorkoutPlanValidator, PlanValidationErro
 from app.services.stretching_workout_service import StretchingWorkoutService
 from app.services.strength_workout_service import StrengthWorkoutService
 from app.services.workout_config_service import WorkoutConfigService
+from app.services.daily_metrics_service import DailyMetricsService
 from app.schemas.ai import AIRequest, WeeklyPlanRequest, PerformanceAnalysisData
 from app.config import settings
 import json
@@ -24,6 +25,7 @@ class ProgressiveWorkoutPlanService:
         self.ai_service = AIService(db)
         self.claude_review_service = ClaudeReviewService(db)
         self.plan_validator = WorkoutPlanValidator()
+        self.daily_metrics_service = DailyMetricsService(db)
         self.mock_mode = settings.mock_llm
     
     def generate_weekly_plan(self, 
@@ -748,20 +750,228 @@ class ProgressiveWorkoutPlanService:
             "week_end": week_end.isoformat()
         }
     
-    def get_current_fitness_level(self, user_id: int) -> Dict[str, Any]:
-        """Ottiene il livello di fitness attuale dell'utente"""
-        # Analizza le ultime 4 settimane per determinare il livello di fitness
-        user_history = self._get_user_workout_history(user_id, weeks_back=4)
-        performance_trends = self._analyze_performance_trends(user_history)
+    def ensure_current_week_exists(self, user_id: int) -> Dict[str, Any]:
+        """
+        Verifica se la settimana corrente ha allenamenti generati e li crea se mancanti.
+        Restituisce i dati della settimana corrente (generata o esistente).
+        """
+        logger.info(f"[PROGRESSIVE] Ensuring current week exists - user_id: {user_id}")
         
+        # Ottiene dati della settimana corrente
+        current_week_data = self.get_current_week_data(user_id)
+        
+        # Se non c'è piano attivo, non possiamo generare nulla
+        if current_week_data.get("week_number") == 1 and not current_week_data.get("workouts") and not current_week_data.get("week_start"):
+            logger.warning(f"[PROGRESSIVE] No active plan found for user {user_id}, cannot generate current week")
+            return current_week_data
+        
+        week_start = date.fromisoformat(current_week_data["week_start"])
+        week_end = date.fromisoformat(current_week_data["week_end"])
+        current_week = current_week_data["week_number"]
+        
+        # Verifica se ci sono già allenamenti per questa settimana
+        active_plan = self.db.execute(
+            select(WorkoutPlan)
+            .where(and_(
+                WorkoutPlan.user_id == user_id,
+                WorkoutPlan.status == "active"
+            ))
+            .order_by(desc(WorkoutPlan.created_at))
+        ).scalar_one_or_none()
+        
+        if not active_plan:
+            logger.warning(f"[PROGRESSIVE] No active plan for user {user_id}")
+            return current_week_data
+        
+        existing_workouts = self.db.execute(
+            select(Workout)
+            .where(and_(
+                Workout.user_id == user_id,
+                Workout.plan_id == active_plan.id,
+                Workout.scheduled_date >= week_start,
+                Workout.scheduled_date <= week_end
+            ))
+        ).scalars().all()
+        
+        if len(existing_workouts) > 0:
+            logger.info(
+                f"[PROGRESSIVE] Current week {current_week} already has {len(existing_workouts)} workouts, "
+                "skipping generation"
+            )
+            return current_week_data
+        
+        # La settimana corrente non ha allenamenti, generiamola
+        logger.info(
+            f"[PROGRESSIVE] Current week {current_week} has no workouts, generating now - "
+            f"week_start: {week_start}, week_end: {week_end}"
+        )
+        
+        # Ottiene stato di fitness con decadimento (CTL/ATL/TSB)
+        current_fitness_level = self.get_current_fitness_level(user_id)
+        
+        # Ottiene dati della settimana precedente (se esiste)
+        previous_week_data = None
+        if current_week > 1:
+            prev_week_start = week_start - timedelta(days=7)
+            prev_week_end = prev_week_start + timedelta(days=6)
+            prev_workouts = self.db.execute(
+                select(Workout)
+                .where(and_(
+                    Workout.user_id == user_id,
+                    Workout.plan_id == active_plan.id,
+                    Workout.scheduled_date >= prev_week_start,
+                    Workout.scheduled_date <= prev_week_end
+                ))
+            ).scalars().all()
+            
+            if prev_workouts:
+                prev_performance = self._get_week_performance(user_id, prev_week_start, prev_week_end)
+                previous_week_data = {
+                    "week_number": current_week - 1,
+                    "workouts": [self._workout_to_dict(w) for w in prev_workouts],
+                    "performance": prev_performance,
+                    "week_start": prev_week_start.isoformat(),
+                    "week_end": prev_week_end.isoformat()
+                }
+        
+        # Calcola target_date (fine del piano)
+        target_date = active_plan.end_date.isoformat()
+        
+        # Genera la settimana corrente
+        current_week_plan = self.generate_weekly_plan(
+            user_id=user_id,
+            week_number=current_week,
+            target_date=target_date,
+            previous_week_data=previous_week_data,
+            current_fitness_level=current_fitness_level,
+            sport_type=active_plan.sport_type,
+            level=active_plan.level,
+            goal=active_plan.goal,
+            weekly_hours=None,
+            include_stretching=False,  # Default, può essere esteso in futuro
+            include_strength=False,   # Default, può essere esteso in futuro
+            start_date=None  # Non è la prima settimana se current_week > 1
+        )
+        
+        logger.info(
+            f"[PROGRESSIVE] Current week {current_week} plan generated successfully - "
+            f"workouts: {len(current_week_plan.get('workouts', []))}"
+        )
+        
+        # Restituisce i dati della settimana corrente con flag per indicare che è stata generata
+        # L'endpoint salverà gli allenamenti nel database
         return {
-            "completion_rate": performance_trends.get("completion_rate", 100),
-            "avg_intensity": performance_trends.get("avg_intensity", 5.0),
-            "consistency": performance_trends.get("consistency_score", 80),
-            "fatigue_level": performance_trends.get("fatigue_level", "low"),
-            "performance_trend": performance_trends.get("intensity_trend", "stable"),
-            "last_week_rpe": performance_trends.get("last_week_avg_rpe", 6.0)
+            "week_number": current_week,
+            "workouts": current_week_plan.get("workouts", []),
+            "performance": current_week_data.get("performance", {}),
+            "week_start": week_start.isoformat(),
+            "week_end": week_end.isoformat(),
+            "was_generated": True,  # Flag per indicare che la settimana è stata appena generata
+            "plan_data": current_week_plan  # Include tutti i dati del piano per il salvataggio
         }
+    
+    def get_current_fitness_level(self, user_id: int) -> Dict[str, Any]:
+        """Ottiene il livello di fitness attuale dell'utente usando CTL/ATL/TSB"""
+        # Prova prima a ottenere metriche CTL/ATL/TSB (tengono conto del decadimento)
+        current_metrics = self.daily_metrics_service.get_current_metrics(user_id)
+        
+        if current_metrics and current_metrics.ctl is not None:
+            # Usa CTL/ATL/TSB per calcolare lo stato di fitness
+            ctl = current_metrics.ctl or 0.0
+            atl = current_metrics.atl or 0.0
+            tsb = current_metrics.tsb or 0.0
+            
+            # Mappa TSB in readiness_state
+            if tsb > 10:
+                readiness_state = "fresh"
+            elif tsb < -10:
+                readiness_state = "fatigued"
+            else:
+                readiness_state = "optimal"
+            
+            # Normalizza recovery_index da TSB (range tipico -30 a +30, mappato a 0-1)
+            # TSB > 10 = recovery_index alto (0.8-1.0)
+            # TSB -10 a 10 = recovery_index medio (0.5-0.8)
+            # TSB < -10 = recovery_index basso (0.0-0.5)
+            if tsb > 10:
+                recovery_index = min(1.0, 0.8 + (tsb - 10) / 50.0)  # 0.8-1.0 per TSB 10-30
+            elif tsb < -10:
+                recovery_index = max(0.0, 0.5 + (tsb + 10) / 40.0)  # 0.0-0.5 per TSB -30 a -10
+            else:
+                recovery_index = 0.5 + (tsb / 20.0) * 0.3  # 0.5-0.8 per TSB -10 a 10
+            
+            # Mappa ATL in fatigue_level
+            if atl > 100:
+                fatigue_level = "high"
+            elif atl > 60:
+                fatigue_level = "moderate"
+            else:
+                fatigue_level = "low"
+            
+            # Calcola injury_risk_score basato su TSB e ATL
+            # TSB molto negativo + ATL alto = alto rischio
+            # Normalizza in range 0-2 (soglia sicura < 1.5)
+            if tsb < -15 and atl > 80:
+                injury_risk_score = 1.8
+            elif tsb < -10 and atl > 60:
+                injury_risk_score = 1.4
+            elif tsb < -5:
+                injury_risk_score = 1.0
+            else:
+                injury_risk_score = 0.8
+            
+            # hydration_score: non disponibile da CTL/ATL/TSB, usa default
+            hydration_score = 0.7
+            
+            logger.info(
+                f"[PROGRESSIVE] Using CTL/ATL/TSB for fitness level - user_id: {user_id}, "
+                f"CTL: {ctl:.1f}, ATL: {atl:.1f}, TSB: {tsb:.1f}, "
+                f"readiness: {readiness_state}, recovery_index: {recovery_index:.2f}"
+            )
+            
+            # Mantieni anche i campi legacy per compatibilità con il prompt AI
+            user_history = self._get_user_workout_history(user_id, weeks_back=4)
+            performance_trends = self._analyze_performance_trends(user_history)
+            
+            return {
+                # Nuovi campi basati su CTL/ATL/TSB
+                "readiness_state": readiness_state,
+                "recovery_index": recovery_index,
+                "injury_risk_score": injury_risk_score,
+                "hydration_score": hydration_score,
+                "ctl": ctl,
+                "atl": atl,
+                "tsb": tsb,
+                # Campi legacy per compatibilità
+                "completion_rate": performance_trends.get("completion_rate", 100),
+                "avg_intensity": performance_trends.get("avg_intensity", 5.0),
+                "consistency": performance_trends.get("consistency_score", 80),
+                "fatigue_level": fatigue_level,
+                "performance_trend": performance_trends.get("intensity_trend", "stable"),
+                "last_week_rpe": performance_trends.get("last_week_avg_rpe", 6.0)
+            }
+        else:
+            # Fallback al sistema precedente se CTL/ATL/TSB non disponibili
+            logger.warning(
+                f"[PROGRESSIVE] CTL/ATL/TSB not available for user {user_id}, "
+                "falling back to session-based fitness calculation"
+            )
+            user_history = self._get_user_workout_history(user_id, weeks_back=4)
+            performance_trends = self._analyze_performance_trends(user_history)
+            
+            return {
+                "completion_rate": performance_trends.get("completion_rate", 100),
+                "avg_intensity": performance_trends.get("avg_intensity", 5.0),
+                "consistency": performance_trends.get("consistency_score", 80),
+                "fatigue_level": performance_trends.get("fatigue_level", "low"),
+                "performance_trend": performance_trends.get("intensity_trend", "stable"),
+                "last_week_rpe": performance_trends.get("last_week_avg_rpe", 6.0),
+                # Valori di default per i nuovi campi
+                "readiness_state": "optimal",
+                "recovery_index": 0.7,
+                "injury_risk_score": 0.8,
+                "hydration_score": 0.7
+            }
     
     def _get_user_workout_history(self, user_id: int, weeks_back: int = 4) -> List[Dict[str, Any]]:
         """Ottiene la cronologia degli allenamenti dell'utente"""
