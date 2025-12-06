@@ -44,6 +44,15 @@ yarn add @react-native-async-storage/async-storage
 5. **IMPORTANTE**: Usa lo stesso Client ID del backend (quello configurato in `GOOGLE_CLIENT_ID`)
 6. **NON aggiungere** redirect URI custom - non servono per questo metodo!
 
+#### ⚠️ Nota Importante: Authorised Domains
+
+**NON serve aggiungere nulla nella sezione "Authorised domains" per app mobile!**
+
+- Gli "Authorised domains" sono solo per applicazioni **web** che usano redirect URI
+- Le app mobile React Native usano Google Sign-In SDK nativo che **non richiede** domini autorizzati
+- Il flusso usa ID token invece del flusso OAuth web tradizionale
+- I domini già presenti (es. `kinetic-brain-be.onrender.com`) sono per il backend web, non per l'app mobile
+
 ### 3. Configurazione iOS
 
 #### 3.1 Installa Pods
@@ -490,3 +499,4 @@ export const apiRequest = async (endpoint, options = {}) => {
 - [Google Sign-In SDK Documentation](https://github.com/react-native-google-signin/google-signin)
 - [Backend API: POST /auth/google/verify-id-token](./API_DOCUMENTATION.md#google-oauth)
 - [Google Cloud Console](https://console.cloud.google.com/)
+
