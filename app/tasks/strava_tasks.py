@@ -115,6 +115,71 @@ def run_metrics_jobs_once(limit: int = 3) -> None:
         db.close()
 
 
+def run_strava_token_exchange_and_sync(user_id: int, code: str, state: str) -> None:
+    """
+    Background task to exchange Strava authorization code for token and start sync.
+    This is completely async - the callback responds immediately.
+    
+    Args:
+        user_id: User ID
+        code: Strava authorization code
+        state: Encoded state parameter (contains user_id and mobile_redirect_uri)
+    """
+    db = SessionLocal()
+    service = StravaService(db)
+    
+    try:
+        logger.info(
+            f"[TOKEN_EXCHANGE][JOB] Starting token exchange and sync for user {user_id}"
+        )
+        
+        # Exchange code for token (this creates/updates the Strava account)
+        result = service.exchange_code_for_token(
+            code=code,
+            user_id=user_id
+        )
+        
+        logger.info(
+            f"[TOKEN_EXCHANGE][JOB] Token exchange successful for user {user_id} "
+            f"(account={result.get('strava_account_id')}, first_connection={result.get('is_first_connection')})"
+        )
+        
+        # If first connection, start sync
+        if result.get("initial_sync_required"):
+            sync_job = service.create_sync_job(
+                user_id=user_id,
+                strava_account_id=result["strava_account_id"],
+                job_type="initial_sync",
+                status_message="Initial Strava synchronization queued",
+                requested_days_back=30,  # Optimized: only sync last 30 days
+            )
+            
+            logger.info(
+                f"[TOKEN_EXCHANGE][JOB] Created sync job {sync_job.id} for user {user_id}, starting sync..."
+            )
+            
+            # Start sync in background
+            service.sync_user_activities(
+                user_id=user_id,
+                days_back=30,  # Optimized: only sync last 30 days
+                job=sync_job,
+            )
+            
+            logger.info(
+                f"[TOKEN_EXCHANGE][JOB] Sync completed for user {user_id}, job {sync_job.id}"
+            )
+        else:
+            logger.info(
+                f"[TOKEN_EXCHANGE][JOB] Reconnection for user {user_id}, no sync needed"
+            )
+            
+    except Exception as exc:
+        logger.exception(f"[TOKEN_EXCHANGE][JOB] Token exchange failed for user {user_id}: {exc}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def run_disconnect_cleanup_job(user_id: int, activity_dates: list) -> None:
     """
     Background task to clean up after Strava account disconnection.

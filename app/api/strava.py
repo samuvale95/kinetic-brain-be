@@ -108,38 +108,23 @@ async def strava_auth_callback_get(
     try:
         strava_service = StravaService(db)
         
-        # Decode state to get user_id and mobile_redirect_uri
+        # Decode state to get user_id and mobile_redirect_uri (fast, local operation)
         state_data = strava_service.decode_state(state)
         user_id = state_data["user_id"]
         mobile_redirect_uri = state_data.get("mobile_redirect_uri")
         
         logger.info(
             f"[STRAVA_AUTH][CALLBACK][GET] Decoded state: user_id={user_id}, "
-            f"mobile_redirect_uri={mobile_redirect_uri}"
+            f"mobile_redirect_uri={mobile_redirect_uri}. Starting async token exchange..."
         )
         
-        result = strava_service.exchange_code_for_token(
-            code=code,
-            user_id=user_id
-        )
+        # Schedule token exchange and sync in background (completely async)
+        from app.tasks.strava_tasks import run_strava_token_exchange_and_sync
+        background_tasks.add_task(run_strava_token_exchange_and_sync, user_id, code, state)
+        
         logger.info(
-            f"[STRAVA_AUTH][CALLBACK][GET] Token exchange succeeded for user {user_id} "
-            f"(account={result.get('strava_account_id')}, first_connection={result.get('is_first_connection')})"
+            f"[STRAVA_AUTH][CALLBACK][GET] Token exchange and sync scheduled in background for user {user_id}"
         )
-        sync_job_id = None
-        if result.get("initial_sync_required"):
-            sync_job = strava_service.create_sync_job(
-                user_id=user_id,
-                strava_account_id=result["strava_account_id"],
-                job_type="initial_sync",
-                status_message="Initial Strava synchronization queued",
-                requested_days_back=90,
-            )
-            background_tasks.add_task(run_strava_sync_job, sync_job.id, 90)
-            sync_job_id = sync_job.id
-            logger.info(
-                f"[STRAVA_AUTH][CALLBACK][GET] Scheduled initial sync job {sync_job_id} for user {user_id}"
-            )
         
         # Redirect to appropriate destination
         from fastapi.responses import RedirectResponse
@@ -153,8 +138,7 @@ async def strava_auth_callback_get(
                 "success": "true",
                 "strava_connected": "true"
             }
-            if sync_job_id:
-                mobile_params["sync_job_id"] = str(sync_job_id)
+            # Note: sync_job_id not available yet (async), frontend can poll /strava/sync-status
             
             redirect_url = f"{mobile_redirect_uri}?{urlencode(mobile_params)}"
             logger.info(
@@ -163,8 +147,7 @@ async def strava_auth_callback_get(
         else:
             # Web app: redirect to frontend callback URL
             redirect_url = f"{settings.frontend_callback_uri}?success=true&strava_connected=true"
-            if sync_job_id:
-                redirect_url += f"&sync_job_id={sync_job_id}"
+            # Note: sync_job_id not available yet (async), frontend can poll /strava/sync-status
             logger.info(
                 f"[STRAVA_AUTH][CALLBACK][GET] Redirecting to web app: {settings.frontend_callback_uri}"
             )
@@ -214,36 +197,27 @@ async def strava_auth_callback(
     try:
         strava_service = StravaService(db)
         user_id = int(request.state)
-        result = strava_service.exchange_code_for_token(
-            code=request.code,
-            user_id=user_id
-        )
+        
         logger.info(
-            f"[STRAVA_AUTH][CALLBACK][POST] Token exchange succeeded for user {request.state} "
-            f"(account={result.get('strava_account_id')}, first_connection={result.get('is_first_connection')})"
-        )
-        sync_job_id = None
-        if result.get("initial_sync_required"):
-            sync_job = strava_service.create_sync_job(
-                user_id=user_id,
-                strava_account_id=result["strava_account_id"],
-                job_type="initial_sync",
-                status_message="Initial Strava synchronization queued",
-                requested_days_back=90,
-            )
-            background_tasks.add_task(run_strava_sync_job, sync_job.id, 90)
-            sync_job_id = sync_job.id
-            logger.info(
-                f"[STRAVA_AUTH][CALLBACK][POST] Scheduled initial sync job {sync_job_id} for user {user_id}"
+            f"[STRAVA_AUTH][CALLBACK][POST] Starting async token exchange for user {user_id}"
         )
         
+        # Schedule token exchange and sync in background (completely async)
+        from app.tasks.strava_tasks import run_strava_token_exchange_and_sync
+        background_tasks.add_task(run_strava_token_exchange_and_sync, user_id, request.code, request.state)
+        
+        logger.info(
+            f"[STRAVA_AUTH][CALLBACK][POST] Token exchange and sync scheduled in background for user {user_id}"
+        )
+        
+        # Return immediately - token exchange and sync happen in background
         return StravaCallbackResponse(
             success=True,
-            message="Strava account connected successfully",
-            strava_account_id=result["strava_account_id"],
-            athlete=result["athlete"],
-            sync_job_id=sync_job_id,
-            sync_job_status="pending" if sync_job_id else None,
+            message="Strava account connection initiated. Sync in progress.",
+            strava_account_id=None,  # Not available yet (async)
+            athlete=None,  # Not available yet (async)
+            sync_job_id=None,  # Not available yet (async), frontend can poll /strava/sync-status
+            sync_job_status="pending",
         )
     except Exception as e:
         logger.exception(
