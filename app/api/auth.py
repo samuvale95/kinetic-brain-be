@@ -4,9 +4,10 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.schemas.auth import Token
-from app.schemas.user import UserCreate, UserLogin, UserResponse, GoogleAuthRequest, GoogleIdTokenRequest
+from app.schemas.user import UserCreate, UserLogin, UserResponse, GoogleAuthRequest, GoogleIdTokenRequest, AppleAuthRequest, AppleIdTokenRequest
 from app.services.auth_service import AuthService
 from app.services.google_auth_service import GoogleAuthService
+from app.services.apple_auth_service import AppleAuthService
 from app.utils.security import verify_token
 from app.config import settings
 
@@ -239,6 +240,75 @@ async def verify_google_id_token(request: GoogleIdTokenRequest, db: Session = De
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired Google ID token"
+        )
+    
+    return result["tokens"]
+
+
+@router.get("/apple/url")
+async def get_apple_auth_url():
+    """Get Apple OAuth authorization URL"""
+    apple_service = AppleAuthService(next(get_db()))
+    auth_url = apple_service.get_apple_auth_url()
+    return {"auth_url": auth_url}
+
+
+@router.post("/apple/callback", response_model=Token)
+async def apple_auth_callback_post(request: AppleAuthRequest, db: Session = Depends(get_db)):
+    """Handle Apple OAuth callback from API calls (POST)"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"[Apple OAuth] Callback received with code (length: {len(request.code) if request.code else 0})")
+    logger.info(f"[Apple OAuth] Using redirect_uri: {request.redirect_uri or settings.apple_redirect_uri}")
+    
+    apple_service = AppleAuthService(db)
+    
+    result = await apple_service.authenticate_apple_user(
+        code=request.code,
+        redirect_uri=request.redirect_uri
+    )
+    
+    if not result:
+        logger.error(f"[Apple OAuth] Authentication failed")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Apple authentication failed"
+        )
+    
+    return result["tokens"]
+
+
+@router.post("/apple/login", response_model=Token)
+async def apple_login(request: AppleAuthRequest, db: Session = Depends(get_db)):
+    """Login with Apple OAuth (same as callback but with different endpoint name)"""
+    apple_service = AppleAuthService(db)
+    
+    result = await apple_service.authenticate_apple_user(
+        code=request.code,
+        redirect_uri=request.redirect_uri
+    )
+    
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Apple authentication failed"
+        )
+    
+    return result["tokens"]
+
+
+@router.post("/apple/verify-identity-token", response_model=Token)
+async def verify_apple_identity_token(request: AppleIdTokenRequest, db: Session = Depends(get_db)):
+    """Verify Apple Identity Token from React Native or web and return JWT tokens"""
+    apple_service = AppleAuthService(db)
+    
+    result = await apple_service.verify_apple_identity_token(request.id_token)
+    
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired Apple Identity Token"
         )
     
     return result["tokens"]

@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
     frontend_callback_uri: str = "http://localhost:8080/auth/callback"
     
+    # Apple OAuth
+    apple_client_id: str = ""  # Service ID from Apple Developer
+    apple_team_id: str = ""  # Team ID from Apple Developer
+    apple_key_id: str = ""  # Key ID for JWT client secret
+    apple_private_key: str = ""  # Private key for generating JWT client secret (PEM format)
+    apple_redirect_uri: str = "http://localhost:8080/auth/apple/callback"
+    
     # CORS
     cors_origins: List[str] = ["http://localhost:8080", "http://127.0.0.1:8080"]
     

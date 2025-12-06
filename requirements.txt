@@ -15,6 +15,8 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 bcrypt<4.0.0  # Compatible version for passlib 1.7.4
 python-multipart==0.0.9
+PyJWT[crypto]==2.8.0  # For Apple Identity Token verification
+cryptography==42.0.0  # For Apple private key handling
 
 # AI and OpenAI integration
 openai==1.51.0

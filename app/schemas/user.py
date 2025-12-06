@@ -228,3 +228,20 @@ class OAuthAccountResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+# Apple OAuth Schemas
+class AppleAuthRequest(BaseModel):
+    code: str = Field(..., description="Authorization code from Apple")
+    redirect_uri: Optional[str] = None
+
+
+class AppleIdTokenRequest(BaseModel):
+    id_token: str = Field(..., description="Apple Identity Token from React Native or web")
+
+
+class AppleUserInfo(BaseModel):
+    id: str
+    email: str
+    name: Optional[str] = None
+    email_verified: bool = True
