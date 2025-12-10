@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -270,14 +270,14 @@ async def google_auth_mobile_callback_get(
     2. Authenticates the user
     3. Redirects to mobile deep link (from state parameter) with tokens
     """
-    import logging
     import base64
     import json
     from urllib.parse import urlencode
-    logger = logging.getLogger(__name__)
     
-    logger.info(f"[Google OAuth Mobile] Callback received with code (length: {len(code) if code else 0})")
-    logger.info(f"[Google OAuth Mobile] State: {state[:50] if state else 'None'}...")
+    print(f"[Google OAuth Mobile] ===== MOBILE CALLBACK START =====")
+    print(f"[Google OAuth Mobile] Callback received with code (length: {len(code) if code else 0})")
+    print(f"[Google OAuth Mobile] State: {state[:100] if state else 'None'}...")
+    print(f"[Google OAuth Mobile] Full state: {state}")
     
     # Decode mobile_redirect_uri from state
     mobile_redirect_uri = None
@@ -285,14 +285,20 @@ async def google_auth_mobile_callback_get(
         try:
             # Add padding if needed
             state_padded = state + '=' * (4 - len(state) % 4)
-            state_data = json.loads(base64.urlsafe_b64decode(state_padded).decode())
+            print(f"[Google OAuth Mobile] Decoding state (padded length: {len(state_padded)})")
+            decoded_bytes = base64.urlsafe_b64decode(state_padded)
+            decoded_str = decoded_bytes.decode('utf-8')
+            print(f"[Google OAuth Mobile] Decoded string: {decoded_str}")
+            state_data = json.loads(decoded_str)
             mobile_redirect_uri = state_data.get("mobile_redirect_uri")
-            logger.info(f"[Google OAuth Mobile] Decoded mobile_redirect_uri: {mobile_redirect_uri}")
+            print(f"[Google OAuth Mobile] ✓ Successfully decoded mobile_redirect_uri: {mobile_redirect_uri}")
         except Exception as e:
-            logger.error(f"[Google OAuth Mobile] Failed to decode state: {e}")
+            print(f"[Google OAuth Mobile] ✗ Failed to decode state: {type(e).__name__}: {e}")
+            import traceback
+            print(f"[Google OAuth Mobile] Traceback: {traceback.format_exc()}")
     
     if not mobile_redirect_uri:
-        logger.error(f"[Google OAuth Mobile] No mobile_redirect_uri in state - redirecting to web callback")
+        print(f"[Google OAuth Mobile] No mobile_redirect_uri in state - redirecting to web callback")
         # Fallback to web callback
         return RedirectResponse(
             url=f"{settings.frontend_callback_uri}?error=invalid_state",
@@ -304,23 +310,29 @@ async def google_auth_mobile_callback_get(
     
     google_service = GoogleAuthService(db)
     
+    print(f"[Google OAuth Mobile] Using web_callback_uri for token exchange: {web_callback_uri}")
+    
     result = await google_service.authenticate_google_user(
         code=code,
         redirect_uri=web_callback_uri
     )
     
     if not result:
-        logger.error(f"[Google OAuth Mobile] Authentication failed")
+        print(f"[Google OAuth Mobile] ✗ Authentication failed")
         # Redirect to mobile app with error
         error_params = {
             "error": "authentication_failed"
         }
         redirect_url = f"{mobile_redirect_uri}?{urlencode(error_params)}"
+        print(f"[Google OAuth Mobile] Redirecting to mobile app with error: {redirect_url}")
         return RedirectResponse(url=redirect_url, status_code=302)
     
     # Get tokens and user info
     tokens = result["tokens"]
     user = result["user"]
+    
+    print(f"[Google OAuth Mobile] ✓ Authentication successful for user: {user.email} (id: {user.id})")
+    print(f"[Google OAuth Mobile] Tokens generated - access_token length: {len(tokens['access_token'])}, refresh_token length: {len(tokens['refresh_token'])}")
     
     # Redirect to mobile app with tokens as URL parameters
     params = {
@@ -334,9 +346,104 @@ async def google_auth_mobile_callback_get(
     }
     
     redirect_url = f"{mobile_redirect_uri}?{urlencode(params)}"
-    logger.info(f"[Google OAuth Mobile] Redirecting to mobile app: {mobile_redirect_uri}")
+    print(f"[Google OAuth Mobile] ===== REDIRECTING TO MOBILE APP =====")
+    print(f"[Google OAuth Mobile]   - mobile_redirect_uri: {mobile_redirect_uri}")
+    print(f"[Google OAuth Mobile]   - redirect_url (first 150 chars): {redirect_url[:150]}...")
+    print(f"[Google OAuth Mobile]   - redirect_url (full length): {len(redirect_url)} chars")
+    print(f"[Google OAuth Mobile]   - params keys: {list(params.keys())}")
+    print(f"[Google OAuth Mobile] ===== MOBILE CALLBACK END =====")
     
-    return RedirectResponse(url=redirect_url, status_code=302)
+    # Return HTML page that opens the deep link using JavaScript
+    # This works better than HTTP redirect for custom URL schemes in WebViews
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Redirecting to App...</title>
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                min-height: 100vh;
+                margin: 0;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }}
+            .container {{
+                text-align: center;
+                padding: 2rem;
+            }}
+            .spinner {{
+                border: 4px solid rgba(255, 255, 255, 0.3);
+                border-top: 4px solid white;
+                border-radius: 50%;
+                width: 40px;
+                height: 40px;
+                animation: spin 1s linear infinite;
+                margin: 0 auto 1rem;
+            }}
+            @keyframes spin {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+            h1 {{
+                margin: 0 0 1rem 0;
+                font-size: 1.5rem;
+            }}
+            p {{
+                margin: 0.5rem 0;
+                opacity: 0.9;
+            }}
+            .button {{
+                margin-top: 1.5rem;
+                padding: 0.75rem 1.5rem;
+                background: white;
+                color: #667eea;
+                border: none;
+                border-radius: 8px;
+                font-size: 1rem;
+                font-weight: 600;
+                cursor: pointer;
+                text-decoration: none;
+                display: inline-block;
+            }}
+            .button:hover {{
+                background: #f0f0f0;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="spinner"></div>
+            <h1>Redirecting to App...</h1>
+            <p>Please wait while we open the app.</p>
+            <p>If the app doesn't open automatically, click the button below.</p>
+            <a href="{redirect_url}" class="button">Open App</a>
+        </div>
+        <script>
+            // Try to open the deep link immediately
+            window.location.href = "{redirect_url}";
+            
+            // Fallback: try after a short delay (some browsers need this)
+            setTimeout(function() {{
+                window.location.href = "{redirect_url}";
+            }}, 500);
+            
+            // Fallback: try with window.open (for some WebViews)
+            setTimeout(function() {{
+                window.open("{redirect_url}", "_self");
+            }}, 1000);
+        </script>
+    </body>
+    </html>
+    """
+    
+    return HTMLResponse(content=html_content)
 
 
 @router.post("/google/callback", response_model=Token)
@@ -436,12 +543,18 @@ async def verify_google_id_token(request: GoogleIdTokenRequest, db: Session = De
     """Verify Google ID token from React Native and return JWT tokens
     
     This endpoint is RECOMMENDED for React Native apps using Google Sign-In SDK.
-    It doesn't require redirect URIs and works with custom URL schemes.
+    It doesn't require redirect URIs and works without custom URL schemes.
+    
+    Usage in React Native:
+    1. Use @react-native-google-signin/google-signin to get ID token
+    2. Send ID token to this endpoint
+    3. Receive JWT tokens (access_token, refresh_token)
     """
     import logging
     logger = logging.getLogger(__name__)
     
-    logger.info(f"[Google ID Token] Verification request received (token length: {len(request.id_token) if request.id_token else 0})")
+    print(f"[Google ID Token API] ===== REQUEST RECEIVED =====")
+    print(f"[Google ID Token API] Token length: {len(request.id_token) if request.id_token else 0}")
     
     google_service = GoogleAuthService(db)
     
@@ -449,19 +562,26 @@ async def verify_google_id_token(request: GoogleIdTokenRequest, db: Session = De
         result = await google_service.verify_google_id_token(request.id_token)
         
         if not result:
-            logger.error(f"[Google ID Token] Verification failed - invalid or expired token")
+            print(f"[Google ID Token API] ✗ Verification failed - invalid or expired token")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired Google ID token. Make sure you're using Google Sign-In SDK correctly."
+                detail="Invalid or expired Google ID token. Make sure you're using Google Sign-In SDK correctly and the token hasn't expired."
             )
         
-        user_email = result.get("user", {}).get("email", "unknown")
-        logger.info(f"[Google ID Token] Verification successful for user: {user_email}")
+        user = result.get("user")
+        user_email = user.email if user else "unknown"
+        user_id = user.id if user else "unknown"
+        
+        print(f"[Google ID Token API] ✓ Verification successful for user: {user_email} (id: {user_id})")
+        print(f"[Google ID Token API] ===== REQUEST SUCCESS =====")
+        
         return result["tokens"]
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[Google ID Token] Unexpected error: {type(e).__name__}: {e}", exc_info=True)
+        print(f"[Google ID Token API] ✗ Unexpected error: {type(e).__name__}: {e}")
+        import traceback
+        print(f"[Google ID Token API] Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error during Google ID token verification: {str(e)}"

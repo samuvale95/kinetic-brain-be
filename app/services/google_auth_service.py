@@ -262,14 +262,20 @@ class GoogleAuthService:
     
     async def verify_google_id_token(self, id_token_string: str) -> Optional[Dict[str, Any]]:
         """Verify Google ID token and authenticate user (for React Native)"""
+        print(f"[Google ID Token] ===== VERIFICATION START =====")
+        print(f"[Google ID Token] Token length: {len(id_token_string) if id_token_string else 0}")
+        print(f"[Google ID Token] Using client_id: {self.client_id[:20] if self.client_id else 'None'}...")
+        
         try:
             # Verify the ID token
             request = requests.Request()
+            print(f"[Google ID Token] Verifying token with Google...")
             id_info = id_token.verify_oauth2_token(
                 id_token_string, 
                 request, 
                 self.client_id
             )
+            print(f"[Google ID Token] ✓ Token verified successfully")
             
             # Extract user information from ID token
             google_user_id = id_info.get("sub")
@@ -278,17 +284,25 @@ class GoogleAuthService:
             picture = id_info.get("picture")
             email_verified = id_info.get("email_verified", False)
             
+            print(f"[Google ID Token] Extracted info:")
+            print(f"[Google ID Token]   - google_user_id: {google_user_id}")
+            print(f"[Google ID Token]   - email: {email}")
+            print(f"[Google ID Token]   - name: {name}")
+            print(f"[Google ID Token]   - email_verified: {email_verified}")
+            
             if not email or not email_verified:
-                print("Email not verified or missing in ID token")
+                print(f"[Google ID Token] ✗ Email not verified or missing in ID token")
                 return None
             
             # Check if user exists
+            print(f"[Google ID Token] Checking if user exists in database...")
             user = self.db.execute(
                 select(User).where(User.email == email)
             ).scalar_one_or_none()
             
             if not user:
                 # Create new user
+                print(f"[Google ID Token] Creating new user...")
                 user = User(
                     email=email,
                     name=name or email.split("@")[0],
@@ -300,7 +314,9 @@ class GoogleAuthService:
                 self.db.add(user)
                 self.db.commit()
                 self.db.refresh(user)
+                print(f"[Google ID Token] ✓ New user created: {user.email} (id: {user.id})")
             else:
+                print(f"[Google ID Token] User exists: {user.email} (id: {user.id})")
                 # Update user info if needed
                 if name and user.name != name:
                     user.name = name
@@ -336,6 +352,7 @@ class GoogleAuthService:
             self.db.commit()
             
             # Create JWT tokens
+            print(f"[Google ID Token] Creating JWT tokens...")
             tokens = {
                 "access_token": create_access_token(
                     data={"sub": str(user.id), "email": user.email}
@@ -346,14 +363,23 @@ class GoogleAuthService:
                 "token_type": "bearer"
             }
             
+            print(f"[Google ID Token] ✓ Tokens created successfully")
+            print(f"[Google ID Token]   - access_token length: {len(tokens['access_token'])}")
+            print(f"[Google ID Token]   - refresh_token length: {len(tokens['refresh_token'])}")
+            print(f"[Google ID Token] ===== VERIFICATION SUCCESS =====")
+            
             return {
                 "user": user,
                 "tokens": tokens
             }
         except ValueError as e:
             # Invalid token
-            print(f"Error verifying Google ID token: {e}")
+            print(f"[Google ID Token] ✗ Invalid token error: {type(e).__name__}: {e}")
+            import traceback
+            print(f"[Google ID Token] Traceback: {traceback.format_exc()}")
             return None
         except Exception as e:
-            print(f"Unexpected error verifying Google ID token: {e}")
+            print(f"[Google ID Token] ✗ Unexpected error: {type(e).__name__}: {e}")
+            import traceback
+            print(f"[Google ID Token] Traceback: {traceback.format_exc()}")
             return None
