@@ -33,9 +33,16 @@ class GoogleAuthService:
                     "https://www.googleapis.com/oauth2/v2/userinfo",
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
+                
+                if response.status_code != 200:
+                    error_data = response.text
+                    print(f"[Google OAuth] Failed to get user info: {response.status_code} - {error_data}")
+                    return None
+                
                 response.raise_for_status()
                 data = response.json()
                 
+                print(f"[Google OAuth] Successfully retrieved user info for: {data.get('email', 'unknown')}")
                 return GoogleUserInfo(
                     id=data["id"],
                     email=data["email"],
@@ -43,8 +50,12 @@ class GoogleAuthService:
                     picture=data.get("picture"),
                     verified_email=data.get("verified_email", True)
                 )
+        except httpx.HTTPStatusError as e:
+            error_data = e.response.text if e.response else "No response"
+            print(f"[Google OAuth] HTTP error getting user info: {e.response.status_code} - {error_data}")
+            return None
         except Exception as e:
-            print(f"Error getting Google user info: {e}")
+            print(f"[Google OAuth] Error getting Google user info: {type(e).__name__}: {e}")
             return None
     
     async def exchange_code_for_token(self, code: str, redirect_uri: str = None) -> Optional[str]:
@@ -54,8 +65,19 @@ class GoogleAuthService:
             masked_client_id = f"{self.client_id[:20]}..." if self.client_id and len(self.client_id) > 20 else self.client_id
             print(f"[Google OAuth] Exchanging code for token")
             print(f"[Google OAuth]   - redirect_uri: {redirect_uri}")
+            print(f"[Google OAuth]   - default redirect_uri: {self.redirect_uri}")
+            print(f"[Google OAuth]   - redirect_uri match: {redirect_uri == self.redirect_uri}")
             print(f"[Google OAuth]   - client_id: {masked_client_id}")
             print(f"[Google OAuth]   - client_secret configured: {'Yes' if self.client_secret else 'No'}")
+            print(f"[Google OAuth]   - code length: {len(code) if code else 0}")
+            
+            if not self.client_id:
+                print(f"[Google OAuth] ERROR: client_id is not configured!")
+                return None
+            
+            if not self.client_secret:
+                print(f"[Google OAuth] ERROR: client_secret is not configured!")
+                return None
             
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -71,7 +93,37 @@ class GoogleAuthService:
                 
                 if response.status_code != 200:
                     error_data = response.text
-                    print(f"[Google OAuth] Token exchange failed: {response.status_code} - {error_data}")
+                    print(f"[Google OAuth] Token exchange failed: {response.status_code}")
+                    try:
+                        error_json = response.json()
+                        print(f"[Google OAuth] Error details: {error_json}")
+                        error_type = error_json.get("error", "unknown")
+                        error_description = error_json.get("error_description", "No description")
+                        print(f"[Google OAuth] Error type: {error_type}")
+                        print(f"[Google OAuth] Error description: {error_description}")
+                        
+                        # Common errors:
+                        if error_type == "invalid_grant":
+                            print(f"[Google OAuth] This usually means:")
+                            print(f"[Google OAuth]   - Code already used or expired")
+                            print(f"[Google OAuth]   - redirect_uri mismatch")
+                            print(f"[Google OAuth]   - client_id/client_secret mismatch")
+                        elif error_type == "redirect_uri_mismatch":
+                            print(f"[Google OAuth] redirect_uri mismatch! Expected: {redirect_uri}")
+                        elif error_type == "invalid_request":
+                            if "OAuth 2.0 policy" in error_description or "doesn't comply" in error_description:
+                                print(f"[Google OAuth] ⚠️  CRITICAL: App doesn't comply with Google OAuth 2.0 policy!")
+                                print(f"[Google OAuth] This usually means:")
+                                print(f"[Google OAuth]   1. Custom URL scheme '{redirect_uri}' not registered in Google Cloud Console")
+                                print(f"[Google OAuth]   2. App is in testing mode and needs test users added")
+                                print(f"[Google OAuth]   3. App needs to be verified/published")
+                                print(f"[Google OAuth] SOLUTIONS:")
+                                print(f"[Google OAuth]   → Register '{redirect_uri}' in Google Cloud Console → Credenziali → OAuth 2.0 Client ID")
+                                print(f"[Google OAuth]   → Add test users in OAuth consent screen (if in testing mode)")
+                                print(f"[Google OAuth]   → See docs/GOOGLE_OAUTH_REACT_NATIVE.md for detailed instructions")
+                                print(f"[Google OAuth]   → Alternative: Use /auth/google/verify-id-token endpoint (Google Sign-In SDK)")
+                    except:
+                        print(f"[Google OAuth] Raw error response: {error_data}")
                     return None
                 
                 response.raise_for_status()
@@ -85,9 +137,16 @@ class GoogleAuthService:
         except httpx.HTTPStatusError as e:
             error_data = e.response.text if e.response else "No response"
             print(f"[Google OAuth] HTTP error exchanging code for token: {e.response.status_code} - {error_data}")
+            try:
+                error_json = e.response.json()
+                print(f"[Google OAuth] Error JSON: {error_json}")
+            except:
+                pass
             return None
         except Exception as e:
             print(f"[Google OAuth] Error exchanging code for token: {type(e).__name__}: {e}")
+            import traceback
+            print(f"[Google OAuth] Traceback: {traceback.format_exc()}")
             return None
     
     async def authenticate_google_user(self, code: str, redirect_uri: str = None) -> Optional[Dict[str, Any]]:
@@ -95,11 +154,17 @@ class GoogleAuthService:
         # Exchange code for access token
         access_token = await self.exchange_code_for_token(code, redirect_uri)
         if not access_token:
+            print(f"[Google OAuth] Failed to exchange code for token")
             return None
         
         # Get user info from Google
         google_user = await self.get_google_user_info(access_token)
-        if not google_user or not google_user.verified_email:
+        if not google_user:
+            print(f"[Google OAuth] Failed to get user info from Google")
+            return None
+        
+        if not google_user.verified_email:
+            print(f"[Google OAuth] User email not verified: {google_user.email}")
             return None
         
         # Check if user exists
@@ -164,15 +229,25 @@ class GoogleAuthService:
             "tokens": tokens
         }
     
-    def get_google_auth_url(self, state: str = None) -> str:
-        """Generate Google OAuth authorization URL"""
+    def get_google_auth_url(self, redirect_uri: str = None, state: str = None) -> str:
+        """Generate Google OAuth authorization URL
+        
+        Args:
+            redirect_uri: Optional custom redirect URI (for React Native custom URL schemes)
+            state: Optional state parameter for CSRF protection
+        """
+        # Use provided redirect_uri or default from settings
+        use_redirect_uri = redirect_uri or self.redirect_uri
+        
         masked_client_id = f"{self.client_id[:20]}..." if self.client_id and len(self.client_id) > 20 else self.client_id
         print(f"[Google OAuth] Generating auth URL with client_id: {masked_client_id}")
-        print(f"[Google OAuth] Using redirect_uri: {self.redirect_uri}")
+        print(f"[Google OAuth] Using redirect_uri: {use_redirect_uri}")
+        if redirect_uri:
+            print(f"[Google OAuth]   - Custom redirect_uri provided (for React Native)")
         
         params = {
             "client_id": self.client_id,
-            "redirect_uri": self.redirect_uri,
+            "redirect_uri": use_redirect_uri,
             "scope": "openid email profile",
             "response_type": "code",
             "access_type": "offline",

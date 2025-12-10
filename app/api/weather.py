@@ -74,6 +74,7 @@ async def options_weather():
 async def get_weather(
     lat: Optional[float] = Query(None, description="Latitude"),
     lon: Optional[float] = Query(None, description="Longitude"),
+    city: Optional[str] = Query(None, description="City name (e.g., 'Milano', 'Rome')"),
     days: int = Query(7, ge=1, le=7, description="Number of forecast days to include"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -83,28 +84,31 @@ async def get_weather(
     api_key = os.getenv("WEATHER_API_KEY")
     use_openweather = api_key is not None
 
-    city = None
+    # Priority: 1) Query param city, 2) User profile city, 3) Default
+    profile_city = None
     profile_lat = None
     profile_lon = None
 
     user_profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
     if user_profile:
         if user_profile.city:
-            city = user_profile.city
+            profile_city = user_profile.city
         if user_profile.latitude is not None and user_profile.longitude is not None:
             profile_lat = user_profile.latitude
             profile_lon = user_profile.longitude
 
+    # Use query param city if provided, otherwise fall back to profile city
+    use_city = city if city is not None else profile_city
     use_lat = lat if lat is not None else profile_lat
     use_lon = lon if lon is not None else profile_lon
 
     location_query = None
     if use_lat is not None and use_lon is not None:
         location_query = f"lat={use_lat}&lon={use_lon}"
-    elif city:
-        location_query = f"q={city}"
+    elif use_city:
+        location_query = f"q={use_city}"
     else:
-        city = "Rome"
+        use_city = "Rome"
         location_query = "q=Rome"
 
     cache_key = f"{location_query}_{days}_{datetime.now().replace(minute=0, second=0, microsecond=0).isoformat()}"
@@ -113,7 +117,7 @@ async def get_weather(
         return cached["data"]
 
     logger.info(
-        f"[WEATHER] Request: location_query={location_query}, lat={use_lat}, lon={use_lon}, city={city}, days={days}"
+        f"[WEATHER] Request: location_query={location_query}, lat={use_lat}, lon={use_lon}, city={use_city}, days={days}, user_id={user_id}"
     )
 
     try:
@@ -125,7 +129,7 @@ async def get_weather(
                     location_query,
                     use_lat,
                     use_lon,
-                    city,
+                    use_city,
                     api_key,
                     days,
                 )
@@ -135,7 +139,7 @@ async def get_weather(
                     client,
                     use_lat,
                     use_lon,
-                    city,
+                    use_city,
                     days,
                 )
     except httpx.TimeoutException:
