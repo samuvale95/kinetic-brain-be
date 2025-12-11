@@ -266,15 +266,57 @@ class GoogleAuthService:
         print(f"[Google ID Token] Token length: {len(id_token_string) if id_token_string else 0}")
         print(f"[Google ID Token] Using client_id: {self.client_id[:20] if self.client_id else 'None'}...")
         
+        # Get list of allowed client IDs
+        allowed_client_ids = [self.client_id] if self.client_id else []
+        
+        # Add additional client IDs from settings (for Android/iOS apps)
+        if settings.google_additional_client_ids:
+            additional_ids = [cid.strip() for cid in settings.google_additional_client_ids.split(",") if cid.strip()]
+            allowed_client_ids.extend(additional_ids)
+            print(f"[Google ID Token] Additional client IDs configured: {len(additional_ids)}")
+        
+        print(f"[Google ID Token] Allowed client IDs: {len(allowed_client_ids)}")
+        
         try:
-            # Verify the ID token
+            # Verify the ID token - try each allowed client ID
             request = requests.Request()
             print(f"[Google ID Token] Verifying token with Google...")
-            id_info = id_token.verify_oauth2_token(
-                id_token_string, 
-                request, 
-                self.client_id
-            )
+            
+            id_info = None
+            last_error = None
+            
+            for client_id in allowed_client_ids:
+                try:
+                    print(f"[Google ID Token] Trying client_id: {client_id[:30]}...")
+                    id_info = id_token.verify_oauth2_token(
+                        id_token_string, 
+                        request, 
+                        client_id
+                    )
+                    print(f"[Google ID Token] ✓ Token verified successfully with client_id: {client_id[:30]}...")
+                    break
+                except Exception as e:
+                    last_error = e
+                    print(f"[Google ID Token] ✗ Failed with client_id {client_id[:30]}...: {type(e).__name__}")
+                    continue
+            
+            if not id_info:
+                # Extract audience from error if possible
+                error_msg = str(last_error) if last_error else "Unknown error"
+                print(f"[Google ID Token] ✗ All client IDs failed. Last error: {error_msg}")
+                
+                # Try to extract audience from token to help debugging
+                try:
+                    import jwt as pyjwt
+                    decoded = pyjwt.decode(id_token_string, options={"verify_signature": False})
+                    token_audience = decoded.get("aud")
+                    print(f"[Google ID Token] Token audience: {token_audience}")
+                    print(f"[Google ID Token] Expected audiences: {[cid[:50] + '...' if len(cid) > 50 else cid for cid in allowed_client_ids]}")
+                except Exception as decode_error:
+                    print(f"[Google ID Token] Could not decode token for debugging: {decode_error}")
+                
+                raise ValueError(f"Token verification failed. {error_msg}")
+            
             print(f"[Google ID Token] ✓ Token verified successfully")
             
             # Extract user information from ID token

@@ -80,6 +80,29 @@ async def get_weather(
     db: Session = Depends(get_db)
 ):
     """Get current weather and multi-day forecast for user's location"""
+    import json
+    import os
+    log_path = "/Volumes/ExtremeSSD/repositories/kinetic-brain-be/.cursor/debug.log"
+    
+    # #region agent log
+    try:
+        with open(log_path, "a") as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "N",
+                "location": "weather.py:73",
+                "message": "get_weather endpoint entry",
+                "data": {
+                    "has_current_user": current_user is not None,
+                    "user_id": current_user.get("user_id") if current_user else None
+                },
+                "timestamp": int(__import__("time").time() * 1000)
+            }) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    
     user_id = current_user["user_id"]
     api_key = os.getenv("WEATHER_API_KEY")
     use_openweather = api_key is not None
@@ -172,6 +195,42 @@ async def get_weather(
     }
 
     return weather_response
+
+
+@router.get("")
+async def get_weather_no_slash(
+    lat: Optional[float] = Query(None, description="Latitude"),
+    lon: Optional[float] = Query(None, description="Longitude"),
+    city: Optional[str] = Query(None, description="City name (e.g., 'Milano', 'Rome')"),
+    days: int = Query(7, ge=1, le=7, description="Number of forecast days to include"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get current weather - endpoint without trailing slash to avoid redirect"""
+    import json
+    log_path = "/Volumes/ExtremeSSD/repositories/kinetic-brain-be/.cursor/debug.log"
+    
+    # #region agent log
+    try:
+        with open(log_path, "a") as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "O",
+                "location": "weather.py:177",
+                "message": "get_weather_no_slash entry (no trailing slash)",
+                "data": {
+                    "has_current_user": current_user is not None,
+                    "user_id": current_user.get("user_id") if current_user else None
+                },
+                "timestamp": int(__import__("time").time() * 1000)
+            }) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    
+    # Call the main get_weather function
+    return await get_weather(lat, lon, city, days, current_user, db)
 
 
 async def _fetch_openweather(

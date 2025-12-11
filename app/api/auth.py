@@ -20,13 +20,74 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
                     db: Session = Depends(get_db)) -> dict:
     """Get current user from JWT token"""
     import logging
+    import json
+    import os
+    log_path = "/Volumes/ExtremeSSD/repositories/kinetic-brain-be/.cursor/debug.log"
     logger = logging.getLogger(__name__)
+    
+    # #region agent log
+    try:
+        with open(log_path, "a") as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "H",
+                "location": "auth.py:19",
+                "message": "get_current_user entry",
+                "data": {
+                    "has_credentials": credentials is not None,
+                    "has_credentials_attr": hasattr(credentials, "credentials") if credentials else False
+                },
+                "timestamp": int(__import__("time").time() * 1000)
+                }) + "\n")
+    except Exception:
+        pass
+    # #endregion
     
     try:
         token = credentials.credentials
+        
+        # #region agent log
+        try:
+            with open(log_path, "a") as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "I",
+                    "location": "auth.py:26",
+                    "message": "Token extracted from credentials",
+                    "data": {
+                        "token_length": len(token) if token else 0,
+                        "token_preview": token[:30] + "..." if token and len(token) > 30 else token
+                    },
+                    "timestamp": int(__import__("time").time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         logger.debug(f"[AUTH] Validating token (length: {len(token) if token else 0})")
         
         payload = verify_token(token, "access")
+        
+        # #region agent log
+        try:
+            with open(log_path, "a") as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "J",
+                    "location": "auth.py:29",
+                    "message": "Token verification in get_current_user",
+                    "data": {
+                        "payload_valid": payload is not None,
+                        "user_id": payload.get("sub") if payload else None
+                    },
+                    "timestamp": int(__import__("time").time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         
         if payload is None:
             logger.warning(f"[AUTH] Token validation failed - invalid or expired token")
@@ -41,6 +102,26 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         
         auth_service = AuthService(db)
         user = auth_service.get_user_by_id(user_id)
+        
+        # #region agent log
+        try:
+            with open(log_path, "a") as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "K",
+                    "location": "auth.py:42",
+                    "message": "User lookup in get_current_user",
+                    "data": {
+                        "user_found": user is not None,
+                        "user_id": user.id if user else None,
+                        "user_active": user.is_active if user else None
+                    },
+                    "timestamp": int(__import__("time").time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         
         if user is None:
             logger.warning(f"[AUTH] User not found for user_id: {user_id}")
@@ -59,10 +140,48 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
             )
         
         logger.debug(f"[AUTH] User authenticated: {user.email} (id: {user.id})")
+        
+        # #region agent log
+        try:
+            with open(log_path, "a") as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "L",
+                    "location": "auth.py:58",
+                    "message": "get_current_user success",
+                    "data": {
+                        "user_id": user.id,
+                        "user_email": user.email
+                    },
+                    "timestamp": int(__import__("time").time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         return {"user_id": user.id, "email": user.email}
     except HTTPException:
         raise
     except Exception as e:
+        # #region agent log
+        try:
+            with open(log_path, "a") as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "M",
+                    "location": "auth.py:65",
+                    "message": "get_current_user exception",
+                    "data": {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e)
+                    },
+                    "timestamp": int(__import__("time").time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         logger.error(f"[AUTH] Unexpected error in get_current_user: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -565,7 +684,13 @@ async def verify_google_id_token(request: GoogleIdTokenRequest, db: Session = De
             print(f"[Google ID Token API] ✗ Verification failed - invalid or expired token")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired Google ID token. Make sure you're using Google Sign-In SDK correctly and the token hasn't expired."
+                detail=(
+                    "Invalid or expired Google ID token. "
+                    "Common causes: "
+                    "1) Wrong Client ID - Use the WEB Client ID (not Android/iOS Client ID) in GoogleSignin.configure() "
+                    "2) Token expired - Request a new token "
+                    "3) Client ID mismatch - Add your Android/iOS Client ID to GOOGLE_ADDITIONAL_CLIENT_IDS in backend .env"
+                )
             )
         
         user = result.get("user")

@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
     frontend_callback_uri: str = "http://localhost:8080/auth/callback"
+    # Additional Google Client IDs (comma-separated) for React Native Android/iOS
+    # These are used when verifying ID tokens from mobile apps
+    google_additional_client_ids: str = ""
     
     # Apple OAuth
     apple_client_id: str = ""  # Service ID from Apple Developer
