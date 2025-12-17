@@ -286,59 +286,157 @@ async def logout():
 
 @router.get("/google/url")
 async def get_google_auth_url(
-    mobile_redirect_uri: Optional[str] = Query(None, description="Mobile app deep link (e.g., kineticbrain://oauth/callback). If provided, uses web callback endpoint that redirects to this.")
+    mobile: bool = Query(False, description="If True, indicates this is a mobile app request. The callback will redirect to kineticbrain://oauth"),
+    mobile_redirect_uri: Optional[str] = Query(None, description="Mobile app deep link (e.g., kineticbrain://oauth/callback). If provided, uses web callback endpoint that redirects to this. Takes precedence over mobile parameter.")
 ):
     """Get Google OAuth authorization URL
     
-    For web frontend: call without mobile_redirect_uri (uses default web callback)
-    For React Native: call with mobile_redirect_uri=kineticbrain://oauth/callback
-      - This uses a web endpoint as intermediate redirect (registered in Google Console)
+    For web frontend: call without mobile or mobile_redirect_uri (uses default web callback)
+    For React Native: 
+      - Option 1: call with mobile=True (uses kineticbrain://oauth as deep link)
+      - Option 2: call with mobile_redirect_uri=kineticbrain://oauth/callback (custom deep link)
+      - Both use a web endpoint as intermediate redirect (registered in Google Console)
       - The web endpoint then redirects to your mobile deep link with tokens
     """
     import logging
     import base64
     import json
+    import time
+    import secrets
     from urllib.parse import urlencode
+    from fastapi import Request
     logger = logging.getLogger(__name__)
+    
+    print(f"\n{'='*80}")
+    print(f"[GOOGLE AUTH URL] ===== REQUEST RECEIVED =====")
+    print(f"[GOOGLE AUTH URL] Endpoint: GET /auth/google/url")
+    print(f"[GOOGLE AUTH URL] Query Parameters:")
+    print(f"[GOOGLE AUTH URL]   - mobile: {mobile} (type: {type(mobile).__name__})")
+    print(f"[GOOGLE AUTH URL]   - mobile_redirect_uri: {mobile_redirect_uri}")
+    print(f"[GOOGLE AUTH URL] Settings:")
+    print(f"[GOOGLE AUTH URL]   - google_redirect_uri: {settings.google_redirect_uri}")
+    print(f"[GOOGLE AUTH URL]   - google_client_id: {settings.google_client_id[:30] if settings.google_client_id else 'None'}...")
+    print(f"{'='*80}\n")
     
     google_service = GoogleAuthService(next(get_db()))
     
-    if mobile_redirect_uri:
-        # For mobile: use web callback endpoint, encode mobile_redirect_uri in state
-        # The web callback will redirect to mobile_redirect_uri after authentication
-        web_callback_uri = f"{settings.google_redirect_uri.rstrip('/callback')}/mobile-callback"
+    # Determine if this is a mobile request
+    is_mobile = mobile or mobile_redirect_uri is not None
+    print(f"[GOOGLE AUTH URL] Determined request type: {'MOBILE' if is_mobile else 'WEB'}")
+    
+    if is_mobile:
+        # For mobile: use web callback endpoint, encode mobile flag/redirect_uri in state
+        # The web callback will redirect to mobile deep link after authentication
+        web_callback_uri = settings.google_redirect_uri  # Use normal callback endpoint
         
-        # Encode mobile_redirect_uri in state parameter for later use
-        state_data = {"mobile_redirect_uri": mobile_redirect_uri}
+        # Determine the mobile redirect URI
+        if mobile_redirect_uri:
+            # Use provided mobile_redirect_uri (takes precedence)
+            final_mobile_redirect_uri = mobile_redirect_uri
+        elif mobile:
+            # Use default deep link for mobile=True
+            final_mobile_redirect_uri = "kineticbrain://oauth"
+        else:
+            final_mobile_redirect_uri = None
+        
+        # Encode mobile flag and redirect URI in state parameter for later use
+        state_data = {
+            "mobile": True,
+            "mobile_redirect_uri": final_mobile_redirect_uri,
+            "token": secrets.token_urlsafe(32),  # Random token for CSRF protection
+            "timestamp": time.time()
+        }
         state = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode().rstrip('=')
         
-        logger.info(f"[Google OAuth URL] Mobile request received")
-        logger.info(f"[Google OAuth URL]   - mobile_redirect_uri: {mobile_redirect_uri}")
-        logger.info(f"[Google OAuth URL]   - web_callback_uri: {web_callback_uri}")
-        logger.info(f"[Google OAuth URL]   - state (encoded): {state[:50]}...")
+        print(f"[GOOGLE AUTH URL] Mobile flow configuration:")
+        print(f"[GOOGLE AUTH URL]   - mobile parameter: {mobile}")
+        print(f"[GOOGLE AUTH URL]   - mobile_redirect_uri (query param): {mobile_redirect_uri}")
+        print(f"[GOOGLE AUTH URL]   - final_mobile_redirect_uri: {final_mobile_redirect_uri}")
+        print(f"[GOOGLE AUTH URL]   - web_callback_uri: {web_callback_uri}")
+        print(f"[GOOGLE AUTH URL] State data (before encoding):")
+        print(f"[GOOGLE AUTH URL]   {json.dumps(state_data, indent=2)}")
+        print(f"[GOOGLE AUTH URL] State (encoded, length {len(state)}): {state[:100]}...")
         
         auth_url = google_service.get_google_auth_url(redirect_uri=web_callback_uri, state=state)
     else:
-        # For web: use default redirect URI
-        logger.info(f"[Google OAuth URL] Web request received")
-        logger.info(f"[Google OAuth URL]   - Using default redirect_uri: {settings.google_redirect_uri}")
+        # For web: use default redirect URI without state
+        print(f"[GOOGLE AUTH URL] Web flow configuration:")
+        print(f"[GOOGLE AUTH URL]   - Using default redirect_uri: {settings.google_redirect_uri}")
         
         auth_url = google_service.get_google_auth_url(redirect_uri=settings.google_redirect_uri)
+    
+    print(f"[GOOGLE AUTH URL] Generated auth URL (length {len(auth_url)}):")
+    print(f"[GOOGLE AUTH URL]   {auth_url}")
+    print(f"[GOOGLE AUTH URL] ===== RESPONSE =====")
+    print(f"[GOOGLE AUTH URL] Returning: {{'auth_url': '...'}}")
+    print(f"{'='*80}\n")
     
     return {"auth_url": auth_url}
 
 
 @router.get("/google/callback")
-async def google_auth_callback_get(code: str, db: Session = Depends(get_db)):
-    """Handle Google OAuth callback from browser redirect (GET) - Web frontend"""
+async def google_auth_callback_get(
+    code: str,
+    state: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Handle Google OAuth callback from browser redirect (GET)
+    
+    Supports both web and mobile flows:
+    - Web: No state parameter, redirects to frontend web app
+    - Mobile: State parameter contains mobile flag, redirects to deep link (kineticbrain://oauth)
+    """
     import logging
+    import base64
+    import json
+    from urllib.parse import urlencode, parse_qs
+    from fastapi import Request
     logger = logging.getLogger(__name__)
     
-    logger.info(f"[Google OAuth] Web callback received with code (length: {len(code) if code else 0})")
-    logger.info(f"[Google OAuth] Using redirect_uri: {settings.google_redirect_uri}")
-    logger.info(f"[Google OAuth] Using client_id: {settings.google_client_id[:20]}...")
+    print(f"\n{'='*80}")
+    print(f"[GOOGLE CALLBACK GET] ===== REQUEST RECEIVED =====")
+    print(f"[GOOGLE CALLBACK GET] Endpoint: GET /auth/google/callback")
+    print(f"[GOOGLE CALLBACK GET] Query Parameters:")
+    print(f"[GOOGLE CALLBACK GET]   - code: {code[:50] if code else 'None'}... (length: {len(code) if code else 0})")
+    print(f"[GOOGLE CALLBACK GET]   - state: {state[:100] if state else 'None'}... (length: {len(state) if state else 0})")
+    print(f"[GOOGLE CALLBACK GET] Settings:")
+    print(f"[GOOGLE CALLBACK GET]   - google_redirect_uri: {settings.google_redirect_uri}")
+    print(f"[GOOGLE CALLBACK GET]   - google_client_id: {settings.google_client_id[:30] if settings.google_client_id else 'None'}...")
+    print(f"[GOOGLE CALLBACK GET]   - frontend_callback_uri: {settings.frontend_callback_uri}")
+    print(f"{'='*80}\n")
+    
+    # Decode mobile flag from state if present
+    is_mobile = False
+    mobile_redirect_uri = None
+    if state:
+        print(f"[GOOGLE CALLBACK GET] Decoding state parameter...")
+        try:
+            # Add padding if needed
+            state_padded = state + '=' * (4 - len(state) % 4)
+            print(f"[GOOGLE CALLBACK GET]   - State padded length: {len(state_padded)}")
+            decoded_bytes = base64.urlsafe_b64decode(state_padded)
+            decoded_str = decoded_bytes.decode('utf-8')
+            print(f"[GOOGLE CALLBACK GET]   - Decoded string: {decoded_str}")
+            state_data = json.loads(decoded_str)
+            print(f"[GOOGLE CALLBACK GET]   - State data: {json.dumps(state_data, indent=2)}")
+            is_mobile = state_data.get("mobile", False)
+            mobile_redirect_uri = state_data.get("mobile_redirect_uri")
+            print(f"[GOOGLE CALLBACK GET] ✓ State decoded successfully")
+            print(f"[GOOGLE CALLBACK GET]   - is_mobile: {is_mobile}")
+            print(f"[GOOGLE CALLBACK GET]   - mobile_redirect_uri: {mobile_redirect_uri}")
+        except Exception as e:
+            print(f"[GOOGLE CALLBACK GET] ✗ Failed to decode state: {type(e).__name__}: {e}")
+            import traceback
+            print(f"[GOOGLE CALLBACK GET] Traceback: {traceback.format_exc()}")
+            # Continue with web flow if state decoding fails
+    else:
+        print(f"[GOOGLE CALLBACK GET] No state parameter - using web flow")
     
     google_service = GoogleAuthService(db)
+    
+    print(f"[GOOGLE CALLBACK GET] Calling authenticate_google_user...")
+    print(f"[GOOGLE CALLBACK GET]   - code: {code[:30]}...")
+    print(f"[GOOGLE CALLBACK GET]   - redirect_uri: {settings.google_redirect_uri}")
     
     # Use configured redirect URI (env-configurable) instead of hardcoded localhost
     result = await google_service.authenticate_google_user(
@@ -347,19 +445,36 @@ async def google_auth_callback_get(code: str, db: Session = Depends(get_db)):
     )
     
     if not result:
-        logger.error(f"[Google OAuth] Authentication failed - redirecting to frontend with error")
-        # Redirect to frontend with error
-        return RedirectResponse(
-            url=f"{settings.frontend_callback_uri}?error=authentication_failed",
-            status_code=302
-        )
+        print(f"[GOOGLE CALLBACK GET] ✗ Authentication failed - result is None")
+        print(f"[GOOGLE CALLBACK GET] Preparing error redirect...")
+        if is_mobile:
+            # Redirect to mobile app with error
+            redirect_uri = mobile_redirect_uri or "kineticbrain://oauth"
+            error_params = {"error": "authentication_failed"}
+            redirect_url = f"{redirect_uri}?{urlencode(error_params)}"
+            print(f"[GOOGLE CALLBACK GET] Redirecting to mobile app with error:")
+            print(f"[GOOGLE CALLBACK GET]   - redirect_url: {redirect_url}")
+            return RedirectResponse(url=redirect_url, status_code=302)
+        else:
+            # Redirect to frontend with error
+            error_url = f"{settings.frontend_callback_uri}?error=authentication_failed"
+            print(f"[GOOGLE CALLBACK GET] Redirecting to web app with error:")
+            print(f"[GOOGLE CALLBACK GET]   - error_url: {error_url}")
+            return RedirectResponse(url=error_url, status_code=302)
     
     # Get tokens and user info
     tokens = result["tokens"]
     user = result["user"]
     
-    # Redirect to frontend with tokens as URL parameters
-    from urllib.parse import urlencode
+    print(f"[GOOGLE CALLBACK GET] ✓ Authentication successful!")
+    print(f"[GOOGLE CALLBACK GET] User info:")
+    print(f"[GOOGLE CALLBACK GET]   - user_id: {user.id}")
+    print(f"[GOOGLE CALLBACK GET]   - email: {user.email}")
+    print(f"[GOOGLE CALLBACK GET]   - name: {user.name}")
+    print(f"[GOOGLE CALLBACK GET] Tokens:")
+    print(f"[GOOGLE CALLBACK GET]   - access_token length: {len(tokens['access_token'])}")
+    print(f"[GOOGLE CALLBACK GET]   - refresh_token length: {len(tokens['refresh_token'])}")
+    print(f"[GOOGLE CALLBACK GET]   - token_type: {tokens['token_type']}")
     
     # Encode tokens for URL
     params = {
@@ -368,12 +483,32 @@ async def google_auth_callback_get(code: str, db: Session = Depends(get_db)):
         "token_type": tokens["token_type"],
         "user_id": str(user.id),
         "user_email": user.email,
-        "user_name": user.name
+        "user_name": user.name or ""
     }
     
-    # Redirect to frontend callback page using config
-    frontend_callback_url = f"{settings.frontend_callback_uri}?{urlencode(params)}"
-    return RedirectResponse(url=frontend_callback_url, status_code=302)
+    print(f"[GOOGLE CALLBACK GET] URL parameters (keys only): {list(params.keys())}")
+    
+    if is_mobile:
+        # Mobile flow: redirect to deep link with HTTP 302 redirect
+        redirect_uri = mobile_redirect_uri or "kineticbrain://oauth"
+        params["success"] = "true"
+        redirect_url = f"{redirect_uri}?{urlencode(params)}"
+        print(f"[GOOGLE CALLBACK GET] Mobile flow - redirecting to deep link with HTTP 302:")
+        print(f"[GOOGLE CALLBACK GET]   - redirect_uri: {redirect_uri}")
+        print(f"[GOOGLE CALLBACK GET]   - redirect_url (first 200 chars): {redirect_url[:200]}...")
+        print(f"[GOOGLE CALLBACK GET]   - redirect_url (full length): {len(redirect_url)} chars")
+        print(f"[GOOGLE CALLBACK GET]   - redirect_url (FULL): {redirect_url}")
+        print(f"[GOOGLE CALLBACK GET]   - Using HTTP 302 redirect (RedirectResponse)")
+        print(f"[GOOGLE CALLBACK GET] ===== RESPONSE (302 Redirect to deeplink) =====")
+        return RedirectResponse(url=redirect_url, status_code=302)
+    else:
+        # Web flow: redirect to frontend callback page
+        frontend_callback_url = f"{settings.frontend_callback_uri}?{urlencode(params)}"
+        print(f"[GOOGLE CALLBACK GET] Web flow - redirecting to frontend:")
+        print(f"[GOOGLE CALLBACK GET]   - frontend_callback_uri: {settings.frontend_callback_uri}")
+        print(f"[GOOGLE CALLBACK GET]   - frontend_callback_url (first 200 chars): {frontend_callback_url[:200]}...")
+        print(f"[GOOGLE CALLBACK GET] ===== RESPONSE (302 Redirect) =====")
+        return RedirectResponse(url=frontend_callback_url, status_code=302)
 
 
 @router.get("/google/mobile-callback")
@@ -469,126 +604,54 @@ async def google_auth_mobile_callback_get(
     print(f"[Google OAuth Mobile]   - mobile_redirect_uri: {mobile_redirect_uri}")
     print(f"[Google OAuth Mobile]   - redirect_url (first 150 chars): {redirect_url[:150]}...")
     print(f"[Google OAuth Mobile]   - redirect_url (full length): {len(redirect_url)} chars")
+    print(f"[Google OAuth Mobile]   - redirect_url (FULL): {redirect_url}")
     print(f"[Google OAuth Mobile]   - params keys: {list(params.keys())}")
+    print(f"[Google OAuth Mobile]   - Using HTTP 302 redirect (RedirectResponse)")
     print(f"[Google OAuth Mobile] ===== MOBILE CALLBACK END =====")
     
-    # Return HTML page that opens the deep link using JavaScript
-    # This works better than HTTP redirect for custom URL schemes in WebViews
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Redirecting to App...</title>
-        <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                min-height: 100vh;
-                margin: 0;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-            }}
-            .container {{
-                text-align: center;
-                padding: 2rem;
-            }}
-            .spinner {{
-                border: 4px solid rgba(255, 255, 255, 0.3);
-                border-top: 4px solid white;
-                border-radius: 50%;
-                width: 40px;
-                height: 40px;
-                animation: spin 1s linear infinite;
-                margin: 0 auto 1rem;
-            }}
-            @keyframes spin {{
-                0% {{ transform: rotate(0deg); }}
-                100% {{ transform: rotate(360deg); }}
-            }}
-            h1 {{
-                margin: 0 0 1rem 0;
-                font-size: 1.5rem;
-            }}
-            p {{
-                margin: 0.5rem 0;
-                opacity: 0.9;
-            }}
-            .button {{
-                margin-top: 1.5rem;
-                padding: 0.75rem 1.5rem;
-                background: white;
-                color: #667eea;
-                border: none;
-                border-radius: 8px;
-                font-size: 1rem;
-                font-weight: 600;
-                cursor: pointer;
-                text-decoration: none;
-                display: inline-block;
-            }}
-            .button:hover {{
-                background: #f0f0f0;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="spinner"></div>
-            <h1>Redirecting to App...</h1>
-            <p>Please wait while we open the app.</p>
-            <p>If the app doesn't open automatically, click the button below.</p>
-            <a href="{redirect_url}" class="button">Open App</a>
-        </div>
-        <script>
-            // Try to open the deep link immediately
-            window.location.href = "{redirect_url}";
-            
-            // Fallback: try after a short delay (some browsers need this)
-            setTimeout(function() {{
-                window.location.href = "{redirect_url}";
-            }}, 500);
-            
-            // Fallback: try with window.open (for some WebViews)
-            setTimeout(function() {{
-                window.open("{redirect_url}", "_self");
-            }}, 1000);
-        </script>
-    </body>
-    </html>
-    """
-    
-    return HTMLResponse(content=html_content)
+    # Return HTTP 302 redirect to deep link (instead of HTML with JavaScript)
+    return RedirectResponse(url=redirect_url, status_code=302)
 
 
 @router.post("/google/callback", response_model=Token)
 async def google_auth_callback_post(request: GoogleAuthRequest, db: Session = Depends(get_db)):
     """Handle Google OAuth callback from API calls (POST)"""
     import logging
+    import json
     logger = logging.getLogger(__name__)
     
-    logger.info(f"[Google OAuth POST] Callback received with code (length: {len(request.code) if request.code else 0})")
-    logger.info(f"[Google OAuth POST] Request redirect_uri: {request.redirect_uri}")
-    logger.info(f"[Google OAuth POST] Settings redirect_uri: {settings.google_redirect_uri}")
+    print(f"\n{'='*80}")
+    print(f"[GOOGLE CALLBACK POST] ===== REQUEST RECEIVED =====")
+    print(f"[GOOGLE CALLBACK POST] Endpoint: POST /auth/google/callback")
+    print(f"[GOOGLE CALLBACK POST] Request Body:")
+    print(f"[GOOGLE CALLBACK POST]   - code: {request.code[:50] if request.code else 'None'}... (length: {len(request.code) if request.code else 0})")
+    print(f"[GOOGLE CALLBACK POST]   - redirect_uri: {request.redirect_uri}")
+    print(f"[GOOGLE CALLBACK POST] Settings:")
+    print(f"[GOOGLE CALLBACK POST]   - google_redirect_uri: {settings.google_redirect_uri}")
+    print(f"[GOOGLE CALLBACK POST]   - google_client_id: {settings.google_client_id[:30] if settings.google_client_id else 'None'}...")
+    print(f"{'='*80}\n")
     
     # Warn if redirect_uri doesn't match settings (common cause of 401 errors)
     if request.redirect_uri and request.redirect_uri != settings.google_redirect_uri:
-        logger.warning(f"[Google OAuth POST] WARNING: redirect_uri mismatch!")
-        logger.warning(f"[Google OAuth POST]   Request: {request.redirect_uri}")
-        logger.warning(f"[Google OAuth POST]   Settings: {settings.google_redirect_uri}")
-        logger.warning(f"[Google OAuth POST]   This will likely cause authentication to fail!")
+        print(f"[GOOGLE CALLBACK POST] ⚠️  WARNING: redirect_uri mismatch!")
+        print(f"[GOOGLE CALLBACK POST]   Request redirect_uri: {request.redirect_uri}")
+        print(f"[GOOGLE CALLBACK POST]   Settings redirect_uri: {settings.google_redirect_uri}")
+        print(f"[GOOGLE CALLBACK POST]   Match: {request.redirect_uri == settings.google_redirect_uri}")
+        print(f"[GOOGLE CALLBACK POST]   This will likely cause authentication to fail!")
         
         # Check if it's a custom URL scheme (React Native)
         if request.redirect_uri.startswith(("kineticbrain://", "com.", "io.")):
-            logger.warning(f"[Google OAuth POST]   Detected custom URL scheme - this requires:")
-            logger.warning(f"[Google OAuth POST]   1. Register '{request.redirect_uri}' in Google Cloud Console")
-            logger.warning(f"[Google OAuth POST]   2. OR use /auth/google/verify-id-token endpoint (recommended for React Native)")
+            print(f"[GOOGLE CALLBACK POST]   Detected custom URL scheme - this requires:")
+            print(f"[GOOGLE CALLBACK POST]   1. Register '{request.redirect_uri}' in Google Cloud Console")
+            print(f"[GOOGLE CALLBACK POST]   2. OR use /auth/google/verify-id-token endpoint (recommended for React Native)")
+    else:
+        print(f"[GOOGLE CALLBACK POST] ✓ redirect_uri matches settings")
     
     google_service = GoogleAuthService(db)
+    
+    print(f"[GOOGLE CALLBACK POST] Calling authenticate_google_user...")
+    print(f"[GOOGLE CALLBACK POST]   - code: {request.code[:30]}...")
+    print(f"[GOOGLE CALLBACK POST]   - redirect_uri: {request.redirect_uri}")
     
     try:
         result = await google_service.authenticate_google_user(
@@ -597,14 +660,13 @@ async def google_auth_callback_post(request: GoogleAuthRequest, db: Session = De
         )
         
         if not result:
-            logger.error(f"[Google OAuth POST] Authentication failed - result is None")
-            logger.error(f"[Google OAuth POST] Check server logs for detailed error information")
-            logger.error(f"[Google OAuth POST] Common issues:")
-            logger.error(f"[Google OAuth POST]   - redirect_uri mismatch (must match exactly)")
-            logger.error(f"[Google OAuth POST]   - Code already used or expired")
-            logger.error(f"[Google OAuth POST]   - Invalid client_id or client_secret")
-            logger.error(f"[Google OAuth POST]   - User email not verified")
-            logger.error(f"[Google OAuth POST]   - App doesn't comply with Google OAuth 2.0 policy")
+            print(f"[GOOGLE CALLBACK POST] ✗ Authentication failed - result is None")
+            print(f"[GOOGLE CALLBACK POST] Common issues:")
+            print(f"[GOOGLE CALLBACK POST]   - redirect_uri mismatch (must match exactly)")
+            print(f"[GOOGLE CALLBACK POST]   - Code already used or expired")
+            print(f"[GOOGLE CALLBACK POST]   - Invalid client_id or client_secret")
+            print(f"[GOOGLE CALLBACK POST]   - User email not verified")
+            print(f"[GOOGLE CALLBACK POST]   - App doesn't comply with Google OAuth 2.0 policy")
             
             # Check if it's a custom URL scheme issue
             if request.redirect_uri and request.redirect_uri.startswith(("kineticbrain://", "com.", "io.")):
@@ -621,17 +683,35 @@ async def google_auth_callback_post(request: GoogleAuthRequest, db: Session = De
                     "code already used/expired, invalid credentials, or unverified email."
                 )
             
+            print(f"[GOOGLE CALLBACK POST] Raising HTTPException with detail: {error_detail}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=error_detail
             )
         
-        logger.info(f"[Google OAuth POST] Authentication successful for user: {result.get('user', {}).get('email', 'unknown')}")
+        user = result.get("user")
+        tokens = result.get("tokens")
+        
+        print(f"[GOOGLE CALLBACK POST] ✓ Authentication successful!")
+        print(f"[GOOGLE CALLBACK POST] User info:")
+        print(f"[GOOGLE CALLBACK POST]   - user_id: {user.id if user else 'None'}")
+        print(f"[GOOGLE CALLBACK POST]   - email: {user.email if user else 'None'}")
+        print(f"[GOOGLE CALLBACK POST]   - name: {user.name if user else 'None'}")
+        print(f"[GOOGLE CALLBACK POST] Tokens:")
+        print(f"[GOOGLE CALLBACK POST]   - access_token length: {len(tokens['access_token']) if tokens else 'None'}")
+        print(f"[GOOGLE CALLBACK POST]   - refresh_token length: {len(tokens['refresh_token']) if tokens else 'None'}")
+        print(f"[GOOGLE CALLBACK POST]   - token_type: {tokens.get('token_type') if tokens else 'None'}")
+        print(f"[GOOGLE CALLBACK POST] ===== RESPONSE =====")
+        print(f"[GOOGLE CALLBACK POST] Returning tokens (access_token and refresh_token)")
+        print(f"{'='*80}\n")
+        
         return result["tokens"]
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[Google OAuth POST] Unexpected error: {type(e).__name__}: {e}", exc_info=True)
+        print(f"[GOOGLE CALLBACK POST] ✗ Unexpected error: {type(e).__name__}: {e}")
+        import traceback
+        print(f"[GOOGLE CALLBACK POST] Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error during Google authentication: {str(e)}"
@@ -641,18 +721,38 @@ async def google_auth_callback_post(request: GoogleAuthRequest, db: Session = De
 @router.post("/google/login", response_model=Token)
 async def google_login(request: GoogleAuthRequest, db: Session = Depends(get_db)):
     """Login with Google OAuth (same as callback but with different endpoint name)"""
+    print(f"\n{'='*80}")
+    print(f"[GOOGLE LOGIN] ===== REQUEST RECEIVED =====")
+    print(f"[GOOGLE LOGIN] Endpoint: POST /auth/google/login")
+    print(f"[GOOGLE LOGIN] Request Body:")
+    print(f"[GOOGLE LOGIN]   - code: {request.code[:50] if request.code else 'None'}... (length: {len(request.code) if request.code else 0})")
+    print(f"[GOOGLE LOGIN]   - redirect_uri: {request.redirect_uri}")
+    print(f"{'='*80}\n")
+    
     google_service = GoogleAuthService(db)
     
+    print(f"[GOOGLE LOGIN] Calling authenticate_google_user...")
     result = await google_service.authenticate_google_user(
         code=request.code,
         redirect_uri=request.redirect_uri
     )
     
     if not result:
+        print(f"[GOOGLE LOGIN] ✗ Authentication failed - result is None")
+        print(f"[GOOGLE LOGIN] ===== RESPONSE (401) =====")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Google authentication failed"
         )
+    
+    user = result.get("user")
+    tokens = result.get("tokens")
+    
+    print(f"[GOOGLE LOGIN] ✓ Authentication successful!")
+    print(f"[GOOGLE LOGIN] User: {user.email if user else 'None'} (id: {user.id if user else 'None'})")
+    print(f"[GOOGLE LOGIN] Tokens generated (access_token length: {len(tokens['access_token']) if tokens else 'None'})")
+    print(f"[GOOGLE LOGIN] ===== RESPONSE =====")
+    print(f"{'='*80}\n")
     
     return result["tokens"]
 
@@ -672,16 +772,25 @@ async def verify_google_id_token(request: GoogleIdTokenRequest, db: Session = De
     import logging
     logger = logging.getLogger(__name__)
     
-    print(f"[Google ID Token API] ===== REQUEST RECEIVED =====")
-    print(f"[Google ID Token API] Token length: {len(request.id_token) if request.id_token else 0}")
+    print(f"\n{'='*80}")
+    print(f"[GOOGLE VERIFY ID TOKEN] ===== REQUEST RECEIVED =====")
+    print(f"[GOOGLE VERIFY ID TOKEN] Endpoint: POST /auth/google/verify-id-token")
+    print(f"[GOOGLE VERIFY ID TOKEN] Request Body:")
+    print(f"[GOOGLE VERIFY ID TOKEN]   - id_token: {request.id_token[:100] if request.id_token else 'None'}... (length: {len(request.id_token) if request.id_token else 0})")
+    print(f"[GOOGLE VERIFY ID TOKEN] Settings:")
+    print(f"[GOOGLE VERIFY ID TOKEN]   - google_client_id: {settings.google_client_id[:30] if settings.google_client_id else 'None'}...")
+    print(f"[GOOGLE VERIFY ID TOKEN]   - google_additional_client_ids: {settings.google_additional_client_ids if hasattr(settings, 'google_additional_client_ids') else 'Not configured'}")
+    print(f"{'='*80}\n")
     
     google_service = GoogleAuthService(db)
     
+    print(f"[GOOGLE VERIFY ID TOKEN] Calling verify_google_id_token...")
     try:
         result = await google_service.verify_google_id_token(request.id_token)
         
         if not result:
-            print(f"[Google ID Token API] ✗ Verification failed - invalid or expired token")
+            print(f"[GOOGLE VERIFY ID TOKEN] ✗ Verification failed - invalid or expired token")
+            print(f"[GOOGLE VERIFY ID TOKEN] ===== RESPONSE (401) =====")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=(
@@ -694,19 +803,31 @@ async def verify_google_id_token(request: GoogleIdTokenRequest, db: Session = De
             )
         
         user = result.get("user")
+        tokens = result.get("tokens")
         user_email = user.email if user else "unknown"
         user_id = user.id if user else "unknown"
         
-        print(f"[Google ID Token API] ✓ Verification successful for user: {user_email} (id: {user_id})")
-        print(f"[Google ID Token API] ===== REQUEST SUCCESS =====")
+        print(f"[GOOGLE VERIFY ID TOKEN] ✓ Verification successful!")
+        print(f"[GOOGLE VERIFY ID TOKEN] User info:")
+        print(f"[GOOGLE VERIFY ID TOKEN]   - user_id: {user_id}")
+        print(f"[GOOGLE VERIFY ID TOKEN]   - email: {user_email}")
+        print(f"[GOOGLE VERIFY ID TOKEN]   - name: {user.name if user else 'None'}")
+        print(f"[GOOGLE VERIFY ID TOKEN] Tokens:")
+        print(f"[GOOGLE VERIFY ID TOKEN]   - access_token length: {len(tokens['access_token']) if tokens else 'None'}")
+        print(f"[GOOGLE VERIFY ID TOKEN]   - refresh_token length: {len(tokens['refresh_token']) if tokens else 'None'}")
+        print(f"[GOOGLE VERIFY ID TOKEN]   - token_type: {tokens.get('token_type') if tokens else 'None'}")
+        print(f"[GOOGLE VERIFY ID TOKEN] ===== RESPONSE =====")
+        print(f"[GOOGLE VERIFY ID TOKEN] Returning tokens")
+        print(f"{'='*80}\n")
         
         return result["tokens"]
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[Google ID Token API] ✗ Unexpected error: {type(e).__name__}: {e}")
+        print(f"[GOOGLE VERIFY ID TOKEN] ✗ Unexpected error: {type(e).__name__}: {e}")
         import traceback
-        print(f"[Google ID Token API] Traceback: {traceback.format_exc()}")
+        print(f"[GOOGLE VERIFY ID TOKEN] Traceback: {traceback.format_exc()}")
+        print(f"[GOOGLE VERIFY ID TOKEN] ===== RESPONSE (500) =====")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error during Google ID token verification: {str(e)}"

@@ -21,11 +21,16 @@ async def get_available_equipment(
     Returns:
         Lista di attrezzi (equipmentType enum values)
     """
+    print(f"[EXERCISES] ===== GET AVAILABLE EQUIPMENT START =====")
     try:
         exercise_service = ExerciseService(db)
+        print(f"[EXERCISES] ExerciseService initialized")
         equipment = exercise_service.get_available_equipment()
+        print(f"[EXERCISES] Found {len(equipment)} equipment types: {equipment}")
+        print(f"[EXERCISES] ===== GET AVAILABLE EQUIPMENT SUCCESS =====")
         return equipment
     except Exception as e:
+        print(f"[EXERCISES] ✗ Error getting available equipment: {type(e).__name__}: {e}")
         logger.error(f"Error getting available equipment: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -53,10 +58,18 @@ async def get_exercises(
     Returns:
         Lista di esercizi
     """
+    print(f"[EXERCISES] ===== GET EXERCISES START =====")
+    print(f"[EXERCISES] Query parameters:")
+    print(f"[EXERCISES]   - category: {category}")
+    print(f"[EXERCISES]   - level: {level}")
+    print(f"[EXERCISES]   - equipment: {equipment}")
+    print(f"[EXERCISES]   - limit: {limit}")
     try:
         exercise_service = ExerciseService(db)
+        print(f"[EXERCISES] ExerciseService initialized")
         
         available_equipment = [equipment] if equipment else None
+        print(f"[EXERCISES] Available equipment filter: {available_equipment}")
         
         exercises = exercise_service.get_exercises_by_criteria(
             category=category,
@@ -64,6 +77,7 @@ async def get_exercises(
             available_equipment=available_equipment,
             limit=limit
         )
+        print(f"[EXERCISES] Found {len(exercises)} exercises matching criteria")
         
         # Converti in dict per serializzazione
         result = []
@@ -79,8 +93,11 @@ async def get_exercises(
                 "instructions": exercise.instructions or []
             })
         
+        print(f"[EXERCISES] Returning {len(result)} exercises")
+        print(f"[EXERCISES] ===== GET EXERCISES SUCCESS =====")
         return result
     except Exception as e:
+        print(f"[EXERCISES] ✗ Error querying exercises: {type(e).__name__}: {e}")
         logger.error(f"Error querying exercises: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
