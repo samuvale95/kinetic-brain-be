@@ -287,6 +287,7 @@ class HealthKitService:
         Format workout for Apple Watch.
         
         Converts workout structure and zones to WatchOS format.
+        Returns structure compatible with Apple Watch HKWorkoutPlan.
         """
         # Get user's performance metrics for zones
         from app.models.user import PerformanceMetrics
@@ -300,84 +301,434 @@ class HealthKitService:
         structure = workout.structure_json or {}
         sport = structure.get("sport", workout.type)
         
+        # Normalize workout type for Watch
+        normalized_type = self._normalize_workout_type_for_watch(workout.type)
+        normalized_sport = self._normalize_sport_type_for_watch(sport)
+        
         # Format structure for Watch
-        watch_structure = self._format_structure_for_watch(structure, perf_metrics)
+        watch_structure = self._format_structure_for_watch(structure, perf_metrics, normalized_sport)
         
         # Format zones
-        zones = self._format_zones_for_watch(perf_metrics, sport)
+        zones = self._format_zones_for_watch(perf_metrics, normalized_sport)
         
         return {
             "workout_id": workout.id,
             "title": workout.title,
-            "type": workout.type,
-            "sport": sport,
+            "type": normalized_type,
+            "sport": normalized_sport,
             "duration_minutes": workout.duration_minutes,
             "structure": watch_structure,
             "zones": zones
         }
     
-    def _format_structure_for_watch(self, structure: dict, perf_metrics) -> dict:
-        """Format workout structure for WatchOS"""
+    def _format_structure_for_watch(self, structure: dict, perf_metrics, sport: str) -> dict:
+        """
+        Format workout structure for WatchOS.
+        
+        Returns structure with warmup (WorkoutPhase), main (Array<WorkoutInterval>), 
+        and cooldown (WorkoutPhase).
+        """
         segments = structure.get("segments", [])
-        watch_structure = {}
+        watch_structure = {
+            "warmup": None,
+            "main": [],
+            "cooldown": None
+        }
         
         for segment in segments:
             segment_type = segment.get("segment_type", "").lower()
-            steps = segment.get("steps", [])
             
             if segment_type == "warmup":
-                watch_structure["warmup"] = self._format_segment_for_watch(segment, perf_metrics)
+                watch_structure["warmup"] = self._format_phase_for_watch(segment, perf_metrics, sport)
             elif segment_type == "cooldown":
-                watch_structure["cooldown"] = self._format_segment_for_watch(segment, perf_metrics)
+                watch_structure["cooldown"] = self._format_phase_for_watch(segment, perf_metrics, sport)
             elif segment_type == "main":
                 # Main segment can have multiple intervals
-                if "main" not in watch_structure:
-                    watch_structure["main"] = []
-                watch_structure["main"].append(self._format_segment_for_watch(segment, perf_metrics))
+                intervals = self._format_intervals_for_watch(segment, perf_metrics, sport)
+                watch_structure["main"].extend(intervals)
+        
+        # Ensure warmup and cooldown exist (create defaults if missing)
+        if not watch_structure["warmup"]:
+            watch_structure["warmup"] = self._create_default_phase("Riscaldamento", sport)
+        if not watch_structure["cooldown"]:
+            watch_structure["cooldown"] = self._create_default_phase("Defaticamento", sport)
+        
+        # If no main intervals, create a default steady interval from total duration
+        if not watch_structure["main"]:
+            # Calculate remaining time after warmup and cooldown
+            warmup_duration = watch_structure["warmup"].get("duration_seconds", 600)
+            cooldown_duration = watch_structure["cooldown"].get("duration_seconds", 600)
+            # Default main duration (will be adjusted if we have total duration)
+            main_duration = max(1800, 3600 - warmup_duration - cooldown_duration)  # At least 30 min or remaining time
+            watch_structure["main"] = [{
+                "type": "steady",
+                "duration_seconds": int(main_duration),
+                "description": "Fase principale",
+                "target_zone": "Z2"
+            }]
         
         return watch_structure
     
-    def _format_segment_for_watch(self, segment: dict, perf_metrics) -> dict:
-        """Format a single segment for WatchOS"""
+    def _format_phase_for_watch(self, segment: dict, perf_metrics, sport: str) -> dict:
+        """
+        Format a phase (warmup/cooldown) for WatchOS.
+        
+        Returns WorkoutPhase with duration_seconds, description, target_zone,
+        and optional target_hr_min/max, target_pace_min/max, target_power_min/max.
+        """
         steps = segment.get("steps", [])
         
-        # Calculate total duration
-        total_duration = sum(
-            step.get("duration", {}).get("value", 0) 
-            for step in steps 
-            if isinstance(step.get("duration"), dict)
-        )
-        
-        # Extract target zone and HR from first step
+        # Calculate total duration from all steps
+        total_duration = 0
+        target_values = {}
         target_zone = None
-        target_hr_min = None
-        target_hr_max = None
+        description = segment.get("name", "")
         
-        if steps:
-            first_step = steps[0]
-            target = first_step.get("target", {})
+        # Aggregate duration and extract target from steps
+        for step in steps:
+            duration = step.get("duration", {})
+            if isinstance(duration, dict) and duration.get("type") == "time":
+                total_duration += duration.get("seconds", 0)
+            
+            # Extract target from step
+            target = step.get("target", {})
             if isinstance(target, dict):
-                if target.get("type") == "zone":
-                    target_zone = target.get("zone")
-                    # Get HR range for zone
-                    if perf_metrics and perf_metrics.hr_zones:
-                        hr_zones = perf_metrics.hr_zones
-                        if isinstance(hr_zones, dict) and target_zone:
-                            zone_range = hr_zones.get(target_zone.lower(), "")
-                            if zone_range:
-                                # Parse range like "120-135"
-                                parts = zone_range.split("-")
-                                if len(parts) == 2:
-                                    target_hr_min = float(parts[0])
-                                    target_hr_max = float(parts[1])
+                step_target = self._extract_target_values(target, perf_metrics, sport)
+                if step_target:
+                    # Merge target values (prefer first non-None value)
+                    if not target_zone and step_target.get("target_zone"):
+                        target_zone = step_target["target_zone"]
+                    for key in ["target_hr_min", "target_hr_max", "target_pace_min", 
+                               "target_pace_max", "target_power_min", "target_power_max"]:
+                        if key not in target_values and step_target.get(key) is not None:
+                            target_values[key] = step_target[key]
         
-        return {
+        # Build phase response
+        phase = {
             "duration_seconds": total_duration,
-            "description": segment.get("name", ""),
-            "target_zone": target_zone,
-            "target_hr_min": target_hr_min,
-            "target_hr_max": target_hr_max
+            "description": description or "Fase allenamento"
         }
+        
+        if target_zone:
+            phase["target_zone"] = target_zone
+        
+        # Add target values (only if both min and max are present)
+        if target_values.get("target_hr_min") is not None and target_values.get("target_hr_max") is not None:
+            phase["target_hr_min"] = int(target_values["target_hr_min"])
+            phase["target_hr_max"] = int(target_values["target_hr_max"])
+        
+        if target_values.get("target_pace_min") is not None and target_values.get("target_pace_max") is not None:
+            phase["target_pace_min"] = int(target_values["target_pace_min"])
+            phase["target_pace_max"] = int(target_values["target_pace_max"])
+        
+        if target_values.get("target_power_min") is not None and target_values.get("target_power_max") is not None:
+            phase["target_power_min"] = int(target_values["target_power_min"])
+            phase["target_power_max"] = int(target_values["target_power_max"])
+        
+        return phase
+    
+    def _format_intervals_for_watch(self, segment: dict, perf_metrics, sport: str) -> list:
+        """
+        Format main segment intervals for WatchOS.
+        
+        Returns array of WorkoutInterval (interval or steady type).
+        """
+        steps = segment.get("steps", [])
+        intervals = []
+        
+        for step in steps:
+            step_type = step.get("step_type", "").lower()
+            
+            if step_type == "repeat":
+                # Convert repeat block to interval with reps
+                interval = self._format_repeat_as_interval(step, perf_metrics, sport)
+                if interval:
+                    intervals.append(interval)
+            elif step_type in ["interval", "steady", "tempo", "recovery"]:
+                # Convert single step to interval
+                interval = self._format_step_as_interval(step, step_type, perf_metrics, sport)
+                if interval:
+                    intervals.append(interval)
+        
+        return intervals
+    
+    def _format_repeat_as_interval(self, repeat_step: dict, perf_metrics, sport: str) -> Optional[dict]:
+        """
+        Convert a repeat step to an interval with reps.
+        
+        Returns interval with type="interval", reps, work_seconds, recovery_seconds.
+        """
+        nested_steps = repeat_step.get("steps", [])
+        reps = repeat_step.get("repeat", 1)
+        
+        if not nested_steps or reps < 1:
+            return None
+        
+        # Find work and recovery steps
+        work_step = None
+        recovery_step = None
+        
+        for step in nested_steps:
+            step_type = step.get("step_type", "").lower()
+            if step_type in ["interval", "tempo"]:
+                work_step = step
+            elif step_type in ["recovery", "rest"]:
+                recovery_step = step
+        
+        # If no explicit work/recovery, use first two steps
+        if not work_step and nested_steps:
+            work_step = nested_steps[0]
+        if not recovery_step and len(nested_steps) > 1:
+            recovery_step = nested_steps[1]
+        
+        if not work_step:
+            return None
+        
+        # Extract work duration
+        work_duration = work_step.get("duration", {})
+        work_seconds = 0
+        if isinstance(work_duration, dict) and work_duration.get("type") == "time":
+            work_seconds = work_duration.get("seconds", 0)
+        
+        # Extract recovery duration
+        recovery_seconds = 0
+        if recovery_step:
+            recovery_duration = recovery_step.get("duration", {})
+            if isinstance(recovery_duration, dict) and recovery_duration.get("type") == "time":
+                recovery_seconds = recovery_duration.get("seconds", 0)
+        
+        # Extract target values from work step
+        target = work_step.get("target", {})
+        target_values = self._extract_target_values(target, perf_metrics, sport) if isinstance(target, dict) else {}
+        
+        # Build interval
+        interval = {
+            "type": "interval",
+            "reps": int(reps),
+            "work_seconds": int(work_seconds),
+            "recovery_seconds": int(recovery_seconds)
+        }
+        
+        # Add description
+        description = work_step.get("notes") or work_step.get("name") or "Intervalli"
+        if description:
+            interval["description"] = description
+        
+        # Add target values
+        if target_values.get("target_zone"):
+            interval["target_zone"] = target_values["target_zone"]
+        
+        if target_values.get("target_hr_min") is not None and target_values.get("target_hr_max") is not None:
+            interval["target_hr_min"] = int(target_values["target_hr_min"])
+            interval["target_hr_max"] = int(target_values["target_hr_max"])
+        
+        if target_values.get("target_pace_min") is not None and target_values.get("target_pace_max") is not None:
+            interval["target_pace_min"] = int(target_values["target_pace_min"])
+            interval["target_pace_max"] = int(target_values["target_pace_max"])
+        
+        if target_values.get("target_power_min") is not None and target_values.get("target_power_max") is not None:
+            interval["target_power_min"] = int(target_values["target_power_min"])
+            interval["target_power_max"] = int(target_values["target_power_max"])
+        
+        return interval
+    
+    def _format_step_as_interval(self, step: dict, step_type: str, perf_metrics, sport: str) -> Optional[dict]:
+        """
+        Convert a single step to an interval (steady type).
+        
+        Returns interval with type="steady" or type matching step_type, duration_seconds.
+        """
+        duration = step.get("duration", {})
+        duration_seconds = 0
+        
+        if isinstance(duration, dict):
+            if duration.get("type") == "time":
+                duration_seconds = duration.get("seconds", 0)
+            elif duration.get("type") == "distance":
+                # Convert distance to approximate time (simplified)
+                meters = duration.get("meters", 0)
+                # Rough estimate: 4 min/km = 240 sec/km
+                duration_seconds = int(meters * 240 / 1000)
+        
+        if duration_seconds == 0:
+            return None
+        
+        # Extract target values
+        target = step.get("target", {})
+        target_values = self._extract_target_values(target, perf_metrics, sport) if isinstance(target, dict) else {}
+        
+        # Determine interval type
+        interval_type = "steady"
+        if step_type in ["interval", "tempo", "recovery"]:
+            interval_type = step_type
+        
+        # Build interval
+        interval = {
+            "type": interval_type,
+            "duration_seconds": int(duration_seconds)
+        }
+        
+        # Add description
+        description = step.get("notes") or step.get("name") or "Fase allenamento"
+        if description:
+            interval["description"] = description
+        
+        # Add target values
+        if target_values.get("target_zone"):
+            interval["target_zone"] = target_values["target_zone"]
+        
+        if target_values.get("target_hr_min") is not None and target_values.get("target_hr_max") is not None:
+            interval["target_hr_min"] = int(target_values["target_hr_min"])
+            interval["target_hr_max"] = int(target_values["target_hr_max"])
+        
+        if target_values.get("target_pace_min") is not None and target_values.get("target_pace_max") is not None:
+            interval["target_pace_min"] = int(target_values["target_pace_min"])
+            interval["target_pace_max"] = int(target_values["target_pace_max"])
+        
+        if target_values.get("target_power_min") is not None and target_values.get("target_power_max") is not None:
+            interval["target_power_min"] = int(target_values["target_power_min"])
+            interval["target_power_max"] = int(target_values["target_power_max"])
+        
+        return interval
+    
+    def _extract_target_values(self, target: dict, perf_metrics, sport: str) -> dict:
+        """
+        Extract target values (zone, HR, pace, power) from target dict.
+        
+        Returns dict with target_zone, target_hr_min/max, target_pace_min/max, target_power_min/max.
+        """
+        result = {}
+        target_type = target.get("type", "")
+        
+        if target_type == "zone":
+            zone = target.get("zone")
+            if zone:
+                result["target_zone"] = zone
+                # Get HR, pace, power ranges from zones
+                if perf_metrics:
+                    # HR zones
+                    if perf_metrics.hr_zones:
+                        hr_range = self._get_zone_range(perf_metrics.hr_zones, zone)
+                        if hr_range:
+                            result["target_hr_min"] = hr_range["min"]
+                            result["target_hr_max"] = hr_range["max"]
+                    
+                    # Pace zones (for running)
+                    if sport.lower() in ["run", "running"] and perf_metrics.pace_zones:
+                        pace_range = self._get_zone_range(perf_metrics.pace_zones, zone)
+                        if pace_range:
+                            result["target_pace_min"] = pace_range["min"]
+                            result["target_pace_max"] = pace_range["max"]
+                    
+                    # Power zones (for cycling)
+                    if sport.lower() in ["bike", "cycling"] and perf_metrics.power_zones:
+                        power_range = self._get_zone_range(perf_metrics.power_zones, zone)
+                        if power_range:
+                            result["target_power_min"] = power_range["min"]
+                            result["target_power_max"] = power_range["max"]
+        
+        elif target_type == "heart_rate":
+            min_val = target.get("min_value")
+            max_val = target.get("max_value")
+            if min_val is not None:
+                result["target_hr_min"] = float(min_val)
+            if max_val is not None:
+                result["target_hr_max"] = float(max_val)
+        
+        elif target_type == "pace":
+            min_val = target.get("min_value")
+            max_val = target.get("max_value")
+            # Convert pace to seconds per km if needed
+            if min_val is not None:
+                result["target_pace_min"] = self._convert_pace_to_seconds_per_km(min_val, target.get("units"))
+            if max_val is not None:
+                result["target_pace_max"] = self._convert_pace_to_seconds_per_km(max_val, target.get("units"))
+        
+        elif target_type == "power":
+            min_val = target.get("min_value")
+            max_val = target.get("max_value")
+            if min_val is not None:
+                result["target_power_min"] = float(min_val)
+            if max_val is not None:
+                result["target_power_max"] = float(max_val)
+        
+        return result
+    
+    def _get_zone_range(self, zones_dict: dict, zone: str) -> Optional[dict]:
+        """Get min/max range for a zone from zones dict"""
+        if not zones_dict or not zone:
+            return None
+        
+        zone_key = zone.lower()
+        range_str = zones_dict.get(zone_key)
+        
+        if isinstance(range_str, str):
+            # Parse "120-135" format
+            parts = range_str.split("-")
+            if len(parts) == 2:
+                try:
+                    return {
+                        "min": int(float(parts[0].strip())),
+                        "max": int(float(parts[1].strip()))
+                    }
+                except ValueError:
+                    pass
+        
+        return None
+    
+    def _convert_pace_to_seconds_per_km(self, pace_value: float, units: Optional[str] = None) -> int:
+        """
+        Convert pace value to seconds per km.
+        
+        Supports: min/km (e.g., 5.0 = 5:00/km = 300 sec/km),
+                 sec/km (already in correct format),
+                 min/mile (converted to sec/km).
+        """
+        if units == "sec/km" or units == "seconds_per_km":
+            return int(pace_value)
+        elif units == "min/mile" or units == "minutes_per_mile":
+            # Convert min/mile to sec/km: 1 mile = 1.609344 km
+            return int(pace_value * 60 * 1.609344)
+        else:
+            # Default: assume min/km
+            return int(pace_value * 60)
+    
+    def _create_default_phase(self, description: str, sport: str) -> dict:
+        """Create a default phase (warmup/cooldown) with minimal structure"""
+        return {
+            "duration_seconds": 600,  # 10 minutes default
+            "description": description,
+            "target_zone": "Z1"
+        }
+    
+    def _normalize_workout_type_for_watch(self, workout_type: str) -> str:
+        """
+        Normalize workout type for Apple Watch.
+        
+        Returns: "running", "cycling", "swimming", "walking", "hiking"
+        """
+        type_lower = workout_type.lower()
+        
+        # Map to Watch-compatible types
+        type_mapping = {
+            "run": "running",
+            "running": "running",
+            "bike": "cycling",
+            "cycling": "cycling",
+            "bici": "cycling",
+            "swim": "swimming",
+            "swimming": "swimming",
+            "walk": "walking",
+            "walking": "walking",
+            "hike": "hiking",
+            "hiking": "hiking"
+        }
+        
+        return type_mapping.get(type_lower, "running")  # Default to running
+    
+    def _normalize_sport_type_for_watch(self, sport: str) -> str:
+        """Normalize sport type for Watch (same as workout type)"""
+        return self._normalize_workout_type_for_watch(sport)
     
     def _format_zones_for_watch(self, perf_metrics, sport: str) -> dict:
         """Format training zones for WatchOS"""
@@ -407,10 +758,13 @@ class HealthKitService:
             if isinstance(range_str, str):
                 parts = range_str.split("-")
                 if len(parts) == 2:
-                    parsed[zone] = {
-                        "min": float(parts[0]),
-                        "max": float(parts[1])
-                    }
+                    try:
+                        parsed[zone] = {
+                            "min": int(float(parts[0].strip())),
+                            "max": int(float(parts[1].strip()))
+                        }
+                    except ValueError:
+                        pass
         return parsed
     
     def _convert_healthkit_type_to_app_type(self, hk_type: str) -> str:
