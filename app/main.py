@@ -144,7 +144,7 @@ async def health_check():
 
 if not minimal_startup:
     # Include API routers
-    from app.api import auth, profile, workouts, calendar, ai, dashboard, strava, weather, statistics, metrics, plan_versions, exercises
+    from app.api import auth, profile, workouts, calendar, ai, dashboard, strava, weather, statistics, metrics, plan_versions, exercises, healthkit
     app.include_router(auth.router)
     app.include_router(profile.router)
     app.include_router(workouts.router)
@@ -152,6 +152,7 @@ if not minimal_startup:
     app.include_router(ai.router)
     app.include_router(dashboard.router)
     app.include_router(strava.router)
+    app.include_router(healthkit.router)
     app.include_router(weather.router)
     app.include_router(statistics.router)
     app.include_router(metrics.router)

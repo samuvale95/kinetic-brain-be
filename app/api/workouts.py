@@ -11,6 +11,11 @@ from app.schemas.workout import (
     WorkoutSessionCreate, WorkoutSessionResponse,
     AIWorkoutPlanRequest
 )
+from app.schemas.healthkit import (
+    WatchWorkoutFormatResponse,
+    WatchSessionCreateRequest,
+    WatchSessionCreateResponse
+)
 from app.models.workout import Workout, WorkoutSession, WorkoutPlan
 from app.schemas.ai import (
     ProgressiveWorkoutPlanRequest, WeeklyPlanRequest, WeeklyPlanResponse,
@@ -19,6 +24,7 @@ from app.schemas.ai import (
 from app.services.workout_service import WorkoutService
 from app.services.ai_service import AIService
 from app.services.progressive_workout_service import ProgressiveWorkoutPlanService
+from app.services.healthkit_service import HealthKitService
 from app.api.auth import get_current_user
 from loguru import logger
 import json
@@ -1004,3 +1010,138 @@ async def complete_workout(workout_id: int,
         "completed": True,
         "completed_at": workout.updated_at.isoformat() if workout.updated_at else None
     }
+
+
+@router.get("/{workout_id}/watch-format", response_model=WatchWorkoutFormatResponse)
+async def get_workout_watch_format(
+    workout_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get workout formatted for Apple Watch.
+    
+    Returns workout structure and zones in WatchOS-compatible format.
+    """
+    from app.models.user import UserProfile
+    
+    # Get workout
+    workout = db.execute(
+        select(Workout)
+        .where(
+            and_(
+                Workout.id == workout_id,
+                Workout.user_id == current_user["user_id"]
+            )
+        )
+    ).scalar_one_or_none()
+    
+    if not workout:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workout not found"
+        )
+    
+    # Get user profile
+    profile = db.execute(
+        select(UserProfile)
+        .where(UserProfile.user_id == current_user["user_id"])
+    ).scalar_one_or_none()
+    
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User profile not found"
+        )
+    
+    # Format workout for watch
+    service = HealthKitService(db)
+    watch_format = service.format_workout_for_watch(workout, profile)
+    
+    return WatchWorkoutFormatResponse(**watch_format)
+
+
+@router.post("/sessions/from-watch", response_model=WatchSessionCreateResponse)
+async def create_session_from_watch(
+    request: WatchSessionCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create WorkoutSession from Apple Watch.
+    
+    Creates a workout session with data recorded on Apple Watch.
+    Links to HealthKit workout if healthkit_uuid is provided.
+    """
+    from app.models.healthkit import HealthKitWorkout
+    
+    service = HealthKitService(db)
+    
+    # Verify workout exists and belongs to user
+    workout = db.execute(
+        select(Workout)
+        .where(
+            and_(
+                Workout.id == request.workout_id,
+                Workout.user_id == current_user["user_id"]
+            )
+        )
+    ).scalar_one_or_none()
+    
+    if not workout:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workout not found"
+        )
+    
+    # Find HealthKit workout if UUID provided
+    healthkit_workout = None
+    if request.healthkit_uuid:
+        healthkit_workout = db.execute(
+            select(HealthKitWorkout)
+            .where(
+                and_(
+                    HealthKitWorkout.hk_workout_uuid == request.healthkit_uuid,
+                    HealthKitWorkout.user_id == current_user["user_id"]
+                )
+            )
+        ).scalar_one_or_none()
+    
+    # Create session
+    duration_minutes = request.duration_seconds // 60
+    
+    session = WorkoutSession(
+        workout_id=request.workout_id,
+        user_id=current_user["user_id"],
+        actual_date=request.start_time,
+        duration_minutes=duration_minutes,
+        source="apple_watch",
+        healthkit_workout_id=healthkit_workout.id if healthkit_workout else None,
+        healthkit_uuid=request.healthkit_uuid,
+        avg_hr=request.metrics.get("avg_heart_rate"),
+        max_hr=request.metrics.get("max_heart_rate"),
+        avg_pace=service._convert_pace_to_min_per_km(request.metrics.get("avg_pace_seconds_per_km")),
+        avg_power=request.metrics.get("avg_power"),
+        intervals_data=request.intervals
+    )
+    
+    db.add(session)
+    
+    # Calculate metrics
+    try:
+        service._calculate_and_store_metrics_for_session(session)
+    except Exception as e:
+        logger.warning(f"[HEALTHKIT] Failed to calculate metrics for watch session: {e}")
+    
+    # Update workout status
+    workout.status = "completed"
+    
+    db.commit()
+    db.refresh(session)
+    
+    return WatchSessionCreateResponse(
+        success=True,
+        session_id=session.id,
+        matched=True,
+        workout_matched_id=request.workout_id
+    )

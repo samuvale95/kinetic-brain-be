@@ -30,6 +30,7 @@ class User(Base):
     daily_readiness_metrics = relationship("DailyReadinessMetrics", back_populates="user")
     weekly_training_summaries = relationship("WeeklyTrainingSummary", back_populates="user")
     plan_versions = relationship("PlanVersion", back_populates="user")
+    healthkit_workouts = relationship("HealthKitWorkout", back_populates="user")
     # strava_account = relationship("StravaAccount", back_populates="user", uselist=False)  # Temporarily disabled
 
 
@@ -51,6 +52,14 @@ class UserProfile(Base):
     latitude = Column(Float)  # Latitude for weather
     longitude = Column(Float)  # Longitude for weather
     preferred_zone_type = Column(String(10), default="hr")  # hr, pace, power
+    
+    # HealthKit fields
+    healthkit_enabled = Column(Boolean, default=False, nullable=False)
+    healthkit_last_sync = Column(DateTime(timezone=True), nullable=True)
+    healthkit_permissions = Column(JSON, nullable=True)
+    healthkit_workout_anchor = Column(String(255), nullable=True)
+    healthkit_health_anchor = Column(String(255), nullable=True)
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     

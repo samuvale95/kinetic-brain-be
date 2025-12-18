@@ -62,6 +62,14 @@ class DailyReadinessMetrics(Base):
     weight_delta_kg = Column(Float)
 
     notes = Column(Text)
+    
+    # Source tracking
+    source = Column(String(20), default='manual', nullable=False, index=True)
+    # Values: 'manual', 'healthkit'
+    
+    # HealthKit sync fields
+    healthkit_sync_date = Column(DateTime(timezone=True), nullable=True)
+    healthkit_sync_anchor = Column(String(255), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
