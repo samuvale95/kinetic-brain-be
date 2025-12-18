@@ -21,6 +21,7 @@ from app.models.training_metrics import TrainingMetrics
 from app.models.user import User, UserProfile, PerformanceMetrics
 from app.models.workout import Workout, WorkoutStatus
 from app.services.metrics_calculation_service import MetricsCalculationService
+from app.services.workout_parameters import normalize_sport_type
 
 
 class StravaService:
@@ -1312,9 +1313,25 @@ class StravaService:
             "matches": matches
         }
     
+    def _are_sport_types_compatible(self, activity_type: str, workout_type: str) -> bool:
+        """Check if activity and workout types are compatible using normalized sport types.
+        
+        Returns True only if the normalized sport types match exactly.
+        This ensures that activities are only matched with workouts of the same sport type.
+        """
+        # Normalize both types
+        normalized_activity_type = normalize_sport_type(activity_type)
+        normalized_workout_type = normalize_sport_type(workout_type)
+        
+        # Types must match exactly after normalization
+        return normalized_activity_type == normalized_workout_type
+    
     def _find_best_workout_match(self, activity: StravaActivity, 
                                workouts: List[Workout]) -> Optional[Workout]:
-        """Find the best matching workout for a Strava activity"""
+        """Find the best matching workout for a Strava activity.
+        
+        Only matches activities with workouts of the same sport type (after normalization).
+        """
         activity_date = activity.start_date_local.date()
         activity_type = activity.type.lower()
         
@@ -1324,6 +1341,11 @@ class StravaService:
         
         for workout in workouts:
             if not workout.scheduled_date:
+                continue
+            
+            # CRITICAL: Check sport type compatibility FIRST
+            # Skip workout if types don't match (even if date matches)
+            if not self._are_sport_types_compatible(activity_type, workout.type):
                 continue
             
             score = 0
@@ -1338,11 +1360,11 @@ class StravaService:
             else:
                 continue  # Skip if too far apart
             
-            # Type match
+            # Type match (additional points for exact match)
             workout_type = workout.type.lower()
-            if activity_type in workout_type or workout_type in activity_type:
+            if activity_type == workout_type:
                 score += 30
-            elif self._is_similar_sport_type(activity_type, workout_type):
+            elif activity_type in workout_type or workout_type in activity_type:
                 score += 20
             
             # Duration match (if available)

@@ -307,6 +307,7 @@ async def get_calendar_month(year: int, month: int,
             "notes": None,
             "created_at": activity.created_at if activity.created_at else datetime.now(),
             "updated_at": activity.updated_at if activity.updated_at else datetime.now(),
+            "strava_activity_id": activity.strava_activity_id,  # Add for deduplication
             # Include Strava data
             "strava_activity": {
                 "id": activity.id,
@@ -528,18 +529,24 @@ async def get_calendar_month(year: int, month: int,
     # Combine and sort
     all_workouts_dicts = regular_workouts_dicts + strava_workouts_dicts
     
-    # Remove duplicates by ID (for Strava activities, use date+type as key)
-    seen_strava_activities = set()
+    # Remove duplicates by ID (for Strava activities, use strava_activity_id as key)
+    seen_strava_activity_ids = set()
     final_workouts_dicts = []
     seen_ids = set()
     
     for w in all_workouts_dicts:
         if w["id"] < 0:
-            # Strava activity - check by date/type to avoid duplicates
-            key = (w["scheduled_date"], w["type"])
-            if key not in seen_strava_activities:
-                seen_strava_activities.add(key)
+            # Strava activity - check by strava_activity_id to avoid true duplicates
+            # This allows multiple activities of the same type on the same day
+            strava_activity_id = w.get("strava_activity_id")
+            if strava_activity_id and strava_activity_id not in seen_strava_activity_ids:
+                seen_strava_activity_ids.add(strava_activity_id)
                 final_workouts_dicts.append(w)
+            elif not strava_activity_id:
+                # Fallback: if strava_activity_id is missing, use negative ID
+                if w["id"] not in seen_ids:
+                    seen_ids.add(w["id"])
+                    final_workouts_dicts.append(w)
         else:
             # Regular workout - check by ID
             if w["id"] not in seen_ids:
