@@ -31,6 +31,11 @@ class User(Base):
     weekly_training_summaries = relationship("WeeklyTrainingSummary", back_populates="user")
     plan_versions = relationship("PlanVersion", back_populates="user")
     healthkit_workouts = relationship("HealthKitWorkout", back_populates="user")
+    password_reset_tokens = relationship(
+        "PasswordResetToken", 
+        back_populates="user", 
+        cascade="all, delete-orphan"
+    )
     # strava_account = relationship("StravaAccount", back_populates="user", uselist=False)  # Temporarily disabled
 
 

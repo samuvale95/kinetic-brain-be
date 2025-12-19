@@ -87,6 +87,20 @@ class Settings(BaseSettings):
     strava_redirect_uri: str = "http://localhost:8000/auth/strava/callback"
     strava_webhook_verify_token: str = ""
     
+    # Email Configuration
+    mail_username: str = ""
+    mail_password: str = ""
+    mail_from: str = "noreply@kineticbrain.com"
+    mail_from_name: str = "Kinetic Brain"
+    mail_port: int = 587
+    mail_server: str = "smtp.gmail.com"
+    mail_starttls: bool = True
+    mail_ssl_tls: bool = False
+    
+    # Application URLs
+    frontend_url: str = "http://localhost:8080"
+    admin_email: str = "admin@kineticbrain.com"
+    
     class Config:
         env_file = ".env"
         case_sensitive = False
