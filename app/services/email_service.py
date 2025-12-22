@@ -205,3 +205,156 @@ class EmailService:
         except Exception as e:
             logger.error(f"Failed to send feedback notification email: {e}")
             raise
+    
+    async def send_notification_email(
+        self,
+        user_email: str,
+        user_name: str,
+        title: str,
+        body: str,
+        notification_type: str,
+        data: Optional[dict] = None
+    ):
+        """
+        Send notification email to user with custom title and body.
+        
+        Args:
+            user_email: Recipient email address
+            user_name: User's name
+            title: Notification title
+            body: Notification body/message
+            notification_type: Type of notification (workout_reminder, new_workout, etc.)
+            data: Optional additional data payload
+        """
+        config = EmailConfigService.get_email_config(self.db)
+        subject = f"[Kinetic Brain] {title}"
+        
+        # Map notification types to Italian labels (optional, for better UX)
+        type_labels = {
+            "workout_reminder": "Promemoria Allenamento",
+            "new_workout": "Nuovo Allenamento",
+            "workout_completed": "Allenamento Completato",
+            "plan_updates": "Aggiornamento Piano",
+            "weekly_generation": "Generazione Settimana"
+        }
+        type_label = type_labels.get(notification_type, "Notifica")
+        
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {{
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    background-color: #f4f4f4;
+                    margin: 0;
+                    padding: 0;
+                }}
+                .container {{
+                    max-width: 600px;
+                    margin: 20px auto;
+                    background-color: #ffffff;
+                    border-radius: 8px;
+                    overflow: hidden;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                }}
+                .header {{
+                    background: linear-gradient(135deg, #4A9EFF 0%, #357ABD 100%);
+                    color: white;
+                    padding: 30px 20px;
+                    text-align: center;
+                }}
+                .header h1 {{
+                    margin: 0;
+                    font-size: 24px;
+                    font-weight: 600;
+                }}
+                .content {{
+                    padding: 30px 20px;
+                }}
+                .notification-type {{
+                    display: inline-block;
+                    background-color: #4A9EFF;
+                    color: white;
+                    padding: 4px 12px;
+                    border-radius: 12px;
+                    font-size: 12px;
+                    font-weight: 600;
+                    text-transform: uppercase;
+                    margin-bottom: 20px;
+                }}
+                .title {{
+                    font-size: 22px;
+                    font-weight: 600;
+                    color: #1a1a1a;
+                    margin: 0 0 15px 0;
+                }}
+                .body {{
+                    font-size: 16px;
+                    color: #555;
+                    margin: 0 0 30px 0;
+                    white-space: pre-wrap;
+                }}
+                .footer {{
+                    background-color: #f9f9f9;
+                    padding: 20px;
+                    text-align: center;
+                    font-size: 12px;
+                    color: #666;
+                    border-top: 1px solid #e0e0e0;
+                }}
+                .footer p {{
+                    margin: 5px 0;
+                }}
+                .footer a {{
+                    color: #4A9EFF;
+                    text-decoration: none;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>Kinetic Brain</h1>
+                </div>
+                <div class="content">
+                    <span class="notification-type">{type_label}</span>
+                    <h2 class="title">{title}</h2>
+                    <div class="body">{body}</div>
+                    <p style="color: #888; font-size: 14px; margin-top: 30px;">
+                        Ciao {user_name},
+                    </p>
+                </div>
+                <div class="footer">
+                    <p>Saluti, il team di Kinetic Brain</p>
+                    <p>
+                        <a href="{config.get('frontend_url', 'http://localhost:8080')}">
+                            Vai all'app
+                        </a>
+                    </p>
+                    <p style="margin-top: 15px; font-size: 11px; color: #999;">
+                        Puoi modificare le tue preferenze di notifica nelle impostazioni del profilo.
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        try:
+            fastmail = self._get_fastmail()
+            message = MessageSchema(
+                subject=subject,
+                recipients=[user_email],
+                body=html_body,
+                subtype="html"
+            )
+            await fastmail.send_message(message)
+            logger.info(f"Notification email sent to {user_email} - type: {notification_type}")
+        except Exception as e:
+            logger.error(f"Failed to send notification email to {user_email}: {e}")
+            raise

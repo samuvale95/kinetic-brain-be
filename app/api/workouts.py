@@ -162,6 +162,25 @@ async def generate_progressive_workout_plan(
         workouts=workouts
     )
     
+    # Send notification for new workouts
+    if workouts:
+        try:
+            from app.services.notification_service import NotificationService
+            notification_service = NotificationService(db)
+            await notification_service.send_notification(
+                user_id=current_user["user_id"],
+                notification_type="new_workout",
+                title="Nuovo piano di allenamento creato!",
+                body=f"Hai {len(workouts)} nuovi allenamenti nel tuo piano: {plan.title}",
+                data={
+                    "plan_id": plan.id,
+                    "plan_title": plan.title,
+                    "workouts_count": len(workouts)
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error sending new_workout notification: {e}")
+    
     # Convert SQLAlchemy model to Pydantic schema
     plan_response = WorkoutPlanResponse.model_validate(plan)
     
@@ -304,6 +323,26 @@ async def adapt_next_week_plan(
         user_id=current_user["user_id"],
         workouts=workouts
     )
+    
+    # Send notification for weekly generation
+    if workouts:
+        try:
+            from app.services.notification_service import NotificationService
+            notification_service = NotificationService(db)
+            await notification_service.send_notification(
+                user_id=current_user["user_id"],
+                notification_type="weekly_generation",
+                title="Settimana generata automaticamente",
+                body=f"È stata generata la settimana {next_week_plan.get('week', 'successiva')} del tuo piano con {len(workouts)} allenamenti",
+                data={
+                    "plan_id": active_plan.id,
+                    "plan_title": active_plan.title,
+                    "week_number": next_week_plan.get('week'),
+                    "workouts_count": len(workouts)
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error sending weekly_generation notification: {e}")
     
     # Workouts and calendar events are now saved in the database
     logger.info(f"[API] Next week plan adapted successfully - week: {next_week_plan.get('week')}, workouts_created: {len(workouts)}, events_created: {len(calendar_events)}")
@@ -708,6 +747,24 @@ async def update_workout_plan(plan_id: int,
             detail="Workout plan not found"
         )
     
+    # Send notification for plan updates (only for active plans)
+    if plan.status == "active":
+        try:
+            from app.services.notification_service import NotificationService
+            notification_service = NotificationService(db)
+            await notification_service.send_notification(
+                user_id=current_user["user_id"],
+                notification_type="plan_updates",
+                title="Piano di allenamento aggiornato",
+                body=f"Il tuo piano '{plan.title}' è stato aggiornato",
+                data={
+                    "plan_id": plan.id,
+                    "plan_title": plan.title
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error sending plan_updates notification: {e}")
+    
     # Add is_progressive field
     plan_dict = WorkoutPlanResponse.model_validate(plan).model_dump()
     plan_dict["is_progressive"] = workout_service._is_progressive_plan(plan)
@@ -1004,6 +1061,26 @@ async def complete_workout(workout_id: int,
     workout.status = "completed"
     db.commit()
     db.refresh(workout)
+    
+    # Send notification for workout completion
+    try:
+        from app.services.notification_service import NotificationService
+        notification_service = NotificationService(db)
+        await notification_service.send_notification(
+            user_id=current_user["user_id"],
+            notification_type="workout_completed",
+            title="Allenamento completato!",
+            body=f"Hai completato: {workout.title}",
+            data={
+                "workout_id": workout.id,
+                "workout_title": workout.title,
+                "completion_date": workout.updated_at.isoformat() if workout.updated_at else None
+            }
+        )
+    except Exception as e:
+        # Log error but don't fail the request
+        from loguru import logger
+        logger.error(f"Error sending workout_completed notification: {e}")
     
     return {
         "id": workout.id,

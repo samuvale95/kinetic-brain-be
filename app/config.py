@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:8080"
     admin_email: str = "admin@kineticbrain.com"
     
+    # Firebase Cloud Messaging (FCM) for push notifications
+    fcm_server_key: str = ""  # FCM Server Key for authentication
+    fcm_project_id: str = ""  # FCM Project ID (optional)
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

@@ -36,6 +36,17 @@ class User(Base):
         back_populates="user", 
         cascade="all, delete-orphan"
     )
+    notification_preferences = relationship(
+        "NotificationPreferences",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
+    device_tokens = relationship(
+        "DeviceToken",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
     # strava_account = relationship("StravaAccount", back_populates="user", uselist=False)  # Temporarily disabled
 
 

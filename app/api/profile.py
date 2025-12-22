@@ -10,8 +10,13 @@ from app.schemas.user import (
     PerformanceMetricsCreate, PerformanceMetricsUpdate, PerformanceMetricsResponse
 )
 from app.schemas.statistics import ZonePreferenceRequest, ZonePreferenceResponse
+from app.schemas.notification import (
+    NotificationPreferencesResponse,
+    NotificationPreferencesUpdate
+)
 from app.models.user import UserProfile, PerformanceMetrics
 from app.services.calculation_service import CalculationService
+from app.services.notification_service import NotificationService
 from app.api.auth import get_current_user
 
 router = APIRouter(prefix="/profile", tags=["profile"])
@@ -32,6 +37,12 @@ async def options_profile_performance():
 
 @router.options("/zone-preference")
 async def options_profile_zone_preference():
+    """Handle OPTIONS request for CORS preflight"""
+    return Response(status_code=200)
+
+
+@router.options("/notification-preferences")
+async def options_profile_notification_preferences():
     """Handle OPTIONS request for CORS preflight"""
     return Response(status_code=200)
 
@@ -252,3 +263,67 @@ async def update_zone_preference(request: ZonePreferenceRequest,
         'zones_calculated': current_zones is not None,
         'current_zones': current_zones
     }
+
+
+@router.get("/notification-preferences", response_model=NotificationPreferencesResponse)
+async def get_notification_preferences(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get notification preferences for the authenticated user.
+    Creates default preferences if they don't exist.
+    """
+    notification_service = NotificationService(db)
+    prefs = notification_service.get_preferences(current_user["user_id"])
+    
+    return NotificationPreferencesResponse(
+        email_enabled=prefs.email_enabled,
+        email_workout_reminders=prefs.email_workout_reminders,
+        email_new_workout=prefs.email_new_workout,
+        email_workout_completed=prefs.email_workout_completed,
+        email_plan_updates=prefs.email_plan_updates,
+        email_weekly_generation=prefs.email_weekly_generation,
+        push_enabled=prefs.push_enabled,
+        push_workout_reminders=prefs.push_workout_reminders,
+        push_new_workout=prefs.push_new_workout,
+        push_workout_completed=prefs.push_workout_completed,
+        push_plan_updates=prefs.push_plan_updates,
+        push_weekly_generation=prefs.push_weekly_generation,
+    )
+
+
+@router.put("/notification-preferences", response_model=NotificationPreferencesResponse)
+async def update_notification_preferences(
+    preferences: NotificationPreferencesUpdate,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update notification preferences for the authenticated user.
+    Only provided fields will be updated (partial update).
+    """
+    notification_service = NotificationService(db)
+    
+    # Convert Pydantic model to dict, excluding None values
+    update_data = preferences.model_dump(exclude_unset=True, exclude_none=True)
+    
+    prefs = notification_service.update_preferences(
+        user_id=current_user["user_id"],
+        update_data=update_data
+    )
+    
+    return NotificationPreferencesResponse(
+        email_enabled=prefs.email_enabled,
+        email_workout_reminders=prefs.email_workout_reminders,
+        email_new_workout=prefs.email_new_workout,
+        email_workout_completed=prefs.email_workout_completed,
+        email_plan_updates=prefs.email_plan_updates,
+        email_weekly_generation=prefs.email_weekly_generation,
+        push_enabled=prefs.push_enabled,
+        push_workout_reminders=prefs.push_workout_reminders,
+        push_new_workout=prefs.push_new_workout,
+        push_workout_completed=prefs.push_workout_completed,
+        push_plan_updates=prefs.push_plan_updates,
+        push_weekly_generation=prefs.push_weekly_generation,
+    )
