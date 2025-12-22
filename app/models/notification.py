@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Text, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -51,6 +51,35 @@ class DeviceToken(Base):
     user = relationship("User", back_populates="device_tokens")
     
     # Unique constraint on user_id + device_token + platform
+    __table_args__ = (
+        {"extend_existing": True}
+    )
+
+
+class NotificationLog(Base):
+    """Log table for tracking all sent notifications"""
+    __tablename__ = "notification_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    
+    # Notification details
+    notification_type = Column(String(50), nullable=False)  # workout_reminder, new_workout, etc.
+    channel = Column(String(20), nullable=False)  # email, push
+    title = Column(String(200), nullable=False)
+    body = Column(Text, nullable=False)
+    data = Column(JSON, nullable=True)  # Additional data payload
+    
+    # Status
+    status = Column(String(20), nullable=False)  # sent, failed, skipped
+    error_message = Column(Text, nullable=True)  # Error details if failed
+    
+    # Timestamps
+    sent_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    # Relationships
+    user = relationship("User", back_populates="notification_logs")
+    
     __table_args__ = (
         {"extend_existing": True}
     )

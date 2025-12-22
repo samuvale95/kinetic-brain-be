@@ -1,8 +1,8 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import select
-from typing import Optional, Dict, Any, List
+from sqlalchemy import select, func
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timezone
-from app.models.notification import NotificationPreferences
+from app.models.notification import NotificationPreferences, NotificationLog
 from loguru import logger
 
 
@@ -191,9 +191,16 @@ class NotificationService:
                 result["skipped"][channel] = True
                 result["reason"][channel] = f"User has disabled {notification_type} notifications for {channel}"
                 logger.info(f"Skipping {channel} notification for user {user_id} - preference disabled")
+                # Log the skipped notification
+                self._log_notification(
+                    user_id, notification_type, channel, title, body, data, 
+                    "skipped", result["reason"][channel]
+                )
                 continue
             
             # Send notification
+            log_status = "sent"
+            log_error = None
             try:
                 if channel == "email":
                     from app.services.email_service import EmailService
@@ -208,6 +215,10 @@ class NotificationService:
                         result["sent"][channel] = False
                         result["skipped"][channel] = True
                         result["reason"][channel] = "User not found"
+                        log_status = "skipped"
+                        log_error = "User not found"
+                        # Log the skipped notification
+                        self._log_notification(user_id, notification_type, channel, title, body, data, log_status, log_error)
                         continue
                     
                     email_service = EmailService(self.db)
@@ -223,6 +234,8 @@ class NotificationService:
                     result["skipped"][channel] = False
                     result["reason"][channel] = None
                     logger.info(f"Sent email notification to user {user_id}")
+                    # Log the sent notification
+                    self._log_notification(user_id, notification_type, channel, title, body, data, log_status, log_error)
                 
                 elif channel == "push":
                     from app.services.push_service import PushService
@@ -238,12 +251,106 @@ class NotificationService:
                     result["skipped"][channel] = False
                     result["reason"][channel] = None
                     logger.info(f"Sent push notification to user {user_id}")
+                    # Log the sent notification
+                    self._log_notification(user_id, notification_type, channel, title, body, data, log_status, log_error)
             
             except Exception as e:
                 logger.error(f"Error sending {channel} notification to user {user_id}: {e}")
                 result["sent"][channel] = False
                 result["skipped"][channel] = True
                 result["reason"][channel] = str(e)
+                log_status = "failed"
+                log_error = str(e)
+                # Log the failed notification
+                self._log_notification(user_id, notification_type, channel, title, body, data, log_status, log_error)
         
         return result
+    
+    def _log_notification(
+        self,
+        user_id: int,
+        notification_type: str,
+        channel: str,
+        title: str,
+        body: str,
+        data: Optional[Dict[str, Any]],
+        status: str,
+        error_message: Optional[str] = None
+    ):
+        """
+        Log a notification to the notification_logs table.
+        
+        Args:
+            user_id: User ID
+            notification_type: Type of notification
+            channel: Channel (email or push)
+            title: Notification title
+            body: Notification body
+            data: Optional data payload
+            status: Status (sent, failed, skipped)
+            error_message: Optional error message
+        """
+        try:
+            log_entry = NotificationLog(
+                user_id=user_id,
+                notification_type=notification_type,
+                channel=channel,
+                title=title,
+                body=body,
+                data=data,
+                status=status,
+                error_message=error_message
+            )
+            self.db.add(log_entry)
+            self.db.commit()
+        except Exception as e:
+            # Don't fail the notification if logging fails
+            logger.error(f"Failed to log notification for user {user_id}: {e}")
+            self.db.rollback()
+    
+    def get_notification_history(
+        self,
+        user_id: int,
+        skip: int = 0,
+        limit: int = 50,
+        notification_type: Optional[str] = None,
+        channel: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> Tuple[List[NotificationLog], int]:
+        """
+        Get notification history for a user with optional filters.
+        
+        Args:
+            user_id: User ID
+            skip: Number of records to skip (pagination)
+            limit: Maximum number of records to return
+            notification_type: Filter by notification type (optional)
+            channel: Filter by channel (email/push) (optional)
+            status: Filter by status (sent/failed/skipped) (optional)
+            
+        Returns:
+            Tuple of (list of NotificationLog objects, total count)
+        """
+        query = select(NotificationLog).where(NotificationLog.user_id == user_id)
+        
+        if notification_type:
+            query = query.where(NotificationLog.notification_type == notification_type)
+        if channel:
+            query = query.where(NotificationLog.channel == channel)
+        if status:
+            query = query.where(NotificationLog.status == status)
+        
+        # Get total count
+        total = self.db.execute(
+            select(func.count()).select_from(query.subquery())
+        ).scalar() or 0
+        
+        # Get paginated results, ordered by most recent first
+        logs = self.db.execute(
+            query.order_by(NotificationLog.sent_at.desc())
+            .offset(skip)
+            .limit(limit)
+        ).scalars().all()
+        
+        return list(logs), total
 

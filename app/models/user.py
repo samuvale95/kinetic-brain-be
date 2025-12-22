@@ -47,6 +47,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan"
     )
+    notification_logs = relationship(
+        "NotificationLog",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
     # strava_account = relationship("StravaAccount", back_populates="user", uselist=False)  # Temporarily disabled
 
 

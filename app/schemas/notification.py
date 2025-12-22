@@ -85,3 +85,28 @@ class NotificationSendResponse(BaseModel):
     skipped: Dict[str, bool] = Field(..., description="Whether notification was skipped for each channel")
     reason: Dict[str, Optional[str]] = Field(..., description="Reason if skipped (None if sent)")
 
+
+class NotificationLogResponse(BaseModel):
+    """Response schema for notification log entry"""
+    id: int
+    user_id: int
+    notification_type: str
+    channel: str
+    title: str
+    body: str
+    data: Optional[Dict[str, Any]] = None
+    status: str  # sent, failed, skipped
+    error_message: Optional[str] = None
+    sent_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class NotificationLogListResponse(BaseModel):
+    """Response schema for notification log list"""
+    logs: List[NotificationLogResponse]
+    total: int
+    skip: int
+    limit: int
+

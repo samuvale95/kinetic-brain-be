@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from app.services.device_token_service import DeviceTokenService
 from app.config import settings
 from loguru import logger
@@ -33,7 +33,7 @@ class PushService:
         title: str,
         body: str,
         data: Optional[Dict[str, Any]] = None
-    ) -> bool:
+    ) -> Tuple[bool, Optional[str]]:
         """
         Send a single FCM message to a device token.
         
@@ -45,11 +45,13 @@ class PushService:
             data: Optional data payload
             
         Returns:
-            bool: True if sent successfully, False otherwise
+            Tuple of (success: bool, error_code: Optional[str])
+            error_code will be one of: "InvalidRegistration", "NotRegistered", "MismatchSenderId"
+            if the token is invalid and should be deactivated
         """
         if not self.fcm_server_key:
             logger.error("Cannot send push notification - FCM_SERVER_KEY not configured")
-            return False
+            return False, None
         
         # Prepare notification payload
         notification_payload = {
@@ -101,27 +103,35 @@ class PushService:
                     # Check if message was sent successfully
                     if result.get("success") == 1:
                         logger.info(f"Push notification sent successfully to {platform} device")
-                        return True
+                        return True, None
                     else:
-                        error = result.get("results", [{}])[0].get("error")
-                        logger.warning(f"FCM error for {platform} device: {error}")
-                        
-                        # Check for invalid token errors
-                        if error in ["InvalidRegistration", "NotRegistered"]:
-                            # Token is invalid, will be marked as inactive by caller
-                            logger.info(f"Token is invalid for {platform} device: {error}")
-                        
-                        return False
+                        # FCM v1 API returns results array
+                        results = result.get("results", [])
+                        if results:
+                            error_code = results[0].get("error")
+                            logger.warning(f"FCM error for {platform} device: {error_code}")
+                            
+                            # Check for invalid token errors that should result in deactivation
+                            invalid_token_errors = ["InvalidRegistration", "NotRegistered", "MismatchSenderId"]
+                            if error_code in invalid_token_errors:
+                                logger.info(f"Token is invalid for {platform} device (error: {error_code}), should be deactivated")
+                                return False, error_code
+                            else:
+                                # Other errors (like "Unavailable", "InternalServerError") are temporary
+                                return False, None
+                        else:
+                            logger.warning(f"FCM returned failure but no error details for {platform} device")
+                            return False, None
                 else:
                     logger.error(f"FCM API error: {response.status_code} - {response.text}")
-                    return False
+                    return False, None
         
         except httpx.TimeoutException:
             logger.error(f"Timeout sending push notification to {platform} device")
-            return False
+            return False, None
         except Exception as e:
             logger.error(f"Error sending push notification to {platform} device: {e}")
-            return False
+            return False, None
     
     async def send_push(
         self,
@@ -161,7 +171,7 @@ class PushService:
         
         # Send to each token
         for token_obj in tokens:
-            success = await self._send_fcm_message(
+            success, error_code = await self._send_fcm_message(
                 token=token_obj.device_token,
                 platform=token_obj.platform,
                 title=title,
@@ -175,10 +185,13 @@ class PushService:
                 self.device_token_service.mark_token_used(token_obj.id)
             else:
                 results["failed"] += 1
-                # Check if token might be invalid (will be handled by checking FCM error in _send_fcm_message)
-                # For now, we'll mark invalid tokens based on specific error codes
-                # This is a simplified approach - in production, you might want to parse FCM response
-                # and mark tokens as inactive based on specific error codes
+                
+                # If token is invalid (InvalidRegistration, NotRegistered, MismatchSenderId),
+                # mark it as inactive
+                if error_code in ["InvalidRegistration", "NotRegistered", "MismatchSenderId"]:
+                    logger.info(f"Deactivating invalid token {token_obj.id} for user {user_id} (error: {error_code})")
+                    self.device_token_service.deactivate_device(user_id, token_obj.id)
+                    results["invalid_tokens"].append(token_obj.id)
         
         logger.info(
             f"Push notification results for user {user_id}: "

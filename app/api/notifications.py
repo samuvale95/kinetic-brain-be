@@ -12,7 +12,9 @@ from app.schemas.notification import (
     DeviceTokenRegister,
     DeviceTokenResponse,
     NotificationSendRequest,
-    NotificationSendResponse
+    NotificationSendResponse,
+    NotificationLogListResponse,
+    NotificationLogResponse
 )
 from app.services.notification_service import NotificationService
 from app.services.device_token_service import DeviceTokenService
@@ -235,4 +237,39 @@ async def get_scheduler_status(
         response["endpoint"] = "/notifications/cron/send-workout-reminders"
     
     return response
+
+
+@router.get("/history", response_model=NotificationLogListResponse, status_code=status.HTTP_200_OK)
+async def get_notification_history(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=100, description="Maximum number of records to return"),
+    notification_type: Optional[str] = Query(None, description="Filter by notification type"),
+    channel: Optional[str] = Query(None, pattern="^(email|push)$", description="Filter by channel"),
+    status: Optional[str] = Query(None, pattern="^(sent|failed|skipped)$", description="Filter by status"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get notification history for the authenticated user.
+    
+    Returns a paginated list of all notifications sent to the user,
+    with optional filters by type, channel, and status.
+    """
+    notification_service = NotificationService(db)
+    
+    logs, total = notification_service.get_notification_history(
+        user_id=current_user["user_id"],
+        skip=skip,
+        limit=limit,
+        notification_type=notification_type,
+        channel=channel,
+        status=status
+    )
+    
+    return NotificationLogListResponse(
+        logs=[NotificationLogResponse.model_validate(log) for log in logs],
+        total=total,
+        skip=skip,
+        limit=limit
+    )
 

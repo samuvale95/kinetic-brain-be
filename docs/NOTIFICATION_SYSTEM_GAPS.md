@@ -58,38 +58,39 @@
 
 ---
 
-### 2. **Notification History/Log** 🟡 PRIORITÀ MEDIA
+### 2. **Notification History/Log** ✅ IMPLEMENTATO
 
-**Problema**: Non c'è tracciamento delle notifiche inviate.
+**Soluzione implementata**: Tabella `notification_logs` con logging automatico.
 
-**Cosa serve**:
-- Tabella `notification_logs` per tracciare tutte le notifiche inviate
-- Campi: user_id, notification_type, channel, title, body, status (sent/failed), sent_at, error_message
-- Endpoint `GET /notifications/history` per vedere cronologia utente
-- Utile per debug, analytics, e potenzialmente ri-invio di notifiche fallite
+**File creati/modificati**:
+- ✅ Migrazione `migrations/versions/add_notification_logs_table.py` - crea tabella con indici
+- ✅ Modello `app/models/notification.py` - aggiunto `NotificationLog`
+- ✅ Schema `app/schemas/notification.py` - aggiunto `NotificationLogResponse` e `NotificationLogListResponse`
+- ✅ Servizio `app/services/notification_service.py` - aggiunto `_log_notification()` e `get_notification_history()`
+- ✅ Endpoint `app/api/notifications.py` - aggiunto `GET /notifications/history`
 
-**File da creare/modificare**:
-- Migrazione per tabella `notification_logs`
-- Modello `app/models/notification.py` (aggiungere `NotificationLog`)
-- Schema `app/schemas/notification.py` (aggiungere `NotificationLogResponse`)
-- Servizio per logging (estendere `NotificationService`)
-- Endpoint `app/api/notifications.py` (aggiungere GET /history)
+**Come funziona**:
+- Ogni notifica inviata viene automaticamente loggata in `notification_logs`
+- Include: user_id, notification_type, channel, title, body, data, status (sent/failed/skipped), error_message, sent_at
+- Endpoint `/notifications/history` permette di vedere la cronologia con filtri e paginazione
+- Utile per debug, analytics, e tracciamento delle notifiche
 
 ---
 
-### 3. **Miglioramento Gestione Token FCM Invalidi** 🟡 PRIORITÀ MEDIA
+### 3. **Miglioramento Gestione Token FCM Invalidi** ✅ IMPLEMENTATO
 
-**Problema**: Il `PushService` ha commenti che indicano che dovrebbe gestire meglio i token invalidi, ma l'implementazione è incompleta.
+**Soluzione implementata**: Parsing completo della risposta FCM con disattivazione automatica dei token invalidi.
 
-**Cosa serve**:
-- Parsing corretto della risposta FCM per identificare token invalidi
-- Mark automatico dei token come `is_active=False` quando FCM restituisce errori specifici:
-  - `InvalidRegistration`
-  - `NotRegistered`
-  - `MismatchSenderId`
+**File modificati**:
+- ✅ `app/services/push_service.py` - migliorato `_send_fcm_message()` per restituire error_code
+- ✅ `app/services/push_service.py` - `send_push()` ora disattiva automaticamente token invalidi
 
-**File da modificare**:
-- `app/services/push_service.py` - migliorare `_send_fcm_message` per parsare correttamente errori FCM e chiamare `device_token_service.deactivate_device()` quando necessario
+**Come funziona**:
+- `_send_fcm_message()` ora restituisce `Tuple[bool, Optional[str]]` con success e error_code
+- Identifica errori di token invalido: `InvalidRegistration`, `NotRegistered`, `MismatchSenderId`
+- Quando viene rilevato un token invalido, viene automaticamente disattivato chiamando `device_token_service.deactivate_device()`
+- I token disattivati vengono aggiunti a `results["invalid_tokens"]` per reporting
+- Migliora la robustezza del sistema evitando di tentare di inviare a token non più validi
 
 ---
 
@@ -114,12 +115,14 @@ Se in futuro serve più controllo, si può usare **APScheduler** nello stesso pr
 
 ---
 
-## 📊 Priorità di Implementazione
+## 📊 Stato Implementazione
 
-1. **🔴 ALTA**: Workout Reminders - funzionalità core mancante
-2. **🟡 MEDIA**: Notification History - utile per debug e UX
-3. **🟡 MEDIA**: Gestione token FCM - migliora robustezza
-4. **🟡 MEDIA**: Infrastruttura scheduler - necessario per reminder
+1. **✅ COMPLETATO**: Workout Reminders - funzionalità core implementata
+2. **✅ COMPLETATO**: Notification History - logging e endpoint implementati
+3. **✅ COMPLETATO**: Gestione token FCM - disattivazione automatica token invalidi
+4. **✅ COMPLETATO**: Infrastruttura scheduler - Render Cron Jobs e APScheduler supportati
+
+**🎉 Tutte le funzionalità mancanti sono state implementate!**
 
 ---
 

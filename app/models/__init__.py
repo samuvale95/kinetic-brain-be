@@ -10,7 +10,7 @@ from .metrics_job import MetricsPendingJob
 from .plan_version import PlanVersion
 from .password_reset_token import PasswordResetToken
 from .email_config import EmailConfig
-from .notification import NotificationPreferences, DeviceToken
+from .notification import NotificationPreferences, DeviceToken, NotificationLog
 
 __all__ = [
     "User",
@@ -36,4 +36,5 @@ __all__ = [
     "EmailConfig",
     "NotificationPreferences",
     "DeviceToken",
+    "NotificationLog",
 ]
