@@ -18,10 +18,27 @@ async def lifespan(app: FastAPI):
     # Base.metadata.create_all(bind=engine)
     # logger.info("Database tables created")
     
+    # Initialize scheduled tasks (if using APScheduler)
+    if not minimal_startup:
+        try:
+            from app.services.scheduler_service import SchedulerService
+            SchedulerService.initialize()
+        except Exception as e:
+            logger.error(f"Failed to initialize scheduler service: {e}")
+            # Don't fail startup if scheduler fails - app can still work with Render Cron Jobs
+    
     yield
     
     # Shutdown
     logger.info("Shutting down Kinetic Brain API...")
+    
+    # Shutdown scheduled tasks (if using APScheduler)
+    if not minimal_startup:
+        try:
+            from app.services.scheduler_service import SchedulerService
+            SchedulerService.shutdown()
+        except Exception as e:
+            logger.error(f"Error shutting down scheduler service: {e}")
 
 
 # Read minimal flags early from env to avoid importing pydantic Settings at startup if requested

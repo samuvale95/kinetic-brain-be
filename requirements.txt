@@ -63,3 +63,6 @@ fastapi-mail>=1.4.1
 # Push Notifications (Firebase Cloud Messaging)
 # Using httpx for direct FCM API calls (already in dependencies above)
 # Alternative: pyfcm>=1.5.0 or firebase-admin>=6.0.0
+
+# Scheduled Tasks (APScheduler - optional, for workout reminders)
+apscheduler==3.10.4

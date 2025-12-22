@@ -97,6 +97,19 @@ class Settings(BaseSettings):
     mail_starttls: bool = True
     mail_ssl_tls: bool = False
     
+    # Internal API Secret (for cron jobs and internal endpoints)
+    internal_api_secret: str = ""
+    
+    # Scheduled Tasks Configuration
+    # Options: "render_cron" (endpoint HTTP chiamato da Render Cron Jobs) or "apscheduler" (APScheduler nel processo)
+    scheduled_tasks_provider: str = "render_cron"  # "render_cron" or "apscheduler"
+    
+    # APScheduler Configuration (only used if scheduled_tasks_provider == "apscheduler")
+    # Workout reminder schedules (cron format: minute hour day month day_of_week)
+    # Default: 8:00 AM and 6:00 PM UTC every day
+    workout_reminder_morning_cron: str = "0 8 * * *"  # Every day at 8:00 AM UTC
+    workout_reminder_evening_cron: str = "0 18 * * *"  # Every day at 6:00 PM UTC (optional, set to "" to disable)
+    
     # Application URLs
     frontend_url: str = "http://localhost:8080"
     admin_email: str = "admin@kineticbrain.com"
