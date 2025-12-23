@@ -114,9 +114,12 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:8080"
     admin_email: str = "admin@kineticbrain.com"
     
-    # Firebase Cloud Messaging (FCM) for push notifications
-    fcm_server_key: str = ""  # FCM Server Key for authentication
-    fcm_project_id: str = ""  # FCM Project ID (optional)
+    # Firebase Cloud Messaging (FCM) for push notifications (API V1)
+    # FCM API V1 requires a service account JSON instead of Server Key
+    fcm_project_id: str = ""  # FCM Project ID (required for V1 API)
+    fcm_service_account_json: str = ""  # Service Account JSON as string (required for V1 API)
+    # Legacy FCM Server Key (deprecated - kept for backward compatibility but not used)
+    fcm_server_key: str = ""  # DEPRECATED: Use FCM_SERVICE_ACCOUNT_JSON instead
     
     class Config:
         env_file = ".env"
