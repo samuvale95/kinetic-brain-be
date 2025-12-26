@@ -1192,14 +1192,10 @@ async def create_session_from_watch(
         user_id=current_user["user_id"],
         actual_date=request.start_time,
         duration_minutes=duration_minutes,
-        source="apple_watch",
-        healthkit_workout_id=healthkit_workout.id if healthkit_workout else None,
-        healthkit_uuid=request.healthkit_uuid,
         avg_hr=request.metrics.get("avg_heart_rate"),
         max_hr=request.metrics.get("max_heart_rate"),
         avg_pace=service._convert_pace_to_min_per_km(request.metrics.get("avg_pace_seconds_per_km")),
-        avg_power=request.metrics.get("avg_power"),
-        intervals_data=request.intervals
+        avg_power=request.metrics.get("avg_power")
     )
     
     db.add(session)

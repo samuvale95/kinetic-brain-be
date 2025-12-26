@@ -189,24 +189,11 @@ class HealthKitService:
             user_id=healthkit_workout.user_id,
             actual_date=healthkit_workout.start_date,
             duration_minutes=duration_minutes,
-            source="healthkit",
-            healthkit_workout_id=healthkit_workout.id,
-            healthkit_uuid=healthkit_workout.hk_workout_uuid,
             # Extract metrics
             avg_hr=metrics.get("avg_heart_rate"),
             max_hr=metrics.get("max_heart_rate"),
             avg_pace=self._convert_pace_to_min_per_km(metrics.get("avg_pace_seconds_per_km")),
-            avg_power=metrics.get("avg_power"),
-            # HealthKit specific fields
-            active_energy_kcal=healthkit_workout.total_energy_burned_kcal,
-            basal_energy_kcal=healthkit_workout.total_basal_energy_kcal,
-            vo2_max=metrics.get("vo2_max"),
-            running_power_avg=metrics.get("running_power_avg"),
-            running_power_max=metrics.get("running_power_max"),
-            ground_contact_time_avg=metrics.get("ground_contact_time_avg"),
-            vertical_oscillation_avg=metrics.get("vertical_oscillation_avg"),
-            stride_length_avg=metrics.get("stride_length_avg"),
-            intervals_data=intervals
+            avg_power=metrics.get("avg_power")
         )
         
         self.db.add(session)

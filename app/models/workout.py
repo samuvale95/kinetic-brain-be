@@ -77,29 +77,7 @@ class WorkoutSession(Base):
     notes = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Source tracking
-    source = Column(String(20), default='manual', nullable=False, index=True)
-    # Values: 'plan', 'strava', 'healthkit', 'manual', 'apple_watch'
-    
-    # HealthKit fields
-    healthkit_workout_id = Column(Integer, ForeignKey("healthkit_workouts.id", ondelete="SET NULL"), nullable=True, index=True)
-    healthkit_uuid = Column(String(36), nullable=True, index=True)
-    
-    # HealthKit specific fields
-    active_energy_kcal = Column(Float, nullable=True)
-    basal_energy_kcal = Column(Float, nullable=True)
-    vo2_max = Column(Float, nullable=True)
-    running_power_avg = Column(Float, nullable=True)
-    running_power_max = Column(Float, nullable=True)
-    ground_contact_time_avg = Column(Float, nullable=True)  # ms
-    vertical_oscillation_avg = Column(Float, nullable=True)  # cm
-    stride_length_avg = Column(Float, nullable=True)  # meters
-    
-    # Intervals data (JSON)
-    intervals_data = Column(JSON, nullable=True)
-    
     # Relationships
     workout = relationship("Workout", back_populates="sessions")
     user = relationship("User", back_populates="workout_sessions")
     training_metrics = relationship("TrainingMetrics", back_populates="workout_session", uselist=False)
-    healthkit_workout = relationship("HealthKitWorkout", back_populates="workout_session")
