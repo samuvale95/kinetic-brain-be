@@ -44,5 +44,4 @@ class HealthKitWorkout(Base):
     # Relationships
     user = relationship("User", back_populates="healthkit_workouts")
     workout = relationship("Workout", back_populates="healthkit_workouts")
-    workout_session = relationship("WorkoutSession", back_populates="healthkit_workout", uselist=False)
 
