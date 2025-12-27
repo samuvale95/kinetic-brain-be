@@ -94,7 +94,7 @@ if [ ! -d "venv" ]; then
     fi
 else
     # Check if existing venv uses correct Python version
-    VENV_PYTHON=$(venv/bin/python --version 2>&1 | grep -oP '\d+\.\d+' | head -1)
+    VENV_PYTHON=$(venv/bin/python --version 2>&1 | sed -E 's/.*([0-9]+\.[0-9]+).*/\1/' | head -1)
     if [ "$VENV_PYTHON" != "$PYTHON_VERSION" ]; then
         print_status "warning" "Existing venv uses Python $VENV_PYTHON, recreating with Python ${PYTHON_VERSION}..."
         rm -rf venv

@@ -31,6 +31,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libpq5 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -52,12 +53,12 @@ RUN mkdir -p uploads && chown -R appuser:appuser /app
 # Switch to non-root user
 USER appuser
 
-# Expose port
+# Expose port (default 8000, Railway will override with PORT env var)
 EXPOSE 8000
 
-# Health check
+# Health check (uses PORT env var if available, otherwise 8000)
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD sh -c 'PORT=${PORT:-8000} && curl -f http://localhost:${PORT}/health || exit 1'
 
-# Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application (uses PORT env var if available, otherwise 8000)
+CMD sh -c 'PORT=${PORT:-8000} && uvicorn app.main:app --host 0.0.0.0 --port ${PORT}'
