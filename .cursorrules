@@ -1,0 +1,106 @@
+# Istruzioni di Contesto per Kinetic Brain - Backend API
+
+## Struttura del Progetto
+
+### Framework e Stack
+- **Framework**: FastAPI (Python 3.11+)
+- **ORM**: SQLAlchemy
+- **Database**: SQLite (dev) / PostgreSQL (production)
+- **Migrations**: Alembic
+- **Testing**: pytest con coverage
+- **Code Quality**: Black, isort, mypy (strict mode)
+
+### Struttura Directory
+```
+/app
+  /api          # Endpoint API (routes)
+  /models       # SQLAlchemy models
+  /schemas      # Pydantic schemas (request/response)
+  /services     # Business logic
+  /middleware   # Custom middleware (auth, logging)
+  /tasks        # Background tasks
+  /utils        # Utility functions
+  /config       # Configuration files
+/tests          # Test suite
+/migrations     # Alembic migrations
+/database       # Database scripts
+```
+
+## Regole di Sincronizzazione FE/BE
+
+1. **Verifica Frontend**: Prima di modificare un endpoint, controlla:
+   - Frontend web: `/Volumes/ExtremeSSD/repositories/kinetic-brain/src/web/`
+   - Mobile: `/Volumes/ExtremeSSD/repositories/kinetic-brain/mobile/`
+
+2. **Schemas Pydantic**: 
+   - Se modifichi un model SQLAlchemy, aggiorna il corrispondente schema in `/app/schemas/`
+   - Gli schemas definiscono la struttura delle API request/response
+   - Usa `from_orm = True` per compatibilità con SQLAlchemy models
+
+3. **Naming Convention**:
+   - **Backend**: `snake_case` per variabili/funzioni, `PascalCase` per classi
+   - **API Endpoints**: `snake_case` o `kebab-case` (mantieni coerenza)
+   - **Database**: `snake_case` per tabelle e colonne
+   - **Frontend**: Converti a `camelCase` quando necessario
+
+4. **Endpoint**: 
+   - Non inventare endpoint senza verificare il frontend
+   - Cerca endpoint esistenti in `/app/api/`
+   - Usa prefissi consistenti: `/api/v1/` per API pubbliche
+
+## Preferenze di Codice
+
+### Python Style
+- **Formatter**: Black (line length 88)
+- **Import Sorting**: isort (profile: black)
+- **Type Hints**: Sempre obbligatori (mypy strict mode)
+- **Docstrings**: Usa docstrings per funzioni pubbliche e classi
+
+### FastAPI Best Practices
+- **Dependencies**: Usa dependency injection per auth, DB session, etc.
+- **Error Handling**: Usa `HTTPException` con status codes appropriati
+- **Response Models**: Definisci sempre response models nei decoratori
+- **Validation**: Usa Pydantic schemas per validazione automatica
+
+### Database
+- **Migrations**: Sempre crea migrazioni Alembic per cambiamenti al DB
+- **Queries**: Usa SQLAlchemy ORM, evita raw SQL quando possibile
+- **Transactions**: Usa context managers per gestire transazioni
+
+### Testing
+- **Coverage**: Mantieni coverage minimo 80%
+- **Fixtures**: Usa fixtures in `tests/conftest.py` per setup comune
+- **Markers**: Usa markers pytest (`@pytest.mark.unit`, `@pytest.mark.integration`)
+
+## Struttura API
+
+### Endpoint Pattern
+```python
+@router.get("/api/v1/resource", response_model=ResourceResponse)
+async def get_resource(
+    resource_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # Implementation
+```
+
+### Response Models
+- Definisci sempre `response_model` nei decoratori
+- Usa schemas Pydantic per validazione e serializzazione
+- Mantieni coerenza tra request/response schemas
+
+## Note Importanti
+
+- **Environment Variables**: Usa `.env` per configurazione locale, `env.example` come template
+- **Logging**: Usa loguru per logging strutturato
+- **Authentication**: Middleware in `/app/middleware/auth_middleware.py`
+- **CORS**: Configurato in `app/main.py` o middleware dedicato
+- **Database URL**: Leggi da variabile d'ambiente `DATABASE_URL`
+
+## Integrazione Frontend
+
+- **Base URL**: Il frontend si aspetta API su `/api/v1/`
+- **Authentication**: JWT tokens, header `Authorization: Bearer <token>`
+- **Error Format**: Mantieni formato errori consistente per parsing frontend
+- **CORS**: Configurato per permettere richieste dal frontend
