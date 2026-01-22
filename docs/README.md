@@ -4,6 +4,7 @@ Centralized documentation for the Kinetic Brain backend.
 
 ## Roadmap (Primary)
 - [LLM Coaching Roadmap](./roadmap/LLM_COACHING_ROADMAP.md) ← Most important: future changes and priorities
+- [Funzionalità mancanti (prioritarie vs future)](./roadmap/FUNZIONALITA_MANCANTI.md) ← Elenco completo gap vs competitor e backlog
 - [Implementation Status](./roadmap/IMPLEMENTATION_STATUS.md)
 - [Implementation Summary](./roadmap/IMPLEMENTATION_SUMMARY.md)
 
