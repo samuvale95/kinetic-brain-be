@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Body
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select, and_, desc
@@ -1157,11 +1157,14 @@ async def delete_workout(workout_id: int,
     return {"message": "Workout deleted successfully"}
 
 
-@router.patch("/{workout_id}/complete")
-async def complete_workout(workout_id: int,
-                          current_user: dict = Depends(get_current_user),
-                          db: Session = Depends(get_db)):
-    """Mark workout as completed"""
+@router.post("/{workout_id}/complete")
+async def complete_workout(
+    workout_id: int,
+    session_data: Optional[dict] = Body(None),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Mark workout as completed and optionally create a workout session"""
     workout_service = WorkoutService(db)
     
     # Verify workout exists and belongs to user
@@ -1174,6 +1177,27 @@ async def complete_workout(workout_id: int,
     
     # Update workout status to completed
     workout.status = "completed"
+    
+    # Create workout session if session_data is provided
+    session = None
+    if session_data:
+        # Ensure workout_id is set
+        session_data['workout_id'] = workout_id
+        # Convert datetime string to datetime if needed
+        if 'actual_date' in session_data and isinstance(session_data['actual_date'], str):
+            from datetime import datetime
+            try:
+                session_data['actual_date'] = datetime.fromisoformat(session_data['actual_date'].replace('Z', '+00:00'))
+            except ValueError:
+                # Try parsing without timezone
+                session_data['actual_date'] = datetime.fromisoformat(session_data['actual_date'])
+        
+        session_create = WorkoutSessionCreate(**session_data)
+        session = workout_service.create_workout_session(
+            user_id=current_user["user_id"],
+            session_data=session_create
+        )
+    
     db.commit()
     db.refresh(workout)
     
@@ -1200,7 +1224,8 @@ async def complete_workout(workout_id: int,
     return {
         "id": workout.id,
         "completed": True,
-        "completed_at": workout.updated_at.isoformat() if workout.updated_at else None
+        "completed_at": workout.updated_at.isoformat() if workout.updated_at else None,
+        "session_id": session.id if session else None
     }
 
 

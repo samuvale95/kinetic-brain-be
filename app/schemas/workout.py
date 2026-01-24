@@ -187,6 +187,7 @@ class WorkoutSessionResponse(BaseModel):
     avg_power: Optional[float] = None
     perceived_exertion: Optional[int] = None
     notes: Optional[str] = None
+    strength_metrics: Optional[Dict[str, Any]] = None
     created_at: datetime
     
     class Config:

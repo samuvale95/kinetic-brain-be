@@ -390,6 +390,172 @@ WORKOUT_PARAMETERS: Dict[str, SportWorkoutConfig] = {
             "PEAK": ["quadriceps", "glutes", "shoulders"],
             "TAPER": ["quadriceps", "hamstrings", "shoulders"]
         }
+    ),
+    "gym": SportWorkoutConfig(
+        sport_type="gym",
+        phases={
+            "BASE": PhaseConfig(
+                stretching=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(2, 3, 3),
+                    duration=WorkoutDurationConfig(10, 15, 12),
+                    exercise_count=ExerciseCountConfig(4, 6, 5, 0.4),
+                    intensity="easy",
+                    rpe_range=(2, 3),
+                    focus_type="sport_plus_balance"
+                ),
+                strength=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(3, 4, 3),
+                    duration=WorkoutDurationConfig(45, 60, 50),
+                    exercise_count=ExerciseCountConfig(4, 6, 5, 0.1),
+                    intensity="moderate",
+                    rpe_range=(5, 7),
+                    focus_type="sport_specific"
+                )
+            ),
+            "BUILD": PhaseConfig(
+                stretching=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(2, 3, 2),
+                    duration=WorkoutDurationConfig(8, 12, 10),
+                    exercise_count=ExerciseCountConfig(4, 6, 5, 0.5),
+                    intensity="easy",
+                    rpe_range=(2, 3),
+                    focus_type="sport_plus_balance"
+                ),
+                strength=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(2, 3, 3),
+                    duration=WorkoutDurationConfig(45, 60, 50),
+                    exercise_count=ExerciseCountConfig(5, 7, 6, 0.12),
+                    intensity="hard",
+                    rpe_range=(6, 8),
+                    focus_type="sport_specific"
+                )
+            ),
+            "PEAK": PhaseConfig(
+                stretching=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(2, 2, 2),
+                    duration=WorkoutDurationConfig(8, 10, 9),
+                    exercise_count=ExerciseCountConfig(4, 6, 5, 0.5),
+                    intensity="easy",
+                    rpe_range=(2, 3),
+                    focus_type="sport_plus_balance"
+                ),
+                strength=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(2, 3, 3),
+                    duration=WorkoutDurationConfig(45, 60, 50),
+                    exercise_count=ExerciseCountConfig(4, 6, 5, 0.1),
+                    intensity="hard",
+                    rpe_range=(7, 9),
+                    focus_type="sport_specific"
+                )
+            ),
+            "TAPER": PhaseConfig(
+                stretching=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(2, 3, 3),
+                    duration=WorkoutDurationConfig(10, 15, 12),
+                    exercise_count=ExerciseCountConfig(4, 6, 5, 0.4),
+                    intensity="easy",
+                    rpe_range=(2, 3),
+                    focus_type="sport_plus_balance"
+                ),
+                strength=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(1, 2, 2),
+                    duration=WorkoutDurationConfig(30, 45, 40),
+                    exercise_count=ExerciseCountConfig(3, 5, 4, 0.13),
+                    intensity="moderate",
+                    rpe_range=(4, 6),
+                    focus_type="sport_specific"
+                )
+            )
+        },
+        target_muscle_groups={
+            "BASE": ["chest", "back", "legs", "shoulders", "arms"],
+            "BUILD": ["chest", "back", "legs", "shoulders", "arms"],
+            "PEAK": ["chest", "back", "legs", "shoulders", "arms"],
+            "TAPER": ["chest", "back", "legs", "shoulders"]
+        }
+    ),
+    "hyrox": SportWorkoutConfig(
+        sport_type="hyrox",
+        phases={
+            "BASE": PhaseConfig(
+                stretching=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(3, 4, 4),
+                    duration=WorkoutDurationConfig(10, 15, 12),
+                    exercise_count=ExerciseCountConfig(6, 8, 7, 0.5),
+                    intensity="easy",
+                    rpe_range=(2, 3),
+                    focus_type="sport_plus_balance"
+                ),
+                strength=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(2, 3, 3),
+                    duration=WorkoutDurationConfig(30, 45, 40),
+                    exercise_count=ExerciseCountConfig(4, 6, 5, 0.12),
+                    intensity="moderate",
+                    rpe_range=(5, 7),
+                    focus_type="sport_specific"
+                )
+            ),
+            "BUILD": PhaseConfig(
+                stretching=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(3, 4, 3),
+                    duration=WorkoutDurationConfig(8, 12, 10),
+                    exercise_count=ExerciseCountConfig(5, 7, 6, 0.6),
+                    intensity="easy",
+                    rpe_range=(2, 3),
+                    focus_type="sport_plus_balance"
+                ),
+                strength=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(2, 3, 3),
+                    duration=WorkoutDurationConfig(45, 60, 50),
+                    exercise_count=ExerciseCountConfig(5, 7, 6, 0.12),
+                    intensity="hard",
+                    rpe_range=(6, 8),
+                    focus_type="sport_specific"
+                )
+            ),
+            "PEAK": PhaseConfig(
+                stretching=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(2, 3, 3),
+                    duration=WorkoutDurationConfig(8, 10, 9),
+                    exercise_count=ExerciseCountConfig(4, 6, 5, 0.5),
+                    intensity="easy",
+                    rpe_range=(2, 3),
+                    focus_type="sport_plus_balance"
+                ),
+                strength=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(2, 3, 3),
+                    duration=WorkoutDurationConfig(60, 90, 75),
+                    exercise_count=ExerciseCountConfig(6, 8, 7, 0.1),
+                    intensity="hard",
+                    rpe_range=(7, 9),
+                    focus_type="sport_specific"
+                )
+            ),
+            "TAPER": PhaseConfig(
+                stretching=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(2, 3, 3),
+                    duration=WorkoutDurationConfig(10, 15, 12),
+                    exercise_count=ExerciseCountConfig(4, 6, 5, 0.4),
+                    intensity="easy",
+                    rpe_range=(2, 3),
+                    focus_type="sport_plus_balance"
+                ),
+                strength=WorkoutTypeConfig(
+                    frequency=WorkoutFrequencyConfig(1, 2, 2),
+                    duration=WorkoutDurationConfig(30, 45, 40),
+                    exercise_count=ExerciseCountConfig(4, 6, 5, 0.13),
+                    intensity="moderate",
+                    rpe_range=(5, 7),
+                    focus_type="sport_specific"
+                )
+            )
+        },
+        target_muscle_groups={
+            "BASE": ["legs", "core", "shoulders", "back", "arms"],
+            "BUILD": ["legs", "core", "shoulders", "back", "arms"],
+            "PEAK": ["legs", "core", "shoulders", "back"],
+            "TAPER": ["legs", "core", "shoulders"]
+        }
     )
 }
 
@@ -410,6 +576,10 @@ def normalize_sport_type(sport_type: str) -> str:
         return "swimming"
     elif sport_lower in ["triathlon", "tri"]:
         return "triathlon"
+    elif sport_lower in ["gym", "palestra", "weightlifting", "strength"]:
+        return "gym"
+    elif sport_lower == "hyrox":
+        return "hyrox"
     return "running"  # Default
 
 

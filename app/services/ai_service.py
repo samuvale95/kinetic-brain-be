@@ -1160,6 +1160,10 @@ class AIService:
             chunk_size = 1
         elif sport in {"cycling", "bike"}:
             chunk_size = 2
+        elif sport in {"gym", "palestra", "weightlifting", "strength"}:
+            chunk_size = 2
+        elif sport == "hyrox":
+            chunk_size = 1  # Hyrox workouts are more complex, smaller chunks
         else:
             chunk_size = 1
         week_ranges = self._build_week_ranges(total_weeks, chunk_size=chunk_size)
@@ -2307,7 +2311,181 @@ Ensure the total duration matches {duration_minutes} minutes. Include warmup (5-
         prompt += f"\n"
         
         return prompt
-
+    
+    def _build_gym_prompt_section(
+        self,
+        request: WorkoutPlanGenerationRequest,
+        phase: str,
+    ) -> str:
+        """Build gym/strength training-specific prompt section"""
+        if not (request.sport_type and request.sport_type.lower() in ["gym", "palestra", "weightlifting", "strength"] and request.level and request.goal):
+            return ""
+        
+        level_map = {
+            "beginner": "PRINCIPIANTE",
+            "intermediate": "INTERMEDIO", 
+            "advanced": "AVANZATO",
+            "elite": "ELITE"
+        }
+        normalized_level = level_map.get(request.level.lower(), "INTERMEDIO")
+        
+        prompt = f"\n\n=== GYM/STRENGTH TRAINING GUIDELINES (MANDATORY) ==="
+        prompt += f"\nBased on scientific strength training guide for {normalized_level} level, {phase} phase:"
+        prompt += f"\n\nTRAINING SPLITS (choose based on frequency):"
+        prompt += f"\n- Push/Pull/Legs (PPL): 6 days/week - Advanced/Elite"
+        prompt += f"\n- Upper/Lower: 4 days/week - Intermediate/Advanced"
+        prompt += f"\n- Full Body: 3 days/week - Beginner/Intermediate"
+        prompt += f"\n\nTARGET SESSIONS PER WEEK:"
+        if normalized_level == "PRINCIPIANTE":
+            prompt += f"\n- 3 sessions/week (Full Body recommended)"
+            prompt += f"\n- 4-6 exercises per session"
+            prompt += f"\n- 3-4 sets per exercise"
+            prompt += f"\n- 8-12 reps per set (hypertrophy focus)"
+            prompt += f"\n- RPE 5-7 (moderate intensity)"
+            prompt += f"\n- Focus: compound movements (squat, bench, deadlift, rows, overhead press)"
+        elif normalized_level == "INTERMEDIO":
+            prompt += f"\n- 3-4 sessions/week (Upper/Lower or Full Body)"
+            prompt += f"\n- 5-7 exercises per session"
+            prompt += f"\n- 3-5 sets per exercise"
+            prompt += f"\n- 6-12 reps per set (hypertrophy + strength)"
+            prompt += f"\n- RPE 6-8 (moderate to hard intensity)"
+            prompt += f"\n- Focus: progressive overload, periodization"
+        elif normalized_level == "AVANZATO":
+            prompt += f"\n- 4-5 sessions/week (Upper/Lower or PPL)"
+            prompt += f"\n- 5-7 exercises per session"
+            prompt += f"\n- 3-5 sets per exercise"
+            prompt += f"\n- 4-10 reps per set (strength + power focus)"
+            prompt += f"\n- RPE 7-9 (hard to very hard intensity)"
+            prompt += f"\n- Focus: advanced periodization, specialization"
+        elif normalized_level == "ELITE":
+            prompt += f"\n- 5-6 sessions/week (PPL or specialized split)"
+            prompt += f"\n- 6-8 exercises per session"
+            prompt += f"\n- 4-6 sets per exercise"
+            prompt += f"\n- 3-8 reps per set (maximal strength focus)"
+            prompt += f"\n- RPE 8-10 (very hard to maximal intensity)"
+            prompt += f"\n- Focus: competition prep, peaking strategies"
+        
+        prompt += f"\n\nPHASE-SPECIFIC GUIDELINES:"
+        if phase == "BASE":
+            prompt += f"\n- Build foundation with compound movements"
+            prompt += f"\n- Focus on technique and movement patterns"
+            prompt += f"\n- Moderate volume, moderate intensity"
+        elif phase == "BUILD":
+            prompt += f"\n- Increase volume and intensity progressively"
+            prompt += f"\n- Add accessory work for weak points"
+            prompt += f"\n- Implement periodization (volume/intensity waves)"
+        elif phase == "PEAK":
+            prompt += f"\n- Peak strength and power output"
+            prompt += f"\n- Reduce volume, maintain or increase intensity"
+            prompt += f"\n- Focus on competition lifts if applicable"
+        elif phase == "TAPER":
+            prompt += f"\n- Reduce volume significantly (50-70% reduction)"
+            prompt += f"\n- Maintain intensity with lower volume"
+            prompt += f"\n- Focus on recovery and readiness"
+        
+        prompt += f"\n\nEXERCISE SELECTION:"
+        prompt += f"\n- Compound movements: Squat, Deadlift, Bench Press, Overhead Press, Rows, Pull-ups"
+        prompt += f"\n- Accessory work: Isolation exercises for specific muscle groups"
+        prompt += f"\n- Balance: Push/pull ratio, upper/lower balance"
+        prompt += f"\n\nPROGRESSION:"
+        prompt += f"\n- Track: sets, reps, weight (kg), RPE, volume (sets × reps × weight)"
+        prompt += f"\n- Progressive overload: increase weight, reps, or sets over time"
+        prompt += f"\n- Deload weeks: every 4-6 weeks reduce volume 40-50%"
+        prompt += f"\n"
+        
+        return prompt
+    
+    def _build_hyrox_prompt_section(
+        self,
+        request: WorkoutPlanGenerationRequest,
+        phase: str,
+    ) -> str:
+        """Build Hyrox-specific prompt section"""
+        if not (request.sport_type and request.sport_type.lower() == "hyrox" and request.level and request.goal):
+            return ""
+        
+        level_map = {
+            "beginner": "PRINCIPIANTE",
+            "intermediate": "INTERMEDIO", 
+            "advanced": "AVANZATO",
+            "elite": "ELITE"
+        }
+        normalized_level = level_map.get(request.level.lower(), "INTERMEDIO")
+        
+        prompt = f"\n\n=== HYROX TRAINING GUIDELINES (MANDATORY) ==="
+        prompt += f"\nBased on scientific Hyrox training guide for {normalized_level} level, {phase} phase:"
+        prompt += f"\n\nHYROX RACE FORMAT:"
+        prompt += f"\n- 8 rounds of: 1 km Run + 1 Functional Station"
+        prompt += f"\n- 8 Stations: SkiErg, Sled Push, Sled Pull, Burpee Broad Jumps, Rowing, Farmer's Walk, Sandbag Lunges, Wall Balls"
+        prompt += f"\n- Total distance: 8 km running + 8 functional stations"
+        prompt += f"\n- Race duration: typically 60-90 minutes (elite: 50-60 minutes)"
+        prompt += f"\n\nTARGET SESSIONS PER WEEK:"
+        if normalized_level == "PRINCIPIANTE":
+            prompt += f"\n- 3-4 sessions/week"
+            prompt += f"\n- Focus: build aerobic base + functional strength"
+            prompt += f"\n- 1-2 running sessions (easy pace, 5-8 km)"
+            prompt += f"\n- 1-2 functional strength sessions"
+            prompt += f"\n- 1 Hyrox simulation session (4 rounds max)"
+        elif normalized_level == "INTERMEDIO":
+            prompt += f"\n- 4-5 sessions/week"
+            prompt += f"\n- 2-3 running sessions (mix easy + tempo)"
+            prompt += f"\n- 2 functional strength sessions"
+            prompt += f"\n- 1 Hyrox simulation session (6 rounds)"
+        elif normalized_level == "AVANZATO":
+            prompt += f"\n- 5-6 sessions/week"
+            prompt += f"\n- 3 running sessions (easy, tempo, intervals)"
+            prompt += f"\n- 2 functional strength sessions"
+            prompt += f"\n- 1 Hyrox simulation session (8 rounds)"
+        elif normalized_level == "ELITE":
+            prompt += f"\n- 6-7 sessions/week"
+            prompt += f"\n- 3-4 running sessions (high intensity)"
+            prompt += f"\n- 2-3 functional strength sessions"
+            prompt += f"\n- 1-2 Hyrox simulation sessions (8 rounds, race pace)"
+        
+        prompt += f"\n\nWORKOUT STRUCTURE FORMAT:"
+        prompt += f"\n- Hyrox workouts MUST follow this structure:"
+        prompt += f"\n  - Warmup: 10-15 min easy run + dynamic movements"
+        prompt += f"\n  - Main: 8 rounds × (1 km Run + 1 Station)"
+        prompt += f"\n    - Each round: Run (target pace) + Station (target RPE/time)"
+        prompt += f"\n    - Stations rotate: vary order between rounds"
+        prompt += f"\n  - Cooldown: 5-10 min easy run + stretching"
+        prompt += f"\n\nSTATION SPECIFICATIONS:"
+        prompt += f"\n- SkiErg: 100m (beginner), 150m (intermediate), 200m (advanced/elite)"
+        prompt += f"\n- Sled Push: 50m (beginner), 80m (intermediate), 100m (advanced/elite)"
+        prompt += f"\n- Sled Pull: 50m (beginner), 80m (intermediate), 100m (advanced/elite)"
+        prompt += f"\n- Burpee Broad Jumps: 80m (beginner), 100m (intermediate), 120m (advanced/elite)"
+        prompt += f"\n- Rowing: 100m (beginner), 150m (intermediate), 200m (advanced/elite)"
+        prompt += f"\n- Farmer's Walk: 100m (beginner), 150m (intermediate), 200m (advanced/elite)"
+        prompt += f"\n- Sandbag Lunges: 100m (beginner), 150m (intermediate), 200m (advanced/elite)"
+        prompt += f"\n- Wall Balls: 60 reps (beginner), 80 reps (intermediate), 100 reps (advanced/elite)"
+        
+        prompt += f"\n\nPHASE-SPECIFIC GUIDELINES:"
+        if phase == "BASE":
+            prompt += f"\n- Build aerobic base with easy runs (5-8 km)"
+            prompt += f"\n- Functional strength: focus on technique and movement patterns"
+            prompt += f"\n- Hyrox simulations: 4-6 rounds, moderate pace"
+        elif phase == "BUILD":
+            prompt += f"\n- Increase running intensity (tempo runs, intervals)"
+            prompt += f"\n- Functional strength: increase load and volume"
+            prompt += f"\n- Hyrox simulations: 6-8 rounds, race pace practice"
+        elif phase == "PEAK":
+            prompt += f"\n- Peak running performance (VO2max intervals, threshold)"
+            prompt += f"\n- Functional strength: maintain, focus on power"
+            prompt += f"\n- Hyrox simulations: 8 rounds, race pace, full format"
+        elif phase == "TAPER":
+            prompt += f"\n- Reduce volume, maintain intensity"
+            prompt += f"\n- Light functional work, technique focus"
+            prompt += f"\n- 1-2 Hyrox simulations: 4-6 rounds, race pace"
+        
+        prompt += f"\n\nMETRICS TO TRACK:"
+        prompt += f"\n- Time per round (run + station)"
+        prompt += f"\n- Time per station"
+        prompt += f"\n- Total race time (for simulations)"
+        prompt += f"\n- Transition time (run → station)"
+        prompt += f"\n"
+        
+        return prompt
+    
     def _build_workout_plan_prompt(
         self,
         request: WorkoutPlanGenerationRequest,
@@ -2343,6 +2521,10 @@ Ensure the total duration matches {duration_minutes} minutes. Include warmup (5-
             prompt += self._build_swimming_prompt_section(request, phase)
         elif sport_lower in ["cycling", "bike", "bicycle"]:
             prompt += self._build_cycling_prompt_section(request, phase)
+        elif sport_lower in ["gym", "palestra", "weightlifting", "strength"]:
+            prompt += self._build_gym_prompt_section(request, phase)
+        elif sport_lower == "hyrox":
+            prompt += self._build_hyrox_prompt_section(request, phase)
         
         return prompt
     

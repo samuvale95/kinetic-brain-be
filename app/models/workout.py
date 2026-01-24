@@ -75,6 +75,7 @@ class WorkoutSession(Base):
     avg_power = Column(Float)  # Average power in watts
     perceived_exertion = Column(Integer)  # RPE scale 1-10
     notes = Column(Text)
+    strength_metrics = Column(JSON)  # Strength training metrics: {"sets": int, "reps": int, "weight_kg": float, "rpe": int, "exercise": str, "volume": float}
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Relationships
