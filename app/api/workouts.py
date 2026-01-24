@@ -90,7 +90,12 @@ async def create_workout_plan(plan_data: WorkoutPlanCreate,
 
 
 # Progressive Workout Plans - Specific routes must come before dynamic routes
+from app.middleware.rate_limit_middleware import limiter, get_user_id_for_rate_limit
+from slowapi.util import get_remote_address
+from fastapi import Request
+
 @router.post("/plans/generate-progressive", response_model=dict)
+@limiter.limit("50/hour", key_func=lambda request: f"user:{get_user_id_for_rate_limit(request) or get_remote_address(request)}")
 async def generate_progressive_workout_plan(
     request: ProgressiveWorkoutPlanRequest,
     current_user: dict = Depends(get_current_user),
@@ -494,6 +499,7 @@ async def get_performance_analysis(
 
 
 @router.post("/plans/generate-ai", response_model=dict)
+@limiter.limit("100/hour", key_func=lambda request: f"user:{get_user_id_for_rate_limit(request) or get_remote_address(request)}")
 async def generate_ai_workout_plan(ai_request: AIWorkoutPlanRequest,
                                   current_user: dict = Depends(get_current_user),
                                   db: Session = Depends(get_db)):

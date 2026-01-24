@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.database import get_db
+from app.middleware.rate_limit_middleware import limiter
+from slowapi.util import get_remote_address
 from app.schemas.auth import Token, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest
 from app.schemas.user import UserCreate, UserLogin, UserResponse, GoogleAuthRequest, GoogleIdTokenRequest, AppleAuthRequest, AppleIdTokenRequest
 from app.services.auth_service import AuthService
@@ -197,7 +199,8 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(user_data: UserCreate, db: Session = Depends(get_db)):
+@limiter.limit("5/hour", key_func=get_remote_address)
+async def register(request: Request, user_data: UserCreate, db: Session = Depends(get_db)):
     """Register a new user"""
     auth_service = AuthService(db)
     
@@ -910,7 +913,9 @@ async def verify_apple_identity_token(request: AppleIdTokenRequest, db: Session 
 
 
 @router.post("/forgot-password", status_code=status.HTTP_200_OK)
+@limiter.limit("5/hour", key_func=get_remote_address)
 async def forgot_password(
+    http_request: Request,
     request: ForgotPasswordRequest,
     db: Session = Depends(get_db)
 ):
@@ -961,7 +966,9 @@ async def forgot_password(
 
 
 @router.post("/reset-password", status_code=status.HTTP_200_OK)
+@limiter.limit("5/hour", key_func=get_remote_address)
 async def reset_password(
+    http_request: Request,
     request: ResetPasswordRequest,
     db: Session = Depends(get_db)
 ):

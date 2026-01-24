@@ -66,3 +66,9 @@ fastapi-mail>=1.4.1
 
 # Scheduled Tasks (APScheduler - optional, for workout reminders)
 apscheduler==3.10.4
+
+# Rate Limiting
+slowapi==0.1.9
+
+# Monitoring and Metrics
+prometheus-fastapi-instrumentator==7.0.0

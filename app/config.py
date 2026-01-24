@@ -127,6 +127,10 @@ class Settings(BaseSettings):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        
+        # Validate secret key - CRITICAL for production security
+        self._validate_secret_key()
+        
         # If AWS secret name is provided, use it to get database credentials
         # Import here to avoid circular import issues
         # Import directly from file to avoid loading utils/__init__.py which imports security
@@ -201,6 +205,47 @@ class Settings(BaseSettings):
                     # Use WARNING for other errors
                     logger.warning(f"Failed to get database credentials from AWS Secrets Manager: {e}")
                     logger.warning("Falling back to environment variables or defaults")
+    
+    def _validate_secret_key(self):
+        """Validate that secret key is not using default value in production"""
+        from loguru import logger
+        
+        default_secret_key = "your-secret-key-change-in-production"
+        skip_validation = os.getenv("SKIP_SECRET_VALIDATION", "false").lower() == "true"
+        
+        # Check if using default secret key
+        if self.secret_key == default_secret_key:
+            if skip_validation:
+                logger.warning(
+                    "⚠️  SECURITY WARNING: Using default SECRET_KEY value. "
+                    "This is INSECURE and should only be used in development. "
+                    "Set SKIP_SECRET_VALIDATION=true only for local development."
+                )
+            else:
+                error_msg = (
+                    "❌ SECURITY ERROR: SECRET_KEY is using default value. "
+                    "This is INSECURE and not allowed in production. "
+                    "Please set a strong SECRET_KEY in your environment variables or .env file. "
+                    "For local development only, you can set SKIP_SECRET_VALIDATION=true to bypass this check."
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+        
+        # Check if secret key is too short or weak
+        if len(self.secret_key) < 32:
+            logger.warning(
+                f"⚠️  SECURITY WARNING: SECRET_KEY is too short ({len(self.secret_key)} characters). "
+                "Recommendation: Use at least 32 characters for production."
+            )
+        
+        # Check if secret key contains only common/default patterns
+        weak_patterns = ["secret", "password", "key", "123", "default", "test", "demo"]
+        secret_lower = self.secret_key.lower()
+        if any(pattern in secret_lower for pattern in weak_patterns) and len(self.secret_key) < 40:
+            logger.warning(
+                "⚠️  SECURITY WARNING: SECRET_KEY appears to be weak (contains common words). "
+                "Recommendation: Use a strong, randomly generated secret key."
+            )
 
 
 settings = Settings()
