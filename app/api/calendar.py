@@ -701,3 +701,136 @@ async def handle_drag_drop(drag_data: DragDropRequest,
         status_code=status.HTTP_404_NOT_FOUND,
         detail="Calendar event or workout not found"
     )
+
+
+@router.get("/export.ics")
+async def export_calendar_ics(
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD), defaults to today"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD), defaults to 3 months from start"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Export calendar events to iCal format (.ics file).
+    Can be imported into Google Calendar, Apple Calendar, Outlook, etc.
+    """
+    from icalendar import Calendar, Event as ICalEvent
+    
+    user_id = current_user["user_id"]
+    workout_service = WorkoutService(db)
+    
+    # Parse dates
+    if start_date:
+        try:
+            start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid start_date format. Use YYYY-MM-DD"
+            )
+    else:
+        start = date.today()
+    
+    if end_date:
+        try:
+            end = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid end_date format. Use YYYY-MM-DD"
+            )
+    else:
+        end = start + timedelta(days=90)  # 3 months default
+    
+    # Get calendar events
+    events = workout_service.get_calendar_events(
+        user_id=user_id,
+        start_date=start,
+        end_date=end
+    )
+    
+    # Create iCal calendar
+    cal = Calendar()
+    cal.add('prodid', '-//Kinetic Brain//Workout Calendar//EN')
+    cal.add('version', '2.0')
+    cal.add('calscale', 'GREGORIAN')
+    cal.add('method', 'PUBLISH')
+    cal.add('X-WR-CALNAME', 'Kinetic Brain Workouts')
+    cal.add('X-WR-CALDESC', 'Workout calendar from Kinetic Brain')
+    cal.add('X-WR-TIMEZONE', 'UTC')
+    
+    # Get user profile for zones
+    from app.services.profile_service import ProfileService
+    profile_service = ProfileService(db)
+    user_profile = profile_service.get_user_profile(user_id)
+    
+    # Convert events to iCal events
+    for event in events:
+        if not event.scheduled_date:
+            continue
+        
+        ical_event = ICalEvent()
+        
+        # Unique ID for this event
+        uid = f"workout-{event.id}@kineticbrain.com"
+        ical_event.add('uid', uid)
+        
+        # Event dates
+        event_datetime = datetime.combine(event.scheduled_date, datetime.min.time())
+        ical_event.add('dtstart', event_datetime)
+        ical_event.add('dtend', event_datetime + timedelta(minutes=event.duration_minutes))
+        ical_event.add('dtstamp', datetime.now())
+        
+        # Summary (title)
+        ical_event.add('summary', event.title)
+        
+        # Description
+        description_parts = [
+            f"Type: {event.type}",
+            f"Duration: {event.duration_minutes} minutes",
+        ]
+        if event.zone:
+            description_parts.append(f"Zone: {event.zone}")
+        if event.intensity:
+            description_parts.append(f"Intensity: {event.intensity}")
+        if event.structure_json and event.structure_json.get("metadata", {}).get("description"):
+            description_parts.append(f"\n{event.structure_json['metadata']['description']}")
+        
+        ical_event.add('description', "\n".join(description_parts))
+        
+        # Location (optional - could be gym, track, etc.)
+        if event.notes:
+            ical_event.add('location', event.notes)
+        
+        # Status
+        if event.status == "completed":
+            ical_event.add('status', 'CONFIRMED')
+        elif event.status == "skipped":
+            ical_event.add('status', 'CANCELLED')
+        else:
+            ical_event.add('status', 'TENTATIVE')
+        
+        # Categories
+        ical_event.add('categories', [event.type or "Workout"])
+        
+        # URL (link to workout detail)
+        if event.id:
+            from app.config import settings
+            workout_url = f"{settings.frontend_url}/workout-plan/{event.id}"
+            ical_event.add('url', workout_url)
+        
+        # Add to calendar
+        cal.add_component(ical_event)
+    
+    # Generate iCal file content
+    ical_content = cal.to_ical()
+    
+    logger.info(f"[API] Exported {len(events)} calendar events to iCal for user {user_id}")
+    
+    return Response(
+        content=ical_content,
+        media_type="text/calendar",
+        headers={
+            "Content-Disposition": f'attachment; filename="kinetic_brain_workouts_{start}_{end}.ics"'
+        }
+    )

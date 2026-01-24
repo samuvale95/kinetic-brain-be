@@ -202,6 +202,64 @@ async def send_workout_reminders_cron(
         )
 
 
+@router.post("/cron/send-daily-suggested-workouts", status_code=status.HTTP_200_OK)
+async def send_daily_suggested_workouts_cron(
+    target_date: Optional[str] = Query(
+        None,
+        description="Date to send suggestions for (YYYY-MM-DD). Defaults to today."
+    ),
+    _verified: bool = Depends(verify_internal_api_secret),
+    db: Session = Depends(get_db)
+):
+    """
+    Internal cron endpoint to send daily suggested workout notifications.
+    
+    This endpoint sends notifications to users with their daily suggested workout
+    based on readiness metrics, CTL/ATL/TSB, and active plans.
+    
+    Should be called daily (e.g., at 7:00 AM) to notify users about their suggested workout.
+    
+    Example Render Cron Job configuration:
+    - Schedule: 0 7 * * * (every day at 7:00 AM UTC)
+    - Command: curl -X POST "https://your-app.onrender.com/notifications/cron/send-daily-suggested-workouts" -H "X-Internal-API-Secret: YOUR_SECRET"
+    """
+    try:
+        # Parse target_date or use today
+        if target_date:
+            parsed_date = date.fromisoformat(target_date)
+        else:
+            parsed_date = date.today()
+        
+        logger.info(f"[CRON] Starting daily suggested workout notification job for date: {parsed_date}")
+        
+        reminder_service = WorkoutReminderService(db)
+        stats = await reminder_service.send_daily_suggested_workout_notifications(
+            target_date=parsed_date
+        )
+        
+        logger.info(f"[CRON] Daily suggested workout notification job completed: {stats}")
+        
+        return {
+            "success": True,
+            "target_date": parsed_date.isoformat(),
+            "stats": stats,
+            "provider": "render_cron"
+        }
+    
+    except ValueError as e:
+        logger.error(f"[CRON] Invalid date format: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid date format. Use YYYY-MM-DD format. Error: {e}"
+        )
+    except Exception as e:
+        logger.exception(f"[CRON] Error in daily suggested workout notification job: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error sending daily suggested workout notifications: {str(e)}"
+        )
+
+
 @router.get("/scheduler/status", status_code=status.HTTP_200_OK)
 async def get_scheduler_status(
     current_user: dict = Depends(get_current_user)

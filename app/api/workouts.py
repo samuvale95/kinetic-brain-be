@@ -1,15 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select, and_, desc
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from app.database import get_db
 from app.schemas.workout import (
     WorkoutPlanCreate, WorkoutPlanUpdate, WorkoutPlanResponse,
     WorkoutCreate, WorkoutUpdate, WorkoutResponse,
     WorkoutSessionCreate, WorkoutSessionResponse,
-    AIWorkoutPlanRequest
+    AIWorkoutPlanRequest, InstantWorkoutRequest
 )
 from app.schemas.healthkit import (
     WatchWorkoutFormatResponse,
@@ -926,6 +926,115 @@ async def delete_workout_plan(plan_id: int,
     return {"message": "Workout plan deleted successfully"}
 
 
+@router.post("/plans/{plan_id}/restart", response_model=WorkoutPlanResponse)
+async def restart_workout_plan(
+    plan_id: int,
+    start_date: Optional[str] = Query(None, description="New start date (YYYY-MM-DD), defaults to today"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Restart a workout plan - creates a new plan with same structure but resets dates and status.
+    """
+    user_id = current_user["user_id"]
+    workout_service = WorkoutService(db)
+    
+    # Get original plan
+    original_plan = workout_service.get_workout_plan(plan_id, user_id)
+    if not original_plan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workout plan not found"
+        )
+    
+    # Parse start_date or use today
+    if start_date:
+        try:
+            new_start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date format. Use YYYY-MM-DD"
+            )
+    else:
+        new_start_date = date.today()
+    
+    # Calculate new end_date
+    total_weeks = original_plan.total_weeks
+    new_end_date = new_start_date + timedelta(weeks=total_weeks)
+    
+    # Archive original plan
+    original_plan.status = "archived"
+    db.commit()
+    
+    # Create new plan with same title + "(Restart)"
+    new_plan = WorkoutPlan(
+        user_id=user_id,
+        title=f"{original_plan.title} (Restart)",
+        description=original_plan.description,
+        start_date=new_start_date,
+        end_date=new_end_date,
+        total_weeks=total_weeks,
+        goal=original_plan.goal,
+        sport_type=original_plan.sport_type,
+        level=original_plan.level,
+        status="active"
+    )
+    
+    db.add(new_plan)
+    db.flush()  # Get the new plan ID
+    
+    # Copy workouts from original plan (reset status to scheduled)
+    original_workouts = db.query(Workout).filter(
+        Workout.plan_id == plan_id,
+        Workout.user_id == user_id
+    ).all()
+    
+    for old_workout in original_workouts:
+        # Calculate new scheduled_date based on day_number
+        if old_workout.day_number:
+            new_scheduled_date = new_start_date + timedelta(days=old_workout.day_number - 1)
+        else:
+            new_scheduled_date = new_start_date
+        
+        new_workout = Workout(
+            user_id=user_id,
+            plan_id=new_plan.id,
+            title=old_workout.title,
+            type=old_workout.type,
+            day_number=old_workout.day_number,
+            scheduled_date=new_scheduled_date,
+            duration_minutes=old_workout.duration_minutes,
+            intensity=old_workout.intensity,
+            zone=old_workout.zone,
+            structure_json=old_workout.structure_json,
+            status=WorkoutStatus.SCHEDULED,  # Reset to scheduled
+            notes=old_workout.notes
+        )
+        db.add(new_workout)
+    
+    # Create calendar events for new workouts
+    workout_service.create_calendar_events_from_workouts(
+        user_id=user_id,
+        workouts=[w for w in db.query(Workout).filter(Workout.plan_id == new_plan.id).all()],
+        plan_id=new_plan.id
+    )
+    
+    db.commit()
+    db.refresh(new_plan)
+    
+    logger.info(
+        f"[API] Plan {plan_id} restarted as plan {new_plan.id} "
+        f"by user {user_id}, start_date: {new_start_date}"
+    )
+    
+    # Add is_progressive field
+    plan_dict = WorkoutPlanResponse.model_validate(new_plan).model_dump()
+    plan_dict["is_progressive"] = workout_service._is_progressive_plan(new_plan)
+    
+    return plan_dict
+
+
 # Workout Sessions - MUST be defined BEFORE /{workout_id} route
 @router.get("/sessions", response_model=List[WorkoutSessionResponse])
 async def get_workout_sessions(skip: int = Query(0, ge=0),
@@ -1095,6 +1204,119 @@ async def complete_workout(workout_id: int,
     }
 
 
+@router.patch("/{workout_id}/skip")
+async def skip_workout(workout_id: int,
+                      current_user: dict = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    """Mark workout as skipped"""
+    workout_service = WorkoutService(db)
+    
+    # Verify workout exists and belongs to user
+    workout = workout_service.get_workout(workout_id, current_user["user_id"])
+    if not workout:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workout not found"
+        )
+    
+    # Only allow skipping scheduled workouts
+    if workout.status != WorkoutStatus.SCHEDULED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot skip workout with status: {workout.status.value}"
+        )
+    
+    # Update workout status to skipped
+    workout.status = WorkoutStatus.SKIPPED
+    db.commit()
+    db.refresh(workout)
+    
+    logger.info(f"[API] Workout {workout_id} skipped by user {current_user['user_id']}")
+    
+    return {
+        "id": workout.id,
+        "skipped": True,
+        "skipped_at": workout.updated_at.isoformat() if workout.updated_at else None,
+        "status": workout.status.value
+    }
+
+
+@router.patch("/{workout_id}/reschedule")
+async def reschedule_workout(
+    workout_id: int,
+    new_date: str = Query(..., description="New scheduled date (YYYY-MM-DD)"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Reschedule workout to a new date (for drag & drop reordering)"""
+    workout_service = WorkoutService(db)
+    
+    # Verify workout exists and belongs to user
+    workout = workout_service.get_workout(workout_id, current_user["user_id"])
+    if not workout:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workout not found"
+        )
+    
+    # Parse new date
+    try:
+        new_scheduled_date = datetime.strptime(new_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid date format. Use YYYY-MM-DD"
+        )
+    
+    # If workout is part of a plan, validate the new date is within plan range
+    if workout.plan_id:
+        plan = db.query(WorkoutPlan).filter(WorkoutPlan.id == workout.plan_id).first()
+        if plan:
+            if new_scheduled_date < plan.start_date or new_scheduled_date > plan.end_date:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"New date must be within plan range ({plan.start_date} to {plan.end_date})"
+                )
+            
+            # Recalculate day_number based on plan start date
+            days_diff = (new_scheduled_date - plan.start_date).days + 1
+            workout.day_number = days_diff
+    
+    # Update scheduled_date
+    old_date = workout.scheduled_date
+    workout.scheduled_date = new_scheduled_date
+    
+    # Update calendar events if they exist
+    from app.models.calendar import CalendarEvent
+    calendar_events = db.query(CalendarEvent).filter(
+        CalendarEvent.workout_id == workout_id
+    ).all()
+    
+    for event in calendar_events:
+        # Update event date (keep time if it exists)
+        if event.event_date:
+            old_datetime = event.event_date
+            new_datetime = datetime.combine(new_scheduled_date, old_datetime.time())
+            event.event_date = new_datetime
+        else:
+            event.event_date = datetime.combine(new_scheduled_date, datetime.min.time())
+    
+    db.commit()
+    db.refresh(workout)
+    
+    logger.info(
+        f"[API] Workout {workout_id} rescheduled from {old_date} to {new_scheduled_date} "
+        f"by user {current_user['user_id']}"
+    )
+    
+    return {
+        "id": workout.id,
+        "scheduled_date": workout.scheduled_date.isoformat(),
+        "day_number": workout.day_number,
+        "calendar_events_updated": len(calendar_events)
+    }
+
+
 @router.get("/{workout_id}/watch-format", response_model=WatchWorkoutFormatResponse)
 async def get_workout_watch_format(
     workout_id: int,
@@ -1224,3 +1446,527 @@ async def create_session_from_watch(
         matched=True,
         workout_matched_id=request.workout_id
     )
+
+
+# Export Workout to FIT/TCX
+@router.get("/{workout_id}/export")
+async def export_workout(
+    workout_id: int,
+    format: str = Query(..., pattern="^(fit|tcx)$", description="Export format: fit or tcx"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Export workout to FIT or TCX format for Garmin, Zwift, etc.
+    """
+    from app.utils.fit_tcx_export import export_to_tcx, export_to_fit
+    from app.services.profile_service import ProfileService
+    
+    # Get workout
+    workout = db.execute(
+        select(Workout)
+        .where(
+            and_(
+                Workout.id == workout_id,
+                Workout.user_id == current_user["user_id"]
+            )
+        )
+    ).scalar_one_or_none()
+    
+    if not workout:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workout not found"
+        )
+    
+    # Get user profile for zones
+    profile_service = ProfileService(db)
+    user_profile = profile_service.get_user_profile(current_user["user_id"])
+    
+    # Prepare workout data
+    workout_data = {
+        "id": workout.id,
+        "title": workout.title,
+        "sport_type": workout.plan.sport_type if workout.plan else "run",
+        "duration_minutes": workout.duration_minutes,
+        "intensity": workout.intensity,
+        "zone": workout.zone,
+        "structure_json": workout.structure_json,
+    }
+    
+    # Export based on format
+    if format == "tcx":
+        file_content = export_to_tcx(workout_data, user_profile)
+        filename = f"workout_{workout_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tcx"
+        media_type = "application/xml"
+    elif format == "fit":
+        file_content = export_to_fit(workout_data, user_profile)
+        filename = f"workout_{workout_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.fit"
+        media_type = "application/octet-stream"
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid format. Use 'fit' or 'tcx'"
+        )
+    
+    logger.info(f"[API] Exported workout {workout_id} to {format.upper()} format")
+    
+    return Response(
+        content=file_content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
+
+
+# Import Workout from FIT/TCX/GPX
+@router.post("/import")
+async def import_workout(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Import workout from FIT, TCX, or GPX file.
+    Creates a WorkoutSession or matches with existing workout.
+    """
+    from fitparse import FitFile
+    import gpxpy
+    import xml.etree.ElementTree as ET
+    
+    user_id = current_user["user_id"]
+    workout_service = WorkoutService(db)
+    
+    # Determine file type from extension
+    filename = file.filename or "workout"
+    file_ext = filename.lower().split('.')[-1] if '.' in filename else ''
+    
+    # Read file content
+    file_content = await file.read()
+    
+    try:
+        if file_ext == 'fit':
+            # Parse FIT file
+            fitfile = FitFile(file_content)
+            
+            # Extract workout data from FIT
+            workout_data = {
+                "sport_type": "run",  # Default, will be updated from FIT data
+                "duration_seconds": 0,
+                "distance_meters": 0,
+                "avg_hr": None,
+                "max_hr": None,
+                "avg_power": None,
+                "max_power": None,
+                "start_time": None,
+            }
+            
+            for record in fitfile.get_messages():
+                if record.name == 'file_id':
+                    for field in record:
+                        if field.name == 'type' and field.value == 4:  # Activity file
+                            pass
+                
+                if record.name == 'session':
+                    for field in record:
+                        if field.name == 'sport':
+                            sport_map = {0: 'run', 1: 'bike', 2: 'swim'}
+                            workout_data["sport_type"] = sport_map.get(field.value, 'run')
+                        elif field.name == 'total_elapsed_time':
+                            workout_data["duration_seconds"] = field.value
+                        elif field.name == 'total_distance':
+                            workout_data["distance_meters"] = field.value
+                        elif field.name == 'avg_heart_rate':
+                            workout_data["avg_hr"] = field.value
+                        elif field.name == 'max_heart_rate':
+                            workout_data["max_hr"] = field.value
+                        elif field.name == 'avg_power':
+                            workout_data["avg_power"] = field.value
+                        elif field.name == 'max_power':
+                            workout_data["max_power"] = field.value
+                        elif field.name == 'timestamp':
+                            workout_data["start_time"] = field.value
+            
+            # Create workout session
+            if workout_data["start_time"]:
+                actual_date = workout_data["start_time"]
+            else:
+                actual_date = datetime.now()
+            
+            duration_minutes = workout_data["duration_seconds"] // 60
+            
+            # Try to match with existing workout
+            scheduled_date = actual_date.date() if isinstance(actual_date, datetime) else date.today()
+            existing_workout = db.query(Workout).filter(
+                Workout.user_id == user_id,
+                Workout.scheduled_date == scheduled_date,
+                Workout.status == WorkoutStatus.SCHEDULED
+            ).first()
+            
+            if existing_workout:
+                # Create session for existing workout
+                session = WorkoutSession(
+                    workout_id=existing_workout.id,
+                    user_id=user_id,
+                    actual_date=actual_date if isinstance(actual_date, datetime) else datetime.combine(scheduled_date, datetime.min.time()),
+                    duration_minutes=duration_minutes,
+                    avg_hr=workout_data.get("avg_hr"),
+                    max_hr=workout_data.get("max_hr"),
+                    avg_power=workout_data.get("avg_power"),
+                    notes=f"Imported from FIT file: {filename}"
+                )
+                db.add(session)
+                existing_workout.status = WorkoutStatus.COMPLETED
+                db.commit()
+                db.refresh(session)
+                
+                return {
+                    "message": "Workout imported and matched to existing workout",
+                    "workout_id": existing_workout.id,
+                    "session_id": session.id,
+                    "matched": True
+                }
+            else:
+                # Create standalone session (no workout match)
+                session = WorkoutSession(
+                    workout_id=None,  # No workout match
+                    user_id=user_id,
+                    actual_date=actual_date if isinstance(actual_date, datetime) else datetime.combine(scheduled_date, datetime.min.time()),
+                    duration_minutes=duration_minutes,
+                    avg_hr=workout_data.get("avg_hr"),
+                    max_hr=workout_data.get("max_hr"),
+                    avg_power=workout_data.get("avg_power"),
+                    notes=f"Imported from FIT file: {filename}"
+                )
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                
+                return {
+                    "message": "Workout imported as standalone session",
+                    "session_id": session.id,
+                    "matched": False
+                }
+        
+        elif file_ext == 'tcx':
+            # Parse TCX file
+            root = ET.fromstring(file_content)
+            
+            # Extract data from TCX
+            workout_data = {
+                "sport_type": "run",
+                "duration_seconds": 0,
+                "distance_meters": 0,
+                "avg_hr": None,
+                "start_time": None,
+            }
+            
+            # Parse TCX structure
+            activities = root.find("{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}Activities")
+            if activities is not None:
+                activity = activities.find("{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}Activity")
+                if activity is not None:
+                    sport = activity.get("Sport", "Running")
+                    workout_data["sport_type"] = sport.lower()
+                    
+                    activity_id = activity.find("{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}Id")
+                    if activity_id is not None and activity_id.text:
+                        try:
+                            workout_data["start_time"] = datetime.fromisoformat(activity_id.text.replace('Z', '+00:00'))
+                        except:
+                            workout_data["start_time"] = datetime.now()
+                    
+                    lap = activity.find("{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}Lap")
+                    if lap is not None:
+                        total_time = lap.find("{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}TotalTimeSeconds")
+                        if total_time is not None and total_time.text:
+                            workout_data["duration_seconds"] = int(float(total_time.text))
+                        
+                        distance = lap.find("{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}DistanceMeters")
+                        if distance is not None and distance.text:
+                            workout_data["distance_meters"] = float(distance.text)
+                        
+                        avg_hr_elem = lap.find("{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}AverageHeartRateBpm")
+                        if avg_hr_elem is not None:
+                            value = avg_hr_elem.find("{http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2}Value")
+                            if value is not None and value.text:
+                                workout_data["avg_hr"] = int(float(value.text))
+            
+            # Create session (similar to FIT)
+            actual_date = workout_data.get("start_time") or datetime.now()
+            duration_minutes = workout_data["duration_seconds"] // 60
+            scheduled_date = actual_date.date() if isinstance(actual_date, datetime) else date.today()
+            
+            existing_workout = db.query(Workout).filter(
+                Workout.user_id == user_id,
+                Workout.scheduled_date == scheduled_date,
+                Workout.status == WorkoutStatus.SCHEDULED
+            ).first()
+            
+            if existing_workout:
+                session = WorkoutSession(
+                    workout_id=existing_workout.id,
+                    user_id=user_id,
+                    actual_date=actual_date if isinstance(actual_date, datetime) else datetime.combine(scheduled_date, datetime.min.time()),
+                    duration_minutes=duration_minutes,
+                    avg_hr=workout_data.get("avg_hr"),
+                    notes=f"Imported from TCX file: {filename}"
+                )
+                db.add(session)
+                existing_workout.status = WorkoutStatus.COMPLETED
+                db.commit()
+                db.refresh(session)
+                
+                return {
+                    "message": "Workout imported and matched to existing workout",
+                    "workout_id": existing_workout.id,
+                    "session_id": session.id,
+                    "matched": True
+                }
+            else:
+                session = WorkoutSession(
+                    workout_id=None,
+                    user_id=user_id,
+                    actual_date=actual_date if isinstance(actual_date, datetime) else datetime.combine(scheduled_date, datetime.min.time()),
+                    duration_minutes=duration_minutes,
+                    avg_hr=workout_data.get("avg_hr"),
+                    notes=f"Imported from TCX file: {filename}"
+                )
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                
+                return {
+                    "message": "Workout imported as standalone session",
+                    "session_id": session.id,
+                    "matched": False
+                }
+        
+        elif file_ext == 'gpx':
+            # Parse GPX file
+            gpx = gpxpy.parse(file_content.decode('utf-8'))
+            
+            # Extract data from GPX
+            workout_data = {
+                "sport_type": "run",
+                "duration_seconds": 0,
+                "distance_meters": 0,
+                "avg_hr": None,
+                "start_time": None,
+            }
+            
+            total_time = 0
+            total_distance = 0
+            points_with_hr = []
+            start_time = None
+            
+            for track in gpx.tracks:
+                for segment in track.segments:
+                    for i, point in enumerate(segment.points):
+                        if point.time:
+                            if not start_time:
+                                start_time = point.time
+                                workout_data["start_time"] = point.time
+                            total_time = (point.time - start_time).total_seconds()
+                        
+                        # Try to extract HR from extensions (if present)
+                        if hasattr(point, 'extensions') and point.extensions:
+                            try:
+                                # GPX extensions can be complex, try to find HR
+                                for ext in point.extensions:
+                                    if hasattr(ext, 'tag') and 'hr' in ext.tag.lower():
+                                        if hasattr(ext, 'text') and ext.text:
+                                            points_with_hr.append(int(float(ext.text)))
+                            except:
+                                pass
+                        
+                        if i > 0:
+                            prev_point = segment.points[i - 1]
+                            total_distance += point.distance_2d(prev_point)
+            
+            workout_data["duration_seconds"] = int(total_time) if total_time > 0 else 0
+            workout_data["distance_meters"] = total_distance
+            workout_data["avg_hr"] = int(sum(points_with_hr) / len(points_with_hr)) if points_with_hr else None
+            
+            # Create session
+            actual_date = workout_data.get("start_time") or datetime.now()
+            duration_minutes = workout_data["duration_seconds"] // 60
+            scheduled_date = actual_date.date() if isinstance(actual_date, datetime) else date.today()
+            
+            existing_workout = db.query(Workout).filter(
+                Workout.user_id == user_id,
+                Workout.scheduled_date == scheduled_date,
+                Workout.status == WorkoutStatus.SCHEDULED
+            ).first()
+            
+            if existing_workout:
+                session = WorkoutSession(
+                    workout_id=existing_workout.id,
+                    user_id=user_id,
+                    actual_date=actual_date if isinstance(actual_date, datetime) else datetime.combine(scheduled_date, datetime.min.time()),
+                    duration_minutes=duration_minutes,
+                    avg_hr=workout_data.get("avg_hr"),
+                    notes=f"Imported from GPX file: {filename}"
+                )
+                db.add(session)
+                existing_workout.status = WorkoutStatus.COMPLETED
+                db.commit()
+                db.refresh(session)
+                
+                return {
+                    "message": "Workout imported and matched to existing workout",
+                    "workout_id": existing_workout.id,
+                    "session_id": session.id,
+                    "matched": True
+                }
+            else:
+                session = WorkoutSession(
+                    workout_id=None,
+                    user_id=user_id,
+                    actual_date=actual_date if isinstance(actual_date, datetime) else datetime.combine(scheduled_date, datetime.min.time()),
+                    duration_minutes=duration_minutes,
+                    avg_hr=workout_data.get("avg_hr"),
+                    notes=f"Imported from GPX file: {filename}"
+                )
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                
+                return {
+                    "message": "Workout imported as standalone session",
+                    "session_id": session.id,
+                    "matched": False
+                }
+        
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file format: {file_ext}. Supported formats: fit, tcx, gpx"
+            )
+    
+    except Exception as e:
+        logger.error(f"[API] Error importing workout file: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error parsing file: {str(e)}"
+        )
+
+
+# Daily Suggested Workout
+@router.get("/suggested", response_model=dict)
+async def get_suggested_workout(
+    target_date: Optional[str] = Query(None, description="Target date (YYYY-MM-DD), defaults to today"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get suggested workout for today based on readiness metrics, CTL/ATL/TSB, and active plan.
+    """
+    user_id = current_user["user_id"]
+    workout_service = WorkoutService(db)
+    
+    # Parse target_date if provided
+    parsed_date = None
+    if target_date:
+        try:
+            parsed_date = datetime.strptime(target_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date format. Use YYYY-MM-DD"
+            )
+    
+    suggestion = workout_service.get_suggested_workout(user_id, parsed_date)
+    
+    if suggestion is None:
+        return {
+            "workout": None,
+            "suggestion": "none",
+            "reason": "Nessun suggerimento disponibile",
+            "metrics": {}
+        }
+    
+    return suggestion
+
+
+# Instant Workout (TrainNow)
+@router.post("/instant", response_model=dict)
+@limiter.limit("10/hour", key_func=lambda request: f"user:{get_user_id_for_rate_limit(request) or get_remote_address(request)}")
+async def create_instant_workout(
+    request: Request,
+    instant_request: InstantWorkoutRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate instant workout on-demand (TrainNow feature).
+    Creates a standalone workout without a plan.
+    """
+    user_id = current_user["user_id"]
+    logger.info(f"[API] POST /workouts/instant - user_id: {user_id}, sport: {instant_request.sport_type}, duration: {instant_request.duration_minutes}")
+    
+    workout_service = WorkoutService(db)
+    ai_service = AIService(db)
+    
+    # Get user profile for context
+    from app.services.profile_service import ProfileService
+    profile_service = ProfileService(db)
+    user_profile = profile_service.get_user_profile(user_id)
+    
+    # Generate workout using AI
+    try:
+        # Use AI service to generate workout structure
+        workout_data = await ai_service.generate_single_workout(
+            sport_type=instant_request.sport_type,
+            duration_minutes=instant_request.duration_minutes,
+            intensity=instant_request.intensity or "moderate",
+            goal=instant_request.goal,
+            zone=instant_request.zone,
+            user_profile=user_profile
+        )
+        
+        # Create workout (standalone, no plan_id)
+        workout = Workout(
+            user_id=user_id,
+            plan_id=None,  # Standalone workout
+            title=workout_data.get("title", f"{instant_request.sport_type.capitalize()} Workout"),
+            type=workout_data.get("type", "endurance"),
+            scheduled_date=date.today(),  # Today
+            duration_minutes=instant_request.duration_minutes,
+            intensity=instant_request.intensity or "moderate",
+            zone=instant_request.zone or workout_data.get("zone", "Z2"),
+            structure_json=workout_data.get("structure"),
+            status=WorkoutStatus.SCHEDULED,
+            notes=f"Instant workout generated on-demand"
+        )
+        
+        db.add(workout)
+        db.commit()
+        db.refresh(workout)
+        
+        logger.info(f"[API] Instant workout created: workout_id={workout.id}")
+        
+        return {
+            "workout": {
+                "id": workout.id,
+                "title": workout.title,
+                "type": workout.type,
+                "sport_type": instant_request.sport_type,
+                "duration_minutes": workout.duration_minutes,
+                "intensity": workout.intensity,
+                "zone": workout.zone,
+                "structure_json": workout.structure_json,
+                "scheduled_date": workout.scheduled_date.isoformat() if workout.scheduled_date else None,
+                "status": workout.status.value,
+                "is_instant": True
+            },
+            "message": "Workout generato con successo"
+        }
+        
+    except Exception as e:
+        logger.error(f"[API] Error generating instant workout: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Errore nella generazione del workout: {str(e)}"
+        )

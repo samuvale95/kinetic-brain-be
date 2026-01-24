@@ -376,7 +376,7 @@ if not minimal_startup:
     setup_metrics(app)
     
     # Include API routers
-    from app.api import auth, profile, workouts, calendar, ai, dashboard, strava, weather, statistics, metrics, plan_versions, exercises, healthkit, feedback, notifications
+    from app.api import auth, profile, workouts, calendar, ai, dashboard, strava, weather, statistics, metrics, plan_versions, exercises, healthkit, feedback, notifications, sync, garmin
     app.include_router(auth.router)
     app.include_router(profile.router)
     app.include_router(workouts.router)
@@ -392,6 +392,8 @@ if not minimal_startup:
     app.include_router(exercises.router)
     app.include_router(feedback.router)
     app.include_router(notifications.router)
+    app.include_router(sync.router)
+    app.include_router(garmin.router)
 
 
 # Root endpoint

@@ -52,6 +52,22 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan"
     )
+    sync_conflicts = relationship(
+        "SyncConflict",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+    sync_history = relationship(
+        "SyncHistory",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+    garmin_account = relationship(
+        "GarminAccount",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
     # strava_account = relationship("StravaAccount", back_populates="user", uselist=False)  # Temporarily disabled
 
 

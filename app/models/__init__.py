@@ -11,6 +11,8 @@ from .plan_version import PlanVersion
 from .password_reset_token import PasswordResetToken
 from .email_config import EmailConfig
 from .notification import NotificationPreferences, DeviceToken, NotificationLog
+from .sync import SyncConflict, SyncHistory
+from .garmin import GarminAccount, GarminActivity
 
 __all__ = [
     "User",
@@ -37,4 +39,8 @@ __all__ = [
     "NotificationPreferences",
     "DeviceToken",
     "NotificationLog",
+    "SyncConflict",
+    "SyncHistory",
+    "GarminAccount",
+    "GarminActivity",
 ]

@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from app.models.workout import WorkoutPlan, Workout, WorkoutSession, WorkoutStatus
 from app.models.calendar import CalendarEvent
 from app.models.strava import StravaActivity
+from app.models.daily_metrics import DailyReadinessMetrics, DailyPerformanceMetrics
 from app.schemas.workout import (
     WorkoutPlanCreate,
     WorkoutPlanUpdate,
@@ -1049,3 +1050,168 @@ class WorkoutService:
         }
         
         return plan_details
+    
+    def get_suggested_workout(self, user_id: int, target_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get suggested workout for today based on readiness, CTL/ATL/TSB, and active plan.
+        
+        Args:
+            user_id: User ID
+            target_date: Date for suggestion (default: today)
+        
+        Returns:
+            Dict with suggested workout and reasoning, or None if no suggestion
+        """
+        if target_date is None:
+            target_date = date.today()
+        
+        # Get today's readiness metrics
+        readiness = self.db.query(DailyReadinessMetrics).filter(
+            DailyReadinessMetrics.user_id == user_id,
+            DailyReadinessMetrics.metric_date == target_date
+        ).first()
+        
+        # Get today's performance metrics (CTL/ATL/TSB)
+        performance = self.db.query(DailyPerformanceMetrics).filter(
+            DailyPerformanceMetrics.user_id == user_id,
+            DailyPerformanceMetrics.metric_date == target_date
+        ).first()
+        
+        # Get workouts completed today
+        today_workouts = self.db.query(Workout).filter(
+            Workout.user_id == user_id,
+            Workout.scheduled_date == target_date,
+            Workout.status == WorkoutStatus.COMPLETED
+        ).all()
+        
+        # Get active plan
+        active_plan = self.db.query(WorkoutPlan).filter(
+            WorkoutPlan.user_id == user_id,
+            WorkoutPlan.status == "active"
+        ).first()
+        
+        # Determine workout suggestion based on metrics
+        suggestion_reason = []
+        suggested_intensity = "moderate"
+        suggested_zone = "Z2"
+        suggested_duration = 60
+        suggested_type = "endurance"
+        
+        # Check readiness score
+        if readiness and readiness.recovery_index is not None:
+            recovery_index = readiness.recovery_index
+            if recovery_index < 0.4:
+                # Low recovery - suggest easy/recovery workout
+                suggested_intensity = "easy"
+                suggested_zone = "Z1"
+                suggested_type = "recovery"
+                suggested_duration = 30
+                suggestion_reason.append("Recovery score basso - workout di recupero consigliato")
+            elif recovery_index > 0.8:
+                # High recovery - can do harder workout
+                suggested_intensity = "moderate"
+                suggested_zone = "Z3"
+                suggested_type = "interval"
+                suggestion_reason.append("Recovery score alto - puoi fare un workout più intenso")
+        
+        # Check TSB (Training Stress Balance)
+        if performance and performance.tsb is not None:
+            tsb = performance.tsb
+            if tsb < -10:
+                # Negative TSB - fatigued, suggest easy
+                suggested_intensity = "easy"
+                suggested_zone = "Z1"
+                suggested_type = "recovery"
+                suggested_duration = min(suggested_duration, 45)
+                suggestion_reason.append(f"TSB negativo ({tsb:.1f}) - recupero necessario")
+            elif tsb > 10:
+                # Positive TSB - fresh, can do harder
+                suggested_intensity = "moderate"
+                suggested_zone = "Z3"
+                suggested_type = "interval"
+                suggestion_reason.append(f"TSB positivo ({tsb:.1f}) - forma buona per workout intenso")
+        
+        # Check if already completed workout today
+        if today_workouts:
+            total_duration = sum(w.duration_minutes or 0 for w in today_workouts)
+            if total_duration >= 90:
+                # Already did significant workout - suggest rest or very easy
+                suggested_intensity = "easy"
+                suggested_zone = "Z1"
+                suggested_type = "recovery"
+                suggested_duration = 20
+                suggestion_reason.append(f"Già completato {total_duration} minuti oggi - recupero consigliato")
+                return {
+                    "workout": None,
+                    "suggestion": "rest",
+                    "reason": " ".join(suggestion_reason) if suggestion_reason else "Hai già fatto abbastanza oggi",
+                    "metrics": {
+                        "recovery_index": readiness.recovery_index if readiness else None,
+                        "tsb": performance.tsb if performance else None,
+                        "workouts_today": len(today_workouts),
+                        "total_duration_today": total_duration
+                    }
+                }
+        
+        # Get scheduled workout from active plan for today
+        scheduled_workout = None
+        if active_plan:
+            scheduled_workout = self.db.query(Workout).filter(
+                Workout.user_id == user_id,
+                Workout.plan_id == active_plan.id,
+                Workout.scheduled_date == target_date,
+                Workout.status == WorkoutStatus.SCHEDULED
+            ).first()
+        
+        # If there's a scheduled workout, suggest that
+        if scheduled_workout:
+            return {
+                "workout": {
+                    "id": scheduled_workout.id,
+                    "title": scheduled_workout.title,
+                    "type": scheduled_workout.type,
+                    "duration_minutes": scheduled_workout.duration_minutes,
+                    "zone": scheduled_workout.zone,
+                    "intensity": scheduled_workout.intensity,
+                    "structure_json": scheduled_workout.structure_json,
+                    "plan_id": scheduled_workout.plan_id,
+                    "plan_title": active_plan.title if active_plan else None
+                },
+                "suggestion": "scheduled",
+                "reason": "Workout pianificato per oggi dal tuo piano attivo",
+                "metrics": {
+                    "recovery_index": readiness.recovery_index if readiness else None,
+                    "tsb": performance.tsb if performance else None,
+                    "workouts_today": len(today_workouts)
+                }
+            }
+        
+        # No scheduled workout - suggest based on metrics
+        if not suggestion_reason:
+            suggestion_reason.append("Nessun workout pianificato per oggi")
+        
+        # Determine sport type from active plan or default to run
+        sport_type = active_plan.sport_type if active_plan else "run"
+        
+        return {
+            "workout": {
+                "title": f"Workout {suggested_type.capitalize()} Suggerito",
+                "type": suggested_type,
+                "sport_type": sport_type,
+                "duration_minutes": suggested_duration,
+                "zone": suggested_zone,
+                "intensity": suggested_intensity,
+                "structure_json": None,  # Will be generated if user starts
+                "plan_id": None,
+                "is_suggested": True
+            },
+            "suggestion": "generated",
+            "reason": " ".join(suggestion_reason) if suggestion_reason else "Workout suggerito basato sulle tue metriche",
+            "metrics": {
+                "recovery_index": readiness.recovery_index if readiness else None,
+                "tsb": performance.tsb if performance else None,
+                "ctl": performance.ctl if performance else None,
+                "atl": performance.atl if performance else None,
+                "workouts_today": len(today_workouts)
+            }
+        }

@@ -1538,6 +1538,146 @@ class AIService:
         logger.info(f"[WORKOUT_ANALYSIS] Workout analysis completed successfully")
         return result
 
+    async def generate_single_workout(
+        self,
+        sport_type: str,
+        duration_minutes: int,
+        intensity: str = "moderate",
+        goal: Optional[str] = None,
+        zone: Optional[str] = None,
+        user_profile: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate a single workout on-demand (for TrainNow feature).
+        
+        Args:
+            sport_type: Sport type (run, bike, swim, etc.)
+            duration_minutes: Workout duration in minutes
+            intensity: Workout intensity (easy, moderate, hard)
+            goal: Workout goal (endurance, speed, recovery, etc.)
+            zone: Target zone (Z1-Z7)
+            user_profile: Optional user profile for context
+        
+        Returns:
+            Dict with workout data including title, type, structure, etc.
+        """
+        logger.info(f"[AI] Generating single workout - sport: {sport_type}, duration: {duration_minutes}, intensity: {intensity}")
+        
+        # Build prompt for single workout
+        prompt = f"""Generate a single {sport_type} workout with the following specifications:
+
+Duration: {duration_minutes} minutes
+Intensity: {intensity}
+Target Zone: {zone or 'Z2'}
+Goal: {goal or 'general fitness'}
+
+This is a standalone workout (not part of a training plan) for immediate execution.
+
+Return a JSON object with this structure:
+{{
+  "title": "Workout title",
+  "type": "endurance|interval|recovery|speed|strength",
+  "zone": "{zone or 'Z2'}",
+  "intensity": "{intensity}",
+  "structure": {{
+    "sport": "{sport_type}",
+    "segments": [
+      {{
+        "segment_type": "warmup",
+        "steps": [...]
+      }},
+      {{
+        "segment_type": "main",
+        "steps": [...]
+      }},
+      {{
+        "segment_type": "cooldown",
+        "steps": [...]
+      }}
+    ],
+    "metadata": {{
+      "focus": "workout focus",
+      "description": "workout description"
+    }}
+  }}
+}}
+
+Ensure the total duration matches {duration_minutes} minutes. Include warmup (5-10 min), main segment, and cooldown (5-10 min)."""
+        
+        # Use AI to generate workout
+        try:
+            if settings.mock_llm:
+                # Mock response for testing
+                return self._generate_mock_single_workout(sport_type, duration_minutes, intensity, zone)
+            
+            ai_request = AIRequest(
+                prompt=prompt,
+                context=json.dumps(user_profile) if user_profile else None
+            )
+            
+            response = self.generate_response(ai_request)
+            
+            # Parse AI response
+            try:
+                workout_data = json.loads(response.response)
+            except json.JSONDecodeError:
+                # Try to extract JSON from response
+                import re
+                json_match = re.search(r'\{.*\}', response.response, re.DOTALL)
+                if json_match:
+                    workout_data = json.loads(json_match.group())
+                else:
+                    raise ValueError("Could not parse JSON from AI response")
+            
+            # Validate and return
+            if "structure" not in workout_data:
+                raise ValueError("AI response missing 'structure' field")
+            
+            return workout_data
+            
+        except Exception as e:
+            logger.error(f"[AI] Error generating single workout: {e}")
+            # Fallback to simple structure
+            return self._generate_mock_single_workout(sport_type, duration_minutes, intensity, zone)
+    
+    def _generate_mock_single_workout(
+        self,
+        sport_type: str,
+        duration_minutes: int,
+        intensity: str,
+        zone: Optional[str]
+    ) -> Dict[str, Any]:
+        """Generate a simple mock workout structure"""
+        zone = zone or "Z2"
+        total_seconds = duration_minutes * 60
+        warmup_seconds = min(600, max(total_seconds // 6, 180))  # 5-10 min
+        cooldown_seconds = min(600, max(total_seconds // 6, 180))  # 5-10 min
+        main_seconds = total_seconds - warmup_seconds - cooldown_seconds
+        
+        workout_type = "endurance"
+        if intensity == "hard":
+            workout_type = "interval"
+        elif intensity == "easy":
+            workout_type = "recovery"
+        
+        return {
+            "title": f"{sport_type.capitalize()} {workout_type.capitalize()} Workout",
+            "type": workout_type,
+            "zone": zone,
+            "intensity": intensity,
+            "structure": _structure(
+                [
+                    _segment("warmup", [_step("steady", warmup_seconds, "Z1", "Easy warmup")], "Warm-up"),
+                    _segment("main", [_step("steady", main_seconds, zone, f"Main {workout_type} segment")], "Main Set"),
+                    _segment("cooldown", [_step("steady", cooldown_seconds, "Z1", "Easy cooldown")], "Cool-down"),
+                ],
+                focus=workout_type,
+                rpe_target=None,
+                description=f"{intensity.capitalize()} {sport_type} workout",
+                sport=sport_type
+            )
+        }
+
     def _log_ai_response(
         self,
         *,

@@ -369,3 +369,12 @@ class AIWorkoutPlanRequest(BaseModel):
         None,
         description="Mapping of days to specific sports (e.g. {'Monday': 'run', 'Wednesday': 'bike'})"
     )
+
+
+class InstantWorkoutRequest(BaseModel):
+    """Request schema for instant workout generation (TrainNow)"""
+    sport_type: str = Field(..., min_length=1, max_length=50, description="Sport type (run, bike, swim, etc.)")
+    duration_minutes: int = Field(..., gt=0, le=180, description="Workout duration in minutes")
+    intensity: Optional[str] = Field(None, pattern="^(easy|moderate|hard)$", description="Workout intensity")
+    goal: Optional[str] = Field(None, max_length=200, description="Workout goal (e.g., 'endurance', 'speed', 'recovery')")
+    zone: Optional[str] = Field(None, pattern="^(Z1|Z2|Z3|Z4|Z5|Z6|Z7)$", description="Target zone")

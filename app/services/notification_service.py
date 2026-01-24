@@ -16,6 +16,7 @@ class NotificationService:
         "workout_completed": "workout_completed",
         "plan_updates": "plan_updates",
         "weekly_generation": "weekly_generation",
+        "daily_suggested_workout": "workout_reminders",  # Use same preference as workout reminders
     }
     
     def __init__(self, db: Session):

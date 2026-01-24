@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_
-from typing import List
+from typing import List, Optional
 from datetime import date, timedelta, datetime, timezone
 from app.models.workout import Workout, WorkoutStatus, WorkoutPlan
 from app.services.notification_service import NotificationService
@@ -190,6 +190,83 @@ class WorkoutReminderService:
             f"{stats['errors']} errors"
         )
         
+        return stats
+    
+    async def send_daily_suggested_workout_notifications(
+        self,
+        target_date: Optional[date] = None
+    ) -> dict:
+        """
+        Send daily suggested workout notifications to users.
+        
+        Args:
+            target_date: Date to send suggestions for (defaults to today)
+            
+        Returns:
+            Dict with statistics about notifications sent
+        """
+        from app.services.workout_service import WorkoutService
+        
+        if not target_date:
+            target_date = date.today()
+        
+        workout_service = WorkoutService(self.db)
+        
+        # Get all active users (users with active plans or recent activity)
+        from app.models.user import User
+        from app.models.workout import WorkoutPlan
+        
+        active_users = self.db.execute(
+            select(User.id)
+            .join(WorkoutPlan, WorkoutPlan.user_id == User.id)
+            .where(WorkoutPlan.status == "active")
+            .distinct()
+        ).scalars().all()
+        
+        stats = {
+            "total_users": len(active_users),
+            "notifications_sent": 0,
+            "notifications_skipped": 0,
+            "errors": 0,
+            "no_suggestion": 0
+        }
+        
+        for user_id in active_users:
+            try:
+                # Get suggested workout for user
+                suggestion = workout_service.get_suggested_workout(user_id, target_date)
+                
+                if not suggestion:
+                    stats["no_suggestion"] += 1
+                    continue
+                
+                # Send notification
+                workout_title = suggestion.get("workout", {}).get("title", "Allenamento")
+                reasoning = suggestion.get("reasoning", "")
+                
+                result = await self.notification_service.send_notification(
+                    user_id=user_id,
+                    notification_type="daily_suggested_workout",
+                    title=f"Workout Suggerito: {workout_title}",
+                    body=reasoning[:200] if reasoning else "Hai un nuovo workout suggerito per oggi!",
+                    data={
+                        "workout_id": suggestion.get("workout", {}).get("id"),
+                        "type": "daily_suggested_workout",
+                        "date": target_date.isoformat()
+                    },
+                    channels=["push"]
+                )
+                
+                if result.get("push_sent", 0) > 0:
+                    stats["notifications_sent"] += 1
+                else:
+                    stats["notifications_skipped"] += 1
+                    
+            except Exception as e:
+                logger.error(f"Error sending daily suggested workout notification to user {user_id}: {e}")
+                stats["errors"] += 1
+        
+        logger.info(f"Daily suggested workout notifications sent: {stats}")
         return stats
     
     async def send_tomorrow_reminders(self) -> dict:
