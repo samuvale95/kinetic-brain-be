@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, desc, func as sql_func
 from typing import List, Optional, Dict, Any
 from copy import deepcopy
 import re
@@ -1097,26 +1097,109 @@ class WorkoutService:
         suggested_duration = 60
         suggested_type = "endurance"
         
-        # Check readiness score
-        if readiness and readiness.recovery_index is not None:
-            recovery_index = readiness.recovery_index
-            if recovery_index < 0.4:
-                # Low recovery - suggest easy/recovery workout
+        # Collect metrics for detailed reasoning
+        metrics_details = {}
+        
+        # Check HRV (Heart Rate Variability)
+        hrv_score = None
+        if readiness and readiness.hrv_value is not None and readiness.hrv_baseline is not None:
+            hrv_ratio = readiness.hrv_value / readiness.hrv_baseline if readiness.hrv_baseline > 0 else 1.0
+            metrics_details["hrv_ratio"] = round(hrv_ratio, 2)
+            metrics_details["hrv_value"] = readiness.hrv_value
+            metrics_details["hrv_baseline"] = readiness.hrv_baseline
+            
+            if hrv_ratio < 0.85:
+                # HRV significantly below baseline - suggest recovery
                 suggested_intensity = "easy"
                 suggested_zone = "Z1"
                 suggested_type = "recovery"
-                suggested_duration = 30
-                suggestion_reason.append("Recovery score basso - workout di recupero consigliato")
-            elif recovery_index > 0.8:
-                # High recovery - can do harder workout
+                suggested_duration = min(suggested_duration, 45)
+                suggestion_reason.append(f"HRV {hrv_ratio*100:.0f}% del baseline - recupero consigliato")
+                hrv_score = 0.3  # Low score
+            elif hrv_ratio > 1.1:
+                # HRV above baseline - good recovery
                 suggested_intensity = "moderate"
                 suggested_zone = "Z3"
                 suggested_type = "interval"
-                suggestion_reason.append("Recovery score alto - puoi fare un workout più intenso")
+                suggestion_reason.append(f"HRV {hrv_ratio*100:.0f}% del baseline - forma ottima")
+                hrv_score = 0.9  # High score
+            else:
+                hrv_score = 0.6  # Normal score
+        
+        # Check sleep quality
+        sleep_score = None
+        if readiness and readiness.sleep_hours is not None:
+            sleep_hours = readiness.sleep_hours
+            metrics_details["sleep_hours"] = sleep_hours
+            
+            if sleep_hours < 6:
+                # Poor sleep - suggest easier workout
+                suggested_intensity = "easy" if suggested_intensity != "recovery" else "recovery"
+                suggested_zone = "Z1" if suggested_zone != "Z1" else "Z1"
+                suggested_duration = min(suggested_duration, 45)
+                suggestion_reason.append(f"Solo {sleep_hours:.1f}h di sonno - workout leggero consigliato")
+                sleep_score = 0.3
+            elif sleep_hours >= 8:
+                # Good sleep - can do harder workout
+                if hrv_score is None or hrv_score > 0.5:
+                    suggested_intensity = "moderate"
+                    suggested_zone = "Z3" if suggested_zone != "Z1" else "Z2"
+                sleep_score = 0.8
+            else:
+                sleep_score = 0.6
+        
+        if readiness and readiness.sleep_quality_score is not None:
+            metrics_details["sleep_quality"] = readiness.sleep_quality_score
+            if readiness.sleep_quality_score < 0.5:
+                # Poor sleep quality
+                suggested_intensity = "easy" if suggested_intensity != "recovery" else "recovery"
+                suggested_zone = "Z1"
+                suggestion_reason.append("Qualità del sonno bassa - recupero consigliato")
+        
+        # Check readiness score (combined with HRV and sleep)
+        if readiness and readiness.recovery_index is not None:
+            recovery_index = readiness.recovery_index
+            metrics_details["recovery_index"] = recovery_index
+            
+            # Weight recovery_index less if we have HRV and sleep data
+            if hrv_score is not None or sleep_score is not None:
+                # Use weighted average if we have multiple metrics
+                combined_score = recovery_index
+                if hrv_score is not None:
+                    combined_score = (combined_score * 0.5) + (hrv_score * 0.3)
+                if sleep_score is not None:
+                    combined_score = (combined_score * 0.7) + (sleep_score * 0.2)
+                
+                if combined_score < 0.4:
+                    suggested_intensity = "easy"
+                    suggested_zone = "Z1"
+                    suggested_type = "recovery"
+                    suggested_duration = 30
+                    suggestion_reason.append("Recovery score basso - workout di recupero consigliato")
+                elif combined_score > 0.8:
+                    suggested_intensity = "moderate"
+                    suggested_zone = "Z3"
+                    suggested_type = "interval"
+                    suggestion_reason.append("Recovery score alto - puoi fare un workout più intenso")
+            else:
+                # Fallback to original logic if no HRV/sleep
+                if recovery_index < 0.4:
+                    suggested_intensity = "easy"
+                    suggested_zone = "Z1"
+                    suggested_type = "recovery"
+                    suggested_duration = 30
+                    suggestion_reason.append("Recovery score basso - workout di recupero consigliato")
+                elif recovery_index > 0.8:
+                    suggested_intensity = "moderate"
+                    suggested_zone = "Z3"
+                    suggested_type = "interval"
+                    suggestion_reason.append("Recovery score alto - puoi fare un workout più intenso")
         
         # Check TSB (Training Stress Balance)
         if performance and performance.tsb is not None:
             tsb = performance.tsb
+            metrics_details["tsb"] = round(tsb, 1)
+            
             if tsb < -10:
                 # Negative TSB - fatigued, suggest easy
                 suggested_intensity = "easy"
@@ -1126,10 +1209,11 @@ class WorkoutService:
                 suggestion_reason.append(f"TSB negativo ({tsb:.1f}) - recupero necessario")
             elif tsb > 10:
                 # Positive TSB - fresh, can do harder
-                suggested_intensity = "moderate"
-                suggested_zone = "Z3"
-                suggested_type = "interval"
-                suggestion_reason.append(f"TSB positivo ({tsb:.1f}) - forma buona per workout intenso")
+                if hrv_score is None or hrv_score > 0.5:
+                    suggested_intensity = "moderate"
+                    suggested_zone = "Z3"
+                    suggested_type = "interval"
+                    suggestion_reason.append(f"TSB positivo ({tsb:.1f}) - forma buona per workout intenso")
         
         # Check if already completed workout today
         if today_workouts:
@@ -1149,7 +1233,8 @@ class WorkoutService:
                         "recovery_index": readiness.recovery_index if readiness else None,
                         "tsb": performance.tsb if performance else None,
                         "workouts_today": len(today_workouts),
-                        "total_duration_today": total_duration
+                        "total_duration_today": total_duration,
+                        **metrics_details
                     }
                 }
         
@@ -1182,7 +1267,8 @@ class WorkoutService:
                 "metrics": {
                     "recovery_index": readiness.recovery_index if readiness else None,
                     "tsb": performance.tsb if performance else None,
-                    "workouts_today": len(today_workouts)
+                    "workouts_today": len(today_workouts),
+                    **metrics_details
                 }
             }
         
@@ -1212,6 +1298,154 @@ class WorkoutService:
                 "tsb": performance.tsb if performance else None,
                 "ctl": performance.ctl if performance else None,
                 "atl": performance.atl if performance else None,
-                "workouts_today": len(today_workouts)
+                "workouts_today": len(today_workouts),
+                **metrics_details
             }
+        }
+
+    def calculate_future_projections(
+        self, user_id: int, weeks: int = 12
+    ) -> Dict[str, Any]:
+        """Project CTL/ATL/TSB into the future based on active plan and scheduled workouts."""
+        from app.models.daily_metrics import DailyPerformanceMetrics
+        from app.models.training_metrics import TrainingMetrics
+
+        today = date.today()
+        current = (
+            self.db.query(DailyPerformanceMetrics)
+            .filter(
+                DailyPerformanceMetrics.user_id == user_id,
+                DailyPerformanceMetrics.metric_date == today,
+            )
+            .first()
+        )
+        if not current:
+            current = (
+                self.db.query(DailyPerformanceMetrics)
+                .filter(DailyPerformanceMetrics.user_id == user_id)
+                .order_by(desc(DailyPerformanceMetrics.metric_date))
+                .first()
+            )
+        if not current:
+            return {
+                "historical": [],
+                "projections": [],
+                "current_ctl": None,
+                "current_atl": None,
+                "current_tsb": None,
+                "plan_id": None,
+                "plan_title": None,
+            }
+
+        plan = (
+            self.db.query(WorkoutPlan)
+            .filter(
+                WorkoutPlan.user_id == user_id,
+                WorkoutPlan.status == "active",
+            )
+            .first()
+        )
+        if not plan:
+            return {
+                "historical": [],
+                "projections": [],
+                "current_ctl": round(current.ctl, 1) if current.ctl is not None else None,
+                "current_atl": round(current.atl, 1) if current.atl is not None else None,
+                "current_tsb": round(current.tsb, 1) if current.tsb is not None else None,
+                "plan_id": None,
+                "plan_title": None,
+            }
+
+        future = (
+            self.db.query(Workout)
+            .filter(
+                Workout.user_id == user_id,
+                Workout.plan_id == plan.id,
+                Workout.scheduled_date > today,
+                Workout.status == WorkoutStatus.SCHEDULED,
+            )
+            .order_by(Workout.scheduled_date.asc())
+            .all()
+        )
+
+        defaults = {"endurance": 50.0, "interval": 80.0, "recovery": 20.0, "strength": 30.0}
+        avg_tss: Dict[str, float] = {}
+        for wt in ("endurance", "interval", "recovery", "strength"):
+            avg = (
+                self.db.query(sql_func.avg(TrainingMetrics.tss))
+                .join(
+                    WorkoutSession,
+                    TrainingMetrics.workout_session_id == WorkoutSession.id,
+                )
+                .join(Workout, WorkoutSession.workout_id == Workout.id)
+                .filter(Workout.user_id == user_id, Workout.type == wt)
+            ).scalar()
+            avg_tss[wt] = float(avg) if avg else defaults.get(wt, 50.0)
+
+        by_date: Dict[str, list] = {}
+        for w in future:
+            if w.scheduled_date:
+                d = w.scheduled_date.isoformat()
+                by_date.setdefault(d, []).append(w)
+
+        ctl_tc, atl_tc = 42.0, 7.0
+        ctl_decay = 2 ** (-1.0 / ctl_tc)
+        atl_decay = 2 ** (-1.0 / atl_tc)
+
+        proj_ctl = float(current.ctl or 0.0)
+        proj_atl = float(current.atl or 0.0)
+        projections: List[Dict[str, Any]] = []
+
+        for w in range(weeks):
+            for d in range(7):
+                d_date = today + timedelta(weeks=w, days=d)
+                proj_ctl *= ctl_decay
+                proj_atl *= atl_decay
+                ds = d_date.isoformat()
+                daily_tss = sum(
+                    avg_tss.get((wkt.type or "endurance"), 50.0)
+                    for wkt in by_date.get(ds, [])
+                )
+                if daily_tss > 0:
+                    proj_ctl += daily_tss * (1.0 - ctl_decay)
+                    proj_atl += daily_tss * (1.0 - atl_decay)
+                if d in (0, 6):
+                    projections.append({
+                        "date": ds,
+                        "ctl": round(proj_ctl, 1),
+                        "atl": round(proj_atl, 1),
+                        "tsb": round(proj_ctl - proj_atl, 1),
+                        "daily_tss": round(daily_tss, 1),
+                    })
+
+        four_weeks_ago = today - timedelta(weeks=4)
+        hist = (
+            self.db.query(DailyPerformanceMetrics)
+            .filter(
+                DailyPerformanceMetrics.user_id == user_id,
+                DailyPerformanceMetrics.metric_date >= four_weeks_ago,
+                DailyPerformanceMetrics.metric_date <= today,
+            )
+            .order_by(DailyPerformanceMetrics.metric_date.asc())
+            .all()
+        )
+        historical = [
+            {
+                "date": m.metric_date.isoformat(),
+                "ctl": round(m.ctl, 1) if m.ctl is not None else None,
+                "atl": round(m.atl, 1) if m.atl is not None else None,
+                "tsb": round(m.tsb, 1) if m.tsb is not None else None,
+                "daily_tss": round(m.daily_tss, 1) if m.daily_tss is not None else None,
+            }
+            for m in hist
+        ]
+
+        return {
+            "historical": historical,
+            "projections": projections,
+            "current_ctl": round(current.ctl, 1) if current.ctl is not None else None,
+            "current_atl": round(current.atl, 1) if current.atl is not None else None,
+            "current_tsb": round(current.tsb, 1) if current.tsb is not None else None,
+            "plan_id": plan.id,
+            "plan_title": plan.title,
         }

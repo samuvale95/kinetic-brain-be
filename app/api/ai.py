@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.orm import Session
+from typing import Optional
 from app.database import get_db
 from app.schemas.ai import (
     AIRequest, AIResponse, WorkoutPlanGenerationRequest,
@@ -98,4 +99,26 @@ async def get_suggestions(request: SuggestionRequest,
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"AI suggestion error: {str(e)}"
+        )
+
+
+@router.post("/chat", response_model=dict)
+async def chat_with_ai(
+    message: str = Body(..., embed=True, description="User message"),
+    workout_id: Optional[int] = Body(None, embed=True, description="Optional workout ID for context"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Real-time AI coaching chat: workout explanations, adaptations, advice."""
+    ai_service = AIService(db)
+    try:
+        return ai_service.chat_coach(
+            user_id=current_user["user_id"],
+            message=message,
+            workout_id=workout_id,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Errore AI chat: {str(e)}",
         )

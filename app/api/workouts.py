@@ -1101,6 +1101,137 @@ async def create_workout(workout_data: WorkoutCreate,
     return workout
 
 
+@router.get("/skips", response_model=List[dict])
+async def get_workout_skips(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
+    plan_id: Optional[int] = Query(None, description="Filter by plan ID"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get workout skip history for the user."""
+    from app.models.workout import WorkoutSkip
+
+    user_id = current_user["user_id"]
+    q = db.query(WorkoutSkip).filter(WorkoutSkip.user_id == user_id)
+    if plan_id is not None:
+        q = q.filter(WorkoutSkip.plan_id == plan_id)
+    skips = q.order_by(desc(WorkoutSkip.skipped_at)).offset(skip).limit(limit).all()
+
+    result = []
+    for s in skips:
+        w = db.query(Workout).filter(Workout.id == s.workout_id).first()
+        result.append({
+            "id": s.id,
+            "workout_id": s.workout_id,
+            "workout_title": w.title if w else None,
+            "skipped_at": s.skipped_at.isoformat() if s.skipped_at else None,
+            "reason": s.reason,
+            "plan_id": s.plan_id,
+        })
+    return result
+
+
+@router.get("/projections", response_model=dict)
+async def get_ctl_atl_projections(
+    weeks: int = Query(12, ge=1, le=52, description="Number of weeks to project"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get future CTL/ATL/TSB projections based on active plan."""
+    workout_service = WorkoutService(db)
+    return workout_service.calculate_future_projections(
+        current_user["user_id"], weeks=weeks
+    )
+
+
+@router.get("/recovery", response_model=dict)
+async def get_recovery_score(
+    days: int = Query(30, ge=1, le=90, description="Number of days to retrieve"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get recovery score with HRV trend (combined HRV, sleep, TSB)."""
+    from app.models.daily_metrics import DailyReadinessMetrics, DailyPerformanceMetrics
+
+    user_id = current_user["user_id"]
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days)
+
+    readiness = (
+        db.query(DailyReadinessMetrics)
+        .filter(
+            DailyReadinessMetrics.user_id == user_id,
+            DailyReadinessMetrics.metric_date >= start_date,
+            DailyReadinessMetrics.metric_date <= end_date,
+        )
+        .order_by(DailyReadinessMetrics.metric_date.asc())
+        .all()
+    )
+    perf = (
+        db.query(DailyPerformanceMetrics)
+        .filter(
+            DailyPerformanceMetrics.user_id == user_id,
+            DailyPerformanceMetrics.metric_date >= start_date,
+            DailyPerformanceMetrics.metric_date <= end_date,
+        )
+        .order_by(DailyPerformanceMetrics.metric_date.asc())
+        .all()
+    )
+
+    recovery_data = []
+    for r in readiness:
+        p = next((x for x in perf if x.metric_date == r.metric_date), None)
+        hrv_score = None
+        if r.hrv_value and r.hrv_baseline and r.hrv_baseline > 0:
+            ratio = r.hrv_value / r.hrv_baseline
+            hrv_score = min(max(ratio, 0), 2.0) / 2.0
+        sleep_score = None
+        if r.sleep_hours is not None:
+            sleep_score = min(max((r.sleep_hours - 4) / 4, 0), 1.0)
+        if r.sleep_quality_score is not None:
+            sleep_score = (sleep_score or 0.5) * r.sleep_quality_score
+        tsb_score = None
+        if p and p.tsb is not None:
+            tsb_score = min(max((p.tsb + 30) / 60, 0), 1.0)
+        scores, weights = [], []
+        if hrv_score is not None:
+            scores.append(hrv_score)
+            weights.append(0.3)
+        if sleep_score is not None:
+            scores.append(sleep_score)
+            weights.append(0.3)
+        if tsb_score is not None:
+            scores.append(tsb_score)
+            weights.append(0.2)
+        if r.recovery_index is not None:
+            scores.append(r.recovery_index)
+            weights.append(0.2)
+        rec = None
+        if scores and sum(weights) > 0:
+            rec = sum(s * w for s, w in zip(scores, weights)) / sum(weights)
+        recovery_data.append({
+            "date": r.metric_date.isoformat(),
+            "recovery_score": round(rec * 100, 1) if rec is not None else None,
+            "hrv": {"value": r.hrv_value, "baseline": r.hrv_baseline, "delta": r.hrv_delta}
+            if r.hrv_value else None,
+            "sleep": {"hours": r.sleep_hours, "quality": r.sleep_quality_score}
+            if r.sleep_hours is not None else None,
+            "tsb": round(p.tsb, 1) if p and p.tsb is not None else None,
+        })
+    recent_hrv = [
+        x.hrv_value for x in readiness
+        if x.hrv_value and x.metric_date >= end_date - timedelta(days=30)
+    ]
+    baseline_hrv = sum(recent_hrv) / len(recent_hrv) if recent_hrv else None
+    return {
+        "recovery_data": recovery_data,
+        "baseline_hrv": round(baseline_hrv, 2) if baseline_hrv else None,
+        "current_recovery_score": recovery_data[-1]["recovery_score"] if recovery_data else None,
+        "days": days,
+    }
+
+
 @router.get("/{workout_id}", response_model=WorkoutResponse)
 async def get_workout(workout_id: int,
                      current_user: dict = Depends(get_current_user),
@@ -1230,39 +1361,51 @@ async def complete_workout(
 
 
 @router.patch("/{workout_id}/skip")
-async def skip_workout(workout_id: int,
-                      current_user: dict = Depends(get_current_user),
-                      db: Session = Depends(get_db)):
-    """Mark workout as skipped"""
+async def skip_workout(
+    workout_id: int,
+    reason: Optional[str] = Query(None, description="Optional reason for skipping"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Mark workout as skipped and record in skip history."""
+    from app.models.workout import WorkoutSkip
+
     workout_service = WorkoutService(db)
-    
-    # Verify workout exists and belongs to user
     workout = workout_service.get_workout(workout_id, current_user["user_id"])
     if not workout:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workout not found"
         )
-    
-    # Only allow skipping scheduled workouts
     if workout.status != WorkoutStatus.SCHEDULED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot skip workout with status: {workout.status.value}"
         )
-    
-    # Update workout status to skipped
+
     workout.status = WorkoutStatus.SKIPPED
+    skip_record = WorkoutSkip(
+        user_id=current_user["user_id"],
+        workout_id=workout_id,
+        reason=reason,
+        plan_id=workout.plan_id,
+    )
+    db.add(skip_record)
     db.commit()
     db.refresh(workout)
-    
-    logger.info(f"[API] Workout {workout_id} skipped by user {current_user['user_id']}")
-    
+    db.refresh(skip_record)
+
+    logger.info(
+        f"[API] Workout {workout_id} skipped by user {current_user['user_id']}, "
+        f"reason: {reason or 'Not specified'}"
+    )
+
     return {
         "id": workout.id,
         "skipped": True,
-        "skipped_at": workout.updated_at.isoformat() if workout.updated_at else None,
-        "status": workout.status.value
+        "skipped_at": skip_record.skipped_at.isoformat() if skip_record.skipped_at else None,
+        "status": workout.status.value,
+        "skip_id": skip_record.id,
     }
 
 
@@ -1886,7 +2029,7 @@ async def get_suggested_workout(
     db: Session = Depends(get_db)
 ):
     """
-    Get suggested workout for today based on readiness metrics, CTL/ATL/TSB, and active plan.
+    Get suggested workout for today based on readiness metrics, CTL/ATL/TSB, HRV, sleep, and active plan.
     """
     user_id = current_user["user_id"]
     workout_service = WorkoutService(db)
@@ -1913,6 +2056,150 @@ async def get_suggested_workout(
         }
     
     return suggestion
+
+
+@router.post("/suggested/accept")
+async def accept_suggested_workout(
+    target_date: Optional[str] = Query(None, description="Target date (YYYY-MM-DD), defaults to today"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Accept the suggested workout for today. If it's a scheduled workout, marks it as accepted.
+    If it's a generated suggestion, creates an instant workout.
+    """
+    user_id = current_user["user_id"]
+    workout_service = WorkoutService(db)
+    
+    # Parse target_date if provided
+    parsed_date = None
+    if target_date:
+        try:
+            parsed_date = datetime.strptime(target_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date format. Use YYYY-MM-DD"
+            )
+    else:
+        parsed_date = date.today()
+    
+    suggestion = workout_service.get_suggested_workout(user_id, parsed_date)
+    
+    if not suggestion or not suggestion.get("workout"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No suggested workout found for this date"
+        )
+    
+    workout_data = suggestion["workout"]
+    
+    # If it's a scheduled workout, just return it (user can start it)
+    if workout_data.get("id"):
+        return {
+            "message": "Workout accettato",
+            "workout_id": workout_data["id"],
+            "action": "start_scheduled"
+        }
+    
+    # If it's a generated suggestion, create an instant workout
+    if workout_data.get("is_suggested"):
+        from app.services.ai_service import AIService
+        from app.services.profile_service import ProfileService
+        
+        ai_service = AIService(db)
+        profile_service = ProfileService(db)
+        user_profile = profile_service.get_user_profile(user_id)
+        
+        try:
+            # Generate workout structure using AI
+            workout_structure = await ai_service.generate_single_workout(
+                sport_type=workout_data.get("sport_type", "run"),
+                duration_minutes=workout_data.get("duration_minutes", 60),
+                intensity=workout_data.get("intensity", "moderate"),
+                goal=None,
+                zone=workout_data.get("zone", "Z2"),
+                user_profile=user_profile
+            )
+            
+            # Create workout
+            workout = Workout(
+                user_id=user_id,
+                plan_id=None,  # Standalone workout
+                title=workout_data.get("title", "Workout Suggerito"),
+                type=workout_data.get("type", "endurance"),
+                scheduled_date=parsed_date,
+                duration_minutes=workout_data.get("duration_minutes", 60),
+                intensity=workout_data.get("intensity", "moderate"),
+                zone=workout_data.get("zone", "Z2"),
+                structure_json=workout_structure.get("structure"),
+                status=WorkoutStatus.SCHEDULED,
+                notes="Workout generato da suggerimento giornaliero"
+            )
+            
+            db.add(workout)
+            db.commit()
+            db.refresh(workout)
+            
+            logger.info(f"[API] Accepted suggested workout created: workout_id={workout.id}")
+            
+            return {
+                "message": "Workout accettato e creato",
+                "workout_id": workout.id,
+                "action": "created"
+            }
+        except Exception as e:
+            logger.error(f"[API] Error creating accepted suggested workout: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Errore nella creazione del workout: {str(e)}"
+            )
+    
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Unable to accept this suggestion"
+    )
+
+
+@router.post("/suggested/reject")
+async def reject_suggested_workout(
+    target_date: Optional[str] = Query(None, description="Target date (YYYY-MM-DD), defaults to today"),
+    reason: Optional[str] = Query(None, description="Reason for rejection"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Reject the suggested workout for today. This logs the rejection for future learning.
+    """
+    user_id = current_user["user_id"]
+    
+    # Parse target_date if provided
+    parsed_date = None
+    if target_date:
+        try:
+            parsed_date = datetime.strptime(target_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date format. Use YYYY-MM-DD"
+            )
+    else:
+        parsed_date = date.today()
+    
+    # Log rejection (could be stored in a table for future ML improvements)
+    logger.info(
+        f"[API] User {user_id} rejected suggested workout for {parsed_date}. "
+        f"Reason: {reason or 'Not specified'}"
+    )
+    
+    # TODO: Store rejection in database for future learning
+    # For now, just log it
+    
+    return {
+        "message": "Suggerimento rifiutato",
+        "date": parsed_date.isoformat(),
+        "reason": reason
+    }
 
 
 # Instant Workout (TrainNow)

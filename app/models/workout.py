@@ -82,3 +82,21 @@ class WorkoutSession(Base):
     workout = relationship("Workout", back_populates="sessions")
     user = relationship("User", back_populates="workout_sessions")
     training_metrics = relationship("TrainingMetrics", back_populates="workout_session", uselist=False)
+
+
+class WorkoutSkip(Base):
+    """Track skipped workouts for history and adaptation impact."""
+    __tablename__ = "workout_skips"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    workout_id = Column(Integer, ForeignKey("workouts.id", ondelete="CASCADE"), nullable=False)
+    skipped_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    reason = Column(Text)
+    plan_id = Column(Integer, ForeignKey("workout_plans.id", ondelete="SET NULL"), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")
+    workout = relationship("Workout")
+    plan = relationship("WorkoutPlan")

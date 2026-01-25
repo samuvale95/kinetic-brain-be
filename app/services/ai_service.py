@@ -1682,6 +1682,90 @@ Ensure the total duration matches {duration_minutes} minutes. Include warmup (5-
             )
         }
 
+    def chat_coach(
+        self,
+        user_id: int,
+        message: str,
+        workout_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Real-time AI coaching chat: workout explanations, adaptations, advice."""
+        from datetime import date
+        from app.models.workout import Workout, WorkoutPlan
+        from app.models.daily_metrics import DailyPerformanceMetrics
+
+        ctx: Dict[str, Any] = {"user_id": user_id, "user_message": message}
+        today = date.today()
+
+        if workout_id:
+            w = self.db.query(Workout).filter(
+                Workout.id == workout_id, Workout.user_id == user_id
+            ).first()
+            if w:
+                ctx["current_workout"] = {
+                    "id": w.id,
+                    "title": w.title,
+                    "type": w.type,
+                    "duration_minutes": w.duration_minutes,
+                    "zone": w.zone,
+                    "intensity": w.intensity,
+                    "scheduled_date": w.scheduled_date.isoformat() if w.scheduled_date else None,
+                }
+
+        r = self.db.query(DailyReadinessMetrics).filter(
+            DailyReadinessMetrics.user_id == user_id,
+            DailyReadinessMetrics.metric_date == today,
+        ).first()
+        p = self.db.query(DailyPerformanceMetrics).filter(
+            DailyPerformanceMetrics.user_id == user_id,
+            DailyPerformanceMetrics.metric_date == today,
+        ).first()
+        if r or p:
+            ctx["user_metrics"] = {
+                "recovery_index": r.recovery_index if r else None,
+                "hrv_value": r.hrv_value if r else None,
+                "sleep_hours": r.sleep_hours if r else None,
+                "tsb": p.tsb if p else None,
+                "ctl": p.ctl if p else None,
+                "atl": p.atl if p else None,
+            }
+
+        plan = self.db.query(WorkoutPlan).filter(
+            WorkoutPlan.user_id == user_id,
+            WorkoutPlan.status == "active",
+        ).first()
+        if plan:
+            ctx["active_plan"] = {
+                "id": plan.id,
+                "title": plan.title,
+                "sport_type": plan.sport_type,
+                "goal": plan.goal,
+                "level": plan.level,
+            }
+
+        system = (
+            "Sei un AI coach di Kinetic Brain, piattaforma di training. Rispondi in italiano. "
+            "Aiuta l'atleta a capire gli allenamenti, piani e metriche (CTL, ATL, TSB, HRV, sonno). "
+            "Sii conciso, pratico e incoraggiante. Usa il contesto fornito per personalizzare."
+        )
+        user_content = f"Domanda: {message}\n\nContesto:\n{json.dumps(ctx, indent=2, default=str)}"
+
+        try:
+            resp = self.client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=500,
+                temperature=0.7,
+            )
+            text = resp.choices[0].message.content or ""
+            usage = resp.usage.total_tokens if resp.usage else None
+            return {"response": text.strip(), "tokens_used": usage}
+        except Exception as e:
+            logger.error(f"[AI] chat_coach error: {e}")
+            raise
+
     def _log_ai_response(
         self,
         *,

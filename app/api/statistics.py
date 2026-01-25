@@ -239,3 +239,107 @@ async def get_training_load(current_user: dict = Depends(get_current_user),
         'form_trend': form_trend
     }
 
+
+@router.get("/injury-risk", response_model=dict)
+async def get_injury_risk(
+    weeks: int = Query(12, ge=1, le=52),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Injury risk from ACWR, HRV trend, and recommendations (alerts)."""
+    from app.models.daily_metrics import DailyReadinessMetrics
+    from app.models.training_metrics import WeeklyTrainingSummary
+
+    user_id = current_user["user_id"]
+    today = date.today()
+    start = today - timedelta(weeks=weeks)
+
+    overview = StatisticsService(db).get_overview(user_id)
+    ctl = overview.get("current_ctl")
+    atl = overview.get("current_atl")
+    acwr = None
+    if ctl is not None and atl is not None and ctl and ctl > 0:
+        acwr = round(float(atl) / float(ctl), 2)
+
+    summaries = (
+        db.query(WeeklyTrainingSummary)
+        .filter(
+            WeeklyTrainingSummary.user_id == user_id,
+            WeeklyTrainingSummary.week_start >= start,
+            WeeklyTrainingSummary.week_start <= today,
+        )
+        .order_by(WeeklyTrainingSummary.week_start.asc())
+        .all()
+    )
+    acwr_trend = []
+    for s in summaries:
+        if s.injury_risk_score is not None:
+            acwr_trend.append({
+                "week_start": s.week_start.isoformat(),
+                "acwr": round(s.injury_risk_score, 2),
+                "total_tss": s.total_tss,
+            })
+
+    hrv_rows = (
+        db.query(DailyReadinessMetrics)
+        .filter(
+            DailyReadinessMetrics.user_id == user_id,
+            DailyReadinessMetrics.metric_date >= start,
+            DailyReadinessMetrics.metric_date <= today,
+            DailyReadinessMetrics.hrv_value.isnot(None),
+        )
+        .order_by(DailyReadinessMetrics.metric_date.asc())
+        .all()
+    )
+    recent_hrv = [r.hrv_value for r in hrv_rows if r.hrv_value and r.metric_date >= today - timedelta(days=30)]
+    baseline_hrv = sum(recent_hrv) / len(recent_hrv) if recent_hrv else None
+    hrv_trend = []
+    for r in hrv_rows:
+        if r.hrv_value and baseline_hrv:
+            ratio = r.hrv_value / baseline_hrv if baseline_hrv > 0 else 1.0
+            hrv_trend.append({
+                "date": r.metric_date.isoformat(),
+                "hrv_value": r.hrv_value,
+                "hrv_ratio": round(ratio, 2),
+                "below_baseline": ratio < 0.85,
+            })
+
+    risk_level = "low"
+    if acwr is not None:
+        if acwr > 1.5:
+            risk_level = "high"
+        elif acwr > 1.3:
+            risk_level = "medium"
+
+    recommendations = []
+    if acwr is not None:
+        if acwr > 1.5:
+            recommendations.append({
+                "type": "urgent",
+                "message": f"ACWR molto alto ({acwr}) — riduci il carico del 30% questa settimana.",
+                "action": "reduce_volume",
+            })
+        elif acwr > 1.3:
+            recommendations.append({
+                "type": "warning",
+                "message": f"ACWR elevato ({acwr}) — monitora e considera una riduzione del carico.",
+                "action": "monitor",
+            })
+    below = [h for h in hrv_trend if h.get("below_baseline")]
+    if len(below) > 3:
+        recommendations.append({
+            "type": "warning",
+            "message": "HRV sotto baseline per più di 3 giorni — considera un giorno di recupero.",
+            "action": "recovery_day",
+        })
+
+    return {
+        "current_acwr": acwr,
+        "risk_level": risk_level,
+        "acwr_trend": acwr_trend,
+        "hrv_trend": hrv_trend,
+        "baseline_hrv": round(baseline_hrv, 2) if baseline_hrv else None,
+        "recommendations": recommendations,
+        "weeks_analyzed": weeks,
+    }
+
