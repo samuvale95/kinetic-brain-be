@@ -25,6 +25,7 @@ from app.services.workout_service import WorkoutService
 from app.services.ai_service import AIService
 from app.services.progressive_workout_service import ProgressiveWorkoutPlanService
 from app.services.healthkit_service import HealthKitService
+from app.services.workout_validator import validate_workout_structure
 from app.api.auth import get_current_user
 from loguru import logger
 import json
@@ -1093,6 +1094,24 @@ async def create_workout(workout_data: WorkoutCreate,
                         current_user: dict = Depends(get_current_user),
                         db: Session = Depends(get_db)):
     """Create a new workout"""
+    # Validazione struttura workout (es. Hyrox deve avere 8 round)
+    workout_dict = workout_data.model_dump()
+    if workout_dict.get("structure_json"):
+        # Determina sport_type dal workout o dal plan
+        sport_type = None
+        if workout_dict.get("plan_id"):
+            plan = db.query(WorkoutPlan).filter(WorkoutPlan.id == workout_dict["plan_id"]).first()
+            if plan:
+                sport_type = plan.sport_type
+        workout_dict["sport_type"] = sport_type
+        
+        is_valid, error_msg = validate_workout_structure(workout_dict)
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid workout structure: {error_msg}"
+            )
+    
     workout_service = WorkoutService(db)
     workout = workout_service.create_workout(
         user_id=current_user["user_id"],
@@ -1664,13 +1683,26 @@ async def export_workout(
     
     # Export based on format
     if format == "tcx":
-        file_content = export_to_tcx(workout_data, user_profile)
+        # Usa il nuovo service per export TCX migliorato
+        from app.services.workout_export_service import WorkoutExportService
+        export_service = WorkoutExportService()
+        file_content = export_service.export_to_tcx(workout, workout.structure_json)
         filename = f"workout_{workout_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tcx"
         media_type = "application/xml"
     elif format == "fit":
-        file_content = export_to_fit(workout_data, user_profile)
-        filename = f"workout_{workout_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.fit"
-        media_type = "application/octet-stream"
+        # FIT export richiede libreria python-fit (non ancora implementato completamente)
+        # Per ora usa il metodo esistente come fallback
+        try:
+            from app.services.workout_export_service import WorkoutExportService
+            export_service = WorkoutExportService()
+            file_content = export_service.export_to_fit(workout, workout.structure_json)
+            filename = f"workout_{workout_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.fit"
+            media_type = "application/octet-stream"
+        except NotImplementedError:
+            # Fallback al metodo esistente (placeholder)
+            file_content = export_to_fit(workout_data, user_profile)
+            filename = f"workout_{workout_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.fit"
+            media_type = "application/octet-stream"
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

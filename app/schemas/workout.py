@@ -163,6 +163,21 @@ class CalendarWorkoutResponse(WorkoutResponse):
         from_attributes = True
 
 
+class StrengthMetrics(BaseModel):
+    """Metriche specifiche per allenamenti di forza (Gym/Palestra)"""
+    sets: Optional[int] = Field(None, ge=1, description="Numero di serie")
+    reps: Optional[int] = Field(None, ge=1, description="Numero di ripetizioni")
+    weight_kg: Optional[float] = Field(None, gt=0, description="Carico in kg")
+    rpe_strength: Optional[int] = Field(None, ge=1, le=10, description="RPE scala forza 1-10")
+    exercise: Optional[str] = Field(None, description="Nome esercizio")
+    volume: Optional[float] = Field(None, gt=0, description="Volume totale: sets × reps × weight_kg")
+    one_rm_estimate: Optional[float] = Field(None, gt=0, description="Stima 1RM (One Rep Max) in kg")
+    progression_data: Optional[Dict[str, List[float]]] = Field(
+        None,
+        description="Storico carichi per esercizio: {exercise_name: [weight1, weight2, ...]}"
+    )
+
+
 class WorkoutSessionCreate(BaseModel):
     workout_id: int
     actual_date: datetime
@@ -173,6 +188,7 @@ class WorkoutSessionCreate(BaseModel):
     avg_power: Optional[float] = Field(None, gt=0)  # watts
     perceived_exertion: Optional[int] = Field(None, ge=1, le=10)
     notes: Optional[str] = None
+    strength_metrics: Optional[StrengthMetrics] = Field(None, description="Metriche forza per workout gym")
 
 
 class WorkoutSessionResponse(BaseModel):
@@ -187,11 +203,25 @@ class WorkoutSessionResponse(BaseModel):
     avg_power: Optional[float] = None
     perceived_exertion: Optional[int] = None
     notes: Optional[str] = None
-    strength_metrics: Optional[Dict[str, Any]] = None
+    strength_metrics: Optional[StrengthMetrics] = None
     created_at: datetime
     
     class Config:
         from_attributes = True
+    
+    @model_validator(mode="before")
+    @classmethod
+    def parse_strength_metrics(cls, data: Any) -> Any:
+        """Converte strength_metrics da Dict a StrengthMetrics se presente"""
+        if isinstance(data, dict) and "strength_metrics" in data:
+            sm = data["strength_metrics"]
+            if isinstance(sm, dict) and sm:
+                try:
+                    data["strength_metrics"] = StrengthMetrics(**sm)
+                except Exception:
+                    # Se fallisce, lascia come dict
+                    pass
+        return data
 
 
 RUN_ZONES = {"Z1", "Z2", "Z3", "Z4", "Z5"}

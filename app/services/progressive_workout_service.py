@@ -1102,6 +1102,10 @@ class ProgressiveWorkoutPlanService:
         if total_planned == 0:
             total_planned = total_completed + total_skipped
         
+        # Edge case: limita skip_count <= planned per evitare valori anomali
+        if total_planned > 0:
+            total_skipped = min(total_skipped, total_planned)
+        
         # Formula con penalizzazione: skip penalizza meno di non completare (30% invece di 100%)
         # completion_rate = (completed / planned * 100) - (skipped / planned * 30)
         if total_planned > 0:

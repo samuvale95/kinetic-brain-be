@@ -18,6 +18,7 @@ from app.schemas.workout import (
     WorkoutDuration,
     WorkoutTarget,
 )
+from app.services.workout_validator import validate_workout_structure
 from loguru import logger
 
 
@@ -578,6 +579,17 @@ class WorkoutService:
                 workout_data=workout_data,
                 week_focus=week_focus,
             )
+
+            # Validazione struttura workout (es. Hyrox deve avere 8 round)
+            workout_dict = {
+                "sport_type": plan.sport_type,
+                "structure_json": structure_payload
+            }
+            is_valid, error_msg = validate_workout_structure(workout_dict)
+            if not is_valid:
+                logger.warning(f"[WORKOUT_SERVICE] Invalid workout structure for {title}: {error_msg}")
+                # Per ora loggiamo solo, non blocchiamo la creazione (l'AI dovrebbe generare strutture corrette)
+                # In futuro possiamo sollevare un'eccezione se necessario
 
             workout = Workout(
                 plan_id=plan_id,
