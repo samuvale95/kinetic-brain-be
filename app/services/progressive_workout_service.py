@@ -3,7 +3,7 @@ from sqlalchemy import select, and_, func, desc
 from typing import Dict, Any, List, Optional
 from datetime import datetime, date, timedelta
 import time
-from app.models.workout import Workout, WorkoutSession, WorkoutPlan
+from app.models.workout import Workout, WorkoutSession, WorkoutPlan, WorkoutSkip
 from app.services.ai_service import AIService
 from app.services.claude_review_service import ClaudeReviewService
 from app.services.plan_validator import WorkoutPlanValidator, PlanValidationError
@@ -742,12 +742,27 @@ class ProgressiveWorkoutPlanService:
         # Ottiene performance della settimana
         performance = self._get_week_performance(user_id, week_start, week_end)
         
+        # Conta skip della settimana corrente
+        # Converti week_start e week_end a datetime per confronto con DateTime column
+        week_start_dt = datetime.combine(week_start, datetime.min.time())
+        week_end_dt = datetime.combine(week_end, datetime.max.time())
+        skipped_count = self.db.execute(
+            select(func.count(WorkoutSkip.id))
+            .where(and_(
+                WorkoutSkip.user_id == user_id,
+                WorkoutSkip.plan_id == active_plan.id,
+                WorkoutSkip.skipped_at >= week_start_dt,
+                WorkoutSkip.skipped_at <= week_end_dt
+            ))
+        ).scalar() or 0
+        
         return {
             "week_number": current_week,
             "workouts": [self._workout_to_dict(w) for w in workouts],
             "performance": performance,
             "week_start": week_start.isoformat(),
-            "week_end": week_end.isoformat()
+            "week_end": week_end.isoformat(),
+            "skipped_count": skipped_count
         }
     
     def ensure_current_week_exists(self, user_id: int) -> Dict[str, Any]:
@@ -1009,6 +1024,49 @@ class ProgressiveWorkoutPlanService:
             weekly_data[week_key]["total_duration"] += session.duration_minutes
             weekly_data[week_key]["completed_workouts"] += 1
         
+        # Ottiene skip workout nello stesso periodo
+        # Converti start_date e end_date a datetime per confronto con DateTime column
+        start_date_dt = datetime.combine(start_date, datetime.min.time())
+        end_date_dt = datetime.combine(end_date, datetime.max.time())
+        skips = self.db.execute(
+            select(WorkoutSkip)
+            .where(and_(
+                WorkoutSkip.user_id == user_id,
+                WorkoutSkip.skipped_at >= start_date_dt,
+                WorkoutSkip.skipped_at <= end_date_dt
+            ))
+            .order_by(WorkoutSkip.skipped_at)
+        ).scalars().all()
+        
+        # Raggruppa skip per settimana
+        for skip in skips:
+            # skipped_at è DateTime, converti a date
+            if isinstance(skip.skipped_at, datetime):
+                skip_date = skip.skipped_at.date()
+            elif hasattr(skip.skipped_at, 'date'):
+                skip_date = skip.skipped_at.date()
+            else:
+                skip_date = date.fromisoformat(str(skip.skipped_at)[:10]) if isinstance(skip.skipped_at, str) else skip.skipped_at
+            week_start = skip_date - timedelta(days=skip_date.weekday())
+            week_key = week_start.isoformat()
+            
+            if week_key not in weekly_data:
+                weekly_data[week_key] = {
+                    "week_start": week_key,
+                    "sessions": [],
+                    "total_duration": 0,
+                    "avg_rpe": 0,
+                    "completed_workouts": 0,
+                    "skipped_workouts": 0
+                }
+            
+            weekly_data[week_key]["skipped_workouts"] = weekly_data[week_key].get("skipped_workouts", 0) + 1
+        
+        # Inizializza skipped_workouts a 0 per settimane senza skip
+        for week_data in weekly_data.values():
+            if "skipped_workouts" not in week_data:
+                week_data["skipped_workouts"] = 0
+        
         # Calcola RPE medio per settimana
         for week_data in weekly_data.values():
             if week_data["sessions"]:
@@ -1034,10 +1092,27 @@ class ProgressiveWorkoutPlanService:
                 "performance_improvement": 0.0
             }
         
-        # Calcola completion rate
+        # Calcola completion rate considerando skip
+        # Se planned_workouts non è presente, stima come completed + skipped (assumendo che siano tutti i workout pianificati)
         total_planned = sum(week.get('planned_workouts', 0) for week in user_history)
         total_completed = sum(week.get('completed_workouts', 0) for week in user_history)
-        completion_rate = (total_completed / total_planned * 100.0) if total_planned > 0 else 100.0
+        total_skipped = sum(week.get('skipped_workouts', 0) for week in user_history)
+        
+        # Se total_planned è 0, stima come completed + skipped
+        if total_planned == 0:
+            total_planned = total_completed + total_skipped
+        
+        # Formula con penalizzazione: skip penalizza meno di non completare (30% invece di 100%)
+        # completion_rate = (completed / planned * 100) - (skipped / planned * 30)
+        if total_planned > 0:
+            base_completion = (total_completed / total_planned * 100.0)
+            skip_penalty = (total_skipped / total_planned * 30.0)
+            completion_rate = max(0.0, base_completion - skip_penalty)
+        else:
+            completion_rate = 100.0
+        
+        # Calcola skip rate
+        skip_rate = (total_skipped / total_planned * 100.0) if total_planned > 0 else 0.0
         
         # Analizza trend intensità
         recent_rpe = [week.get('avg_rpe', 0) for week in user_history[-2:] if week.get('avg_rpe', 0) > 0]
@@ -1104,6 +1179,8 @@ class ProgressiveWorkoutPlanService:
         
         return {
             "completion_rate": completion_rate,
+            "skip_rate": skip_rate,
+            "total_skipped": total_skipped,
             "intensity_trend": intensity_trend,
             "fatigue_level": fatigue_level,
             "consistency_score": consistency_score,
@@ -1161,11 +1238,22 @@ PARAMETERS:
         # Context data (compatto)
         if previous_week:
             prompt += f"PREVIOUS_WEEK: {json.dumps(previous_week)}\n"
+            # Aggiungi informazioni skip se presenti
+            skipped_count = previous_week.get("skipped_count", 0)
+            if skipped_count > 0:
+                prompt += f"[IMPORTANT] The athlete skipped {skipped_count} workout(s) in the previous week. Consider reducing load or intensity for the next week to prevent overreaching.\n"
         if user_history:
             prompt += f"USER_HISTORY: {json.dumps(user_history)}\n"
         if current_fitness:
             prompt += f"CURRENT_FITNESS: {json.dumps(current_fitness)}\n"
             prompt += "\n"
+        
+        # Aggiungi skip info dai performance trends
+        if performance_trends:
+            skip_rate = performance_trends.get("skip_rate", 0.0)
+            total_skipped = performance_trends.get("total_skipped", 0)
+            if skip_rate > 10.0 or total_skipped > 2:
+                prompt += f"[IMPORTANT] Skip rate is {skip_rate:.1f}% ({total_skipped} skipped workouts in recent weeks). Consider reducing volume or intensity to improve adherence.\n\n"
         
         # [MANDATORY] Performance Metrics (compatto)
         if current_fitness:
