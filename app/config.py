@@ -121,6 +121,9 @@ class Settings(BaseSettings):
     # Legacy FCM Server Key (deprecated - kept for backward compatibility but not used)
     fcm_server_key: str = ""  # DEPRECATED: Use FCM_SERVICE_ACCOUNT_JSON instead
     
+    # Development/Testing flags
+    skip_secret_validation: bool = False  # Allow default SECRET_KEY in development (set to true in .env for local dev)
+    
     class Config:
         env_file = ".env"
         case_sensitive = False
@@ -211,11 +214,10 @@ class Settings(BaseSettings):
         from loguru import logger
         
         default_secret_key = "your-secret-key-change-in-production"
-        skip_validation = os.getenv("SKIP_SECRET_VALIDATION", "false").lower() == "true"
         
         # Check if using default secret key
         if self.secret_key == default_secret_key:
-            if skip_validation:
+            if self.skip_secret_validation:
                 logger.warning(
                     "⚠️  SECURITY WARNING: Using default SECRET_KEY value. "
                     "This is INSECURE and should only be used in development. "

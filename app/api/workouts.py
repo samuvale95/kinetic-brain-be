@@ -138,25 +138,25 @@ async def generate_progressive_workout_plan(
     sync_db = SessionLocal()
     try:
         progressive_service = ProgressiveWorkoutPlanService(sync_db)
-    
-    # Genera prima settimana del piano progressivo
-    first_week_plan = progressive_service.generate_weekly_plan(
-        user_id=current_user["user_id"],
-        week_number=1,
-        target_date=request.target_date,
-        current_fitness_level=request.user_profile,
-        include_stretching=request.include_stretching,
-        include_strength=request.include_strength,
-        unavailable_days=request.unavailable_days,
-        sport_specific_days=request.sport_specific_days,
-        start_date=request.start_date,
-        sport_type=request.sport_type,
-        level=request.level,
-        goal=request.goal,
-        weekly_hours=request.weekly_hours,
-        available_equipment=request.available_equipment
-    )
-    
+        
+        # Genera prima settimana del piano progressivo
+        first_week_plan = progressive_service.generate_weekly_plan(
+            user_id=current_user["user_id"],
+            week_number=1,
+            target_date=request.target_date,
+            current_fitness_level=request.user_profile,
+            include_stretching=request.include_stretching,
+            include_strength=request.include_strength,
+            unavailable_days=request.unavailable_days,
+            sport_specific_days=request.sport_specific_days,
+            start_date=request.start_date,
+            sport_type=request.sport_type,
+            level=request.level,
+            goal=request.goal,
+            weekly_hours=request.weekly_hours,
+            available_equipment=request.available_equipment
+        )
+        
         # Crea piano base nel database
         workout_service = WorkoutService(sync_db)
         plan_create = WorkoutPlanCreate(
