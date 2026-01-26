@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Body
 from fastapi.responses import Response
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, select, and_, desc
 from typing import List, Optional
 from datetime import datetime, timedelta, date
@@ -59,12 +59,16 @@ async def get_workout_plans(skip: int = Query(0, ge=0),
                            current_user: dict = Depends(get_current_user),
                            db: Session = Depends(get_db)):
     """Get user's workout plans"""
+    # Optimize query with eager loading
+    plans = db.query(WorkoutPlan)\
+        .filter(WorkoutPlan.user_id == current_user["user_id"])\
+        .options(selectinload(WorkoutPlan.workouts))\
+        .order_by(desc(WorkoutPlan.created_at))\
+        .offset(skip)\
+        .limit(limit)\
+        .all()
+    
     workout_service = WorkoutService(db)
-    plans = workout_service.get_workout_plans(
-        user_id=current_user["user_id"],
-        skip=skip,
-        limit=limit
-    )
     # Add is_progressive field to each plan
     result = []
     for plan in plans:
