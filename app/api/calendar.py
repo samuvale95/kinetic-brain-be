@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy import select, and_, or_, desc
 from typing import List, Optional
 from datetime import date, datetime
-from app.database import get_db
+from app.database import get_db, get_async_db
 from app.schemas.calendar import (
     CalendarEventCreate, CalendarEventUpdate, CalendarEventResponse,
     DragDropRequest, CalendarMonthRequest
@@ -36,25 +38,32 @@ async def options_calendar_events():
 async def get_calendar_events(start_date: Optional[date] = Query(None),
                              end_date: Optional[date] = Query(None),
                              current_user: dict = Depends(get_current_user),
-                             db: Session = Depends(get_db)):
+                             db: AsyncSession = Depends(get_async_db)):
     """Get calendar events for date range"""
-    workout_service = WorkoutService(db)
-    
-    # Default to current month if no dates provided
-    if not start_date:
-        start_date = date.today().replace(day=1)
-    if not end_date:
-        from datetime import timedelta
-        next_month = start_date.replace(day=28) + timedelta(days=4)
-        end_date = next_month - timedelta(days=next_month.day)
-    
-    events = workout_service.get_calendar_events(
-        user_id=current_user["user_id"],
-        start_date=start_date,
-        end_date=end_date
-    )
-    
-    return events
+    # Note: WorkoutService uses sync Session, so we need to use sync db for now
+    # TODO: Migrate WorkoutService to async or create async version
+    from app.database import SessionLocal
+    sync_db = SessionLocal()
+    try:
+        workout_service = WorkoutService(sync_db)
+        
+        # Default to current month if no dates provided
+        if not start_date:
+            start_date = date.today().replace(day=1)
+        if not end_date:
+            from datetime import timedelta
+            next_month = start_date.replace(day=28) + timedelta(days=4)
+            end_date = next_month - timedelta(days=next_month.day)
+        
+        events = workout_service.get_calendar_events(
+            user_id=current_user["user_id"],
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        return events
+    finally:
+        sync_db.close()
 
 
 @router.get("/debug/today-activities")

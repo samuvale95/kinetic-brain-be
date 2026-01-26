@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Body
 from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select, and_, desc
 from typing import List, Optional
 from datetime import datetime, timedelta, date
-from app.database import get_db
+from app.database import get_db, get_async_db, get_async_db
 from app.schemas.workout import (
     WorkoutPlanCreate, WorkoutPlanUpdate, WorkoutPlanResponse,
     WorkoutCreate, WorkoutUpdate, WorkoutResponse,
@@ -57,25 +58,34 @@ async def options_workout_sessions():
 async def get_workout_plans(skip: int = Query(0, ge=0),
                            limit: int = Query(100, ge=1, le=100),
                            current_user: dict = Depends(get_current_user),
-                           db: Session = Depends(get_db)):
+                           db: AsyncSession = Depends(get_async_db)):
     """Get user's workout plans"""
-    # Optimize query with eager loading
-    plans = db.query(WorkoutPlan)\
-        .filter(WorkoutPlan.user_id == current_user["user_id"])\
-        .options(selectinload(WorkoutPlan.workouts))\
-        .order_by(desc(WorkoutPlan.created_at))\
-        .offset(skip)\
-        .limit(limit)\
-        .all()
+    # Optimize query with eager loading (async)
+    plans_result = await db.execute(
+        select(WorkoutPlan)
+        .where(WorkoutPlan.user_id == current_user["user_id"])
+        .options(selectinload(WorkoutPlan.workouts))
+        .order_by(desc(WorkoutPlan.created_at))
+        .offset(skip)
+        .limit(limit)
+    )
+    plans = plans_result.unique().scalars().all()
     
-    workout_service = WorkoutService(db)
-    # Add is_progressive field to each plan
-    result = []
-    for plan in plans:
-        plan_dict = WorkoutPlanResponse.model_validate(plan).model_dump()
-        plan_dict["is_progressive"] = workout_service._is_progressive_plan(plan)
-        result.append(plan_dict)
-    return result
+    # Note: WorkoutService._is_progressive_plan uses sync Session
+    # For now, use sync db for this check
+    from app.database import SessionLocal
+    sync_db = SessionLocal()
+    try:
+        workout_service = WorkoutService(sync_db)
+        # Add is_progressive field to each plan
+        result = []
+        for plan in plans:
+            plan_dict = WorkoutPlanResponse.model_validate(plan).model_dump()
+            plan_dict["is_progressive"] = workout_service._is_progressive_plan(plan)
+            result.append(plan_dict)
+        return result
+    finally:
+        sync_db.close()
 
 
 @router.post("/plans", response_model=WorkoutPlanResponse, status_code=status.HTTP_201_CREATED)
@@ -104,7 +114,7 @@ from fastapi import Request
 async def generate_progressive_workout_plan(
     request: ProgressiveWorkoutPlanRequest,
     current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Genera piano di allenamento progressivo con data target"""
     user_id = current_user["user_id"]
@@ -122,7 +132,12 @@ async def generate_progressive_workout_plan(
     }
     logger.debug(f"[API] Request body: {json.dumps(request_summary, indent=2, default=str)}")
     
-    progressive_service = ProgressiveWorkoutPlanService(db)
+    # Note: ProgressiveWorkoutPlanService uses sync Session
+    # For now, use sync db for this operation
+    from app.database import SessionLocal
+    sync_db = SessionLocal()
+    try:
+        progressive_service = ProgressiveWorkoutPlanService(sync_db)
     
     # Genera prima settimana del piano progressivo
     first_week_plan = progressive_service.generate_weekly_plan(
@@ -142,70 +157,72 @@ async def generate_progressive_workout_plan(
         available_equipment=request.available_equipment
     )
     
-    # Crea piano base nel database
-    workout_service = WorkoutService(db)
-    plan_create = WorkoutPlanCreate(
-        title=f"{request.sport_type.title()} - {request.goal}",
-        description=f"Piano progressivo per {request.goal} - Target: {request.target_date}",
-        start_date=datetime.strptime(request.start_date, "%Y-%m-%d").date(),
-        end_date=datetime.strptime(request.target_date, "%Y-%m-%d").date(),
-        goal=request.goal,
-        sport_type=request.sport_type,
-        level=request.level
-    )
-    
-    plan = workout_service.create_workout_plan(
-        user_id=current_user["user_id"],
-        plan_data=plan_create
-    )
-    
-    # Create workouts from first week plan
-    workouts = workout_service.create_workouts_from_progressive_week(
-        user_id=current_user["user_id"],
-        plan_id=plan.id,
-        week_data=first_week_plan
-    )
-    
-    # Create calendar events from workouts
-    calendar_events = workout_service.create_calendar_events_from_workouts(
-        user_id=current_user["user_id"],
-        workouts=workouts
-    )
-    
-    # Send notification for new workouts
-    if workouts:
-        try:
-            from app.services.notification_service import NotificationService
-            notification_service = NotificationService(db)
-            await notification_service.send_notification(
-                user_id=current_user["user_id"],
-                notification_type="new_workout",
-                title="Nuovo piano di allenamento creato!",
-                body=f"Hai {len(workouts)} nuovi allenamenti nel tuo piano: {plan.title}",
-                data={
-                    "plan_id": plan.id,
-                    "plan_title": plan.title,
-                    "workouts_count": len(workouts)
-                }
-            )
-        except Exception as e:
-            logger.error(f"Error sending new_workout notification: {e}")
-    
-    # Convert SQLAlchemy model to Pydantic schema
-    plan_response = WorkoutPlanResponse.model_validate(plan)
-    
-    result = {
-        "plan": plan_response.model_dump(),
-        "first_week": first_week_plan,
-        "target_date": request.target_date,
-        "total_weeks": first_week_plan.get("weeks_remaining", 12),
-        "workouts_created": len(workouts),
-        "calendar_events_created": len(calendar_events)
-    }
-    
-    logger.info(f"[API] Progressive plan generated successfully - plan_id: {plan.id}, workouts: {len(workouts)}, events: {len(calendar_events)}")
-    logger.debug(f"[API] Response summary: plan_id={plan.id}, total_weeks={result.get('total_weeks')}, workouts_created={len(workouts)}")
-    return result
+        # Crea piano base nel database
+        workout_service = WorkoutService(sync_db)
+        plan_create = WorkoutPlanCreate(
+            title=f"{request.sport_type.title()} - {request.goal}",
+            description=f"Piano progressivo per {request.goal} - Target: {request.target_date}",
+            start_date=datetime.strptime(request.start_date, "%Y-%m-%d").date(),
+            end_date=datetime.strptime(request.target_date, "%Y-%m-%d").date(),
+            goal=request.goal,
+            sport_type=request.sport_type,
+            level=request.level
+        )
+        
+        plan = workout_service.create_workout_plan(
+            user_id=current_user["user_id"],
+            plan_data=plan_create
+        )
+        
+        # Create workouts from first week plan
+        workouts = workout_service.create_workouts_from_progressive_week(
+            user_id=current_user["user_id"],
+            plan_id=plan.id,
+            week_data=first_week_plan
+        )
+        
+        # Create calendar events from workouts
+        calendar_events = workout_service.create_calendar_events_from_workouts(
+            user_id=current_user["user_id"],
+            workouts=workouts
+        )
+        
+        # Send notification for new workouts
+        if workouts:
+            try:
+                from app.services.notification_service import NotificationService
+                notification_service = NotificationService(sync_db)
+                await notification_service.send_notification(
+                    user_id=current_user["user_id"],
+                    notification_type="new_workout",
+                    title="Nuovo piano di allenamento creato!",
+                    body=f"Hai {len(workouts)} nuovi allenamenti nel tuo piano: {plan.title}",
+                    data={
+                        "plan_id": plan.id,
+                        "plan_title": plan.title,
+                        "workouts_count": len(workouts)
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Error sending new_workout notification: {e}")
+        
+        # Convert SQLAlchemy model to Pydantic schema
+        plan_response = WorkoutPlanResponse.model_validate(plan)
+        
+        result = {
+            "plan": plan_response.model_dump(),
+            "first_week": first_week_plan,
+            "target_date": request.target_date,
+            "total_weeks": first_week_plan.get("weeks_remaining", 12),
+            "workouts_created": len(workouts),
+            "calendar_events_created": len(calendar_events)
+        }
+        
+        logger.info(f"[API] Progressive plan generated successfully - plan_id: {plan.id}, workouts: {len(workouts)}, events: {len(calendar_events)}")
+        logger.debug(f"[API] Response summary: plan_id={plan.id}, total_weeks={result.get('total_weeks')}, workouts_created={len(workouts)}")
+        return result
+    finally:
+        sync_db.close()
 
 
 @router.post("/plans/generate-weekly", response_model=WeeklyPlanResponse)

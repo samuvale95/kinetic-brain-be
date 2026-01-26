@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, and_, select, or_
+from sqlalchemy.orm import selectinload
 from typing import Dict, Any, List
 from datetime import date, datetime, timedelta
-from app.database import get_db
+from app.database import get_db, get_async_db
 from app.models.workout import Workout, WorkoutSession, WorkoutPlan, WorkoutStatus
 from app.models.calendar import CalendarEvent
 from app.schemas.workout import CalendarWorkoutResponse
@@ -45,22 +47,21 @@ async def options_today_workouts():
 
 @router.get("/today-workouts", response_model=List[CalendarWorkoutResponse])
 async def get_today_workouts(current_user: dict = Depends(get_current_user),
-                             db: Session = Depends(get_db)):
+                             db: AsyncSession = Depends(get_async_db)):
     """
     Get today's scheduled workouts from active plans and standalone workouts.
     Returns full workout structure including Strava activities and plan data.
     """
-    from sqlalchemy.orm import joinedload
     from app.models.strava import StravaActivity, StravaAccount
     
     user_id = current_user["user_id"]
     today = date.today()
     
     # Get workouts from active plans (with Strava activity relationship loaded)
-    workouts_from_active_plans = db.execute(
+    workouts_from_active_plans_result = await db.execute(
         select(Workout)
         .join(WorkoutPlan, Workout.plan_id == WorkoutPlan.id)
-        .options(joinedload(Workout.strava_activity))
+        .options(selectinload(Workout.strava_activity))
         .where(
             and_(
                 Workout.user_id == user_id,
@@ -70,12 +71,13 @@ async def get_today_workouts(current_user: dict = Depends(get_current_user),
                 Workout.status.in_(["scheduled", "completed"])
             )
         )
-    ).unique().scalars().all()
+    )
+    workouts_from_active_plans = workouts_from_active_plans_result.unique().scalars().all()
     
     # Get standalone workouts (without plan_id, with Strava activity relationship loaded)
-    standalone_workouts = db.execute(
+    standalone_workouts_result = await db.execute(
         select(Workout)
-        .options(joinedload(Workout.strava_activity))
+        .options(selectinload(Workout.strava_activity))
         .where(
             and_(
                 Workout.user_id == user_id,
@@ -84,7 +86,8 @@ async def get_today_workouts(current_user: dict = Depends(get_current_user),
                 Workout.status.in_(["scheduled", "completed"])
             )
         )
-    ).unique().scalars().all()
+    )
+    standalone_workouts = standalone_workouts_result.unique().scalars().all()
     
     # Combine both lists
     workouts = list(workouts_from_active_plans) + list(standalone_workouts)
@@ -93,10 +96,11 @@ async def get_today_workouts(current_user: dict = Depends(get_current_user),
     workouts.sort(key=lambda w: (w.scheduled_date or date.min, w.duration_minutes or 0))
     
     # Get Strava activities for today that don't belong to any workout
-    strava_account_ids = db.execute(
+    strava_account_ids_result = await db.execute(
         select(StravaAccount.id)
         .where(StravaAccount.user_id == user_id)
-    ).scalars().all()
+    )
+    strava_account_ids = strava_account_ids_result.scalars().all()
     
     strava_activities = []
     if strava_account_ids:
@@ -105,7 +109,7 @@ async def get_today_workouts(current_user: dict = Depends(get_current_user),
         end_datetime = datetime.combine(today, datetime.max.time())
         
         # Get Strava activities for today without workout_id
-        strava_activities = db.execute(
+        strava_activities_result = await db.execute(
             select(StravaActivity)
             .where(
                 and_(
@@ -115,7 +119,8 @@ async def get_today_workouts(current_user: dict = Depends(get_current_user),
                     StravaActivity.workout_id.is_(None)  # Only standalone activities
                 )
             )
-        ).scalars().all()
+        )
+        strava_activities = strava_activities_result.scalars().all()
     
     # Convert workouts to CalendarWorkoutResponse format (same as calendar endpoint)
     def workout_to_dict(workout: Workout) -> dict:
@@ -267,7 +272,7 @@ async def get_today_workouts(current_user: dict = Depends(get_current_user),
 
 @router.get("/stats")
 async def get_dashboard_stats(current_user: dict = Depends(get_current_user),
-                             db: Session = Depends(get_db)):
+                             db: AsyncSession = Depends(get_async_db)):
     """Get dashboard statistics"""
     from app.models.strava import StravaActivity
     from app.models.user import UserProfile
@@ -275,70 +280,89 @@ async def get_dashboard_stats(current_user: dict = Depends(get_current_user),
     user_id = current_user["user_id"]
     
     # Total workouts completed
-    total_workouts = db.query(Workout).filter(
-        and_(Workout.user_id == user_id, Workout.status == "completed")
-    ).count()
+    total_workouts_result = await db.execute(
+        select(func.count(Workout.id))
+        .where(and_(Workout.user_id == user_id, Workout.status == "completed"))
+    )
+    total_workouts = total_workouts_result.scalar() or 0
     
-    # Total completed workouts (all time)
-    completed_workouts = db.query(Workout).filter(
-        and_(Workout.user_id == user_id, Workout.status == "completed")
-    ).count()
+    # Total completed workouts (all time) - same as total_workouts
+    completed_workouts = total_workouts
     
     # Workouts this week
     week_start = date.today() - timedelta(days=date.today().weekday())
     week_end = week_start + timedelta(days=6)
     
-    workouts_this_week = db.query(Workout).filter(
-        and_(
-            Workout.user_id == user_id,
-            Workout.scheduled_date >= week_start,
-            Workout.scheduled_date <= week_end,
-            Workout.status == "completed"
+    workouts_this_week_result = await db.execute(
+        select(func.count(Workout.id))
+        .where(
+            and_(
+                Workout.user_id == user_id,
+                Workout.scheduled_date >= week_start,
+                Workout.scheduled_date <= week_end,
+                Workout.status == "completed"
+            )
         )
-    ).count()
+    )
+    workouts_this_week = workouts_this_week_result.scalar() or 0
     
     # Total training time this month
     month_start = date.today().replace(day=1)
     month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
     
-    total_duration = db.query(func.sum(WorkoutSession.duration_minutes)).filter(
-        and_(
-            WorkoutSession.user_id == user_id,
-            WorkoutSession.actual_date >= month_start,
-            WorkoutSession.actual_date <= month_end
+    total_duration_result = await db.execute(
+        select(func.sum(WorkoutSession.duration_minutes))
+        .where(
+            and_(
+                WorkoutSession.user_id == user_id,
+                WorkoutSession.actual_date >= month_start,
+                WorkoutSession.actual_date <= month_end
+            )
         )
-    ).scalar() or 0
+    )
+    total_duration = total_duration_result.scalar() or 0
     
     # Active workout plans
-    active_plans = db.query(WorkoutPlan).filter(
-        and_(
-            WorkoutPlan.user_id == user_id,
-            WorkoutPlan.status == "active"
+    active_plans_result = await db.execute(
+        select(func.count(WorkoutPlan.id))
+        .where(
+            and_(
+                WorkoutPlan.user_id == user_id,
+                WorkoutPlan.status == "active"
+            )
         )
-    ).count()
+    )
+    active_plans = active_plans_result.scalar() or 0
     
     # Upcoming workouts (next 7 days)
-    upcoming_workouts = db.query(Workout).filter(
-        and_(
-            Workout.user_id == user_id,
-            Workout.scheduled_date >= date.today(),
-            Workout.scheduled_date <= date.today() + timedelta(days=7),
-            Workout.status == "scheduled"
+    upcoming_workouts_result = await db.execute(
+        select(func.count(Workout.id))
+        .where(
+            and_(
+                Workout.user_id == user_id,
+                Workout.scheduled_date >= date.today(),
+                Workout.scheduled_date <= date.today() + timedelta(days=7),
+                Workout.status == "scheduled"
+            )
         )
-    ).count()
+    )
+    upcoming_workouts = upcoming_workouts_result.scalar() or 0
     
     # Calculate average heart rate from sessions
-    avg_heart_rate = db.query(func.avg(WorkoutSession.avg_hr)).filter(
-        WorkoutSession.user_id == user_id
-    ).scalar()
+    avg_heart_rate_result = await db.execute(
+        select(func.avg(WorkoutSession.avg_hr))
+        .where(WorkoutSession.user_id == user_id)
+    )
+    avg_heart_rate = avg_heart_rate_result.scalar()
     avg_heart_rate = round(avg_heart_rate, 0) if avg_heart_rate else None
     
     # Calculate total distance from Strava activities
-    total_distance = db.query(func.sum(StravaActivity.distance)).join(
-        Workout, StravaActivity.workout_id == Workout.id
-    ).filter(
-        Workout.user_id == user_id
-    ).scalar() or 0
+    total_distance_result = await db.execute(
+        select(func.sum(StravaActivity.distance))
+        .join(Workout, StravaActivity.workout_id == Workout.id)
+        .where(Workout.user_id == user_id)
+    )
+    total_distance = total_distance_result.scalar() or 0
     
     return {
         "total_workouts": total_workouts,
@@ -355,13 +379,13 @@ async def get_dashboard_stats(current_user: dict = Depends(get_current_user),
 
 @router.get("/upcoming")
 async def get_upcoming_workouts(current_user: dict = Depends(get_current_user),
-                               db: Session = Depends(get_db)):
+                               db: AsyncSession = Depends(get_async_db)):
     """Get upcoming workouts for the next 7 days, excluding inactive plans"""
     user_id = current_user["user_id"]
     end_date = date.today() + timedelta(days=7)
     
     # Get workout IDs from inactive plans
-    inactive_plan_workout_ids = db.execute(
+    inactive_plan_workout_ids_result = await db.execute(
         select(Workout.id)
         .join(WorkoutPlan, Workout.plan_id == WorkoutPlan.id)
         .where(
@@ -370,17 +394,22 @@ async def get_upcoming_workouts(current_user: dict = Depends(get_current_user),
                 WorkoutPlan.status != "active"
             )
         )
-    ).scalars().all()
-    inactive_plan_workout_ids = set(inactive_plan_workout_ids)
+    )
+    inactive_plan_workout_ids = set(inactive_plan_workout_ids_result.scalars().all())
     
-    workouts = db.query(Workout).filter(
-        and_(
-            Workout.user_id == user_id,
-            Workout.scheduled_date >= date.today(),
-            Workout.scheduled_date <= end_date,
-            Workout.status == "scheduled"
+    workouts_result = await db.execute(
+        select(Workout)
+        .where(
+            and_(
+                Workout.user_id == user_id,
+                Workout.scheduled_date >= date.today(),
+                Workout.scheduled_date <= end_date,
+                Workout.status == "scheduled"
+            )
         )
-    ).order_by(Workout.scheduled_date).all()
+        .order_by(Workout.scheduled_date)
+    )
+    workouts = workouts_result.scalars().all()
     
     # Filter out workouts from inactive plans
     filtered_workouts = [w for w in workouts if w.id not in inactive_plan_workout_ids]
@@ -390,7 +419,7 @@ async def get_upcoming_workouts(current_user: dict = Depends(get_current_user),
 
 @router.get("/progress")
 async def get_progress_data(current_user: dict = Depends(get_current_user),
-                           db: Session = Depends(get_db)):
+                           db: AsyncSession = Depends(get_async_db)):
     """Get progress data for charts"""
     user_id = current_user["user_id"]
     
@@ -404,23 +433,31 @@ async def get_progress_data(current_user: dict = Depends(get_current_user),
         week_start = start_date + timedelta(weeks=i)
         week_end = week_start + timedelta(days=6)
         
-        workout_count = db.query(Workout).filter(
-            and_(
-                Workout.user_id == user_id,
-                Workout.scheduled_date >= week_start,
-                Workout.scheduled_date <= week_end,
-                Workout.status == "completed"
+        workout_count_result = await db.execute(
+            select(func.count(Workout.id))
+            .where(
+                and_(
+                    Workout.user_id == user_id,
+                    Workout.scheduled_date >= week_start,
+                    Workout.scheduled_date <= week_end,
+                    Workout.status == "completed"
+                )
             )
-        ).count()
+        )
+        workout_count = workout_count_result.scalar() or 0
         
         # Total duration for the week
-        total_duration = db.query(func.sum(WorkoutSession.duration_minutes)).filter(
-            and_(
-                WorkoutSession.user_id == user_id,
-                WorkoutSession.actual_date >= week_start,
-                WorkoutSession.actual_date <= week_end
+        total_duration_result = await db.execute(
+            select(func.sum(WorkoutSession.duration_minutes))
+            .where(
+                and_(
+                    WorkoutSession.user_id == user_id,
+                    WorkoutSession.actual_date >= week_start,
+                    WorkoutSession.actual_date <= week_end
+                )
             )
-        ).scalar() or 0
+        )
+        total_duration = total_duration_result.scalar() or 0
         
         weekly_data.append({
             "week": week_start.isoformat(),
@@ -430,9 +467,13 @@ async def get_progress_data(current_user: dict = Depends(get_current_user),
         })
     
     # Recent performance metrics (last 10 workouts)
-    recent_sessions = db.query(WorkoutSession).filter(
-        WorkoutSession.user_id == user_id
-    ).order_by(WorkoutSession.actual_date.desc()).limit(10).all()
+    recent_sessions_result = await db.execute(
+        select(WorkoutSession)
+        .where(WorkoutSession.user_id == user_id)
+        .order_by(WorkoutSession.actual_date.desc())
+        .limit(10)
+    )
+    recent_sessions = recent_sessions_result.scalars().all()
     
     performance_data = []
     for session in recent_sessions:
@@ -454,7 +495,7 @@ async def get_progress_data(current_user: dict = Depends(get_current_user),
 
 @router.get("/calendar-events")
 async def get_dashboard_calendar_events(current_user: dict = Depends(get_current_user),
-                                       db: Session = Depends(get_db)):
+                                       db: AsyncSession = Depends(get_async_db)):
     """Get calendar events for dashboard, excluding inactive plans"""
     from app.models.workout import Workout, WorkoutPlan
     from app.services.workout_service import WorkoutService
@@ -463,8 +504,13 @@ async def get_dashboard_calendar_events(current_user: dict = Depends(get_current
     start_date = date.today()
     end_date = start_date + timedelta(days=30)  # Next 30 days
     
-    # Use the workout service method which already filters inactive plans
-    workout_service = WorkoutService(db)
-    events = workout_service.get_calendar_events(user_id, start_date, end_date)
-    
-    return events
+    # Note: WorkoutService uses sync Session, so we need to use sync db for now
+    # TODO: Migrate WorkoutService to async or create async version
+    from app.database import SessionLocal
+    sync_db = SessionLocal()
+    try:
+        workout_service = WorkoutService(sync_db)
+        events = workout_service.get_calendar_events(user_id, start_date, end_date)
+        return events
+    finally:
+        sync_db.close()
