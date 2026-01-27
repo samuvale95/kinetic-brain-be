@@ -22,7 +22,14 @@ AsyncSessionLocal = None
 def get_async_engine():
     global async_engine, AsyncSessionLocal
     if async_engine is None:
-        async_engine = create_async_engine(settings.database_url_async)
+        async_engine = create_async_engine(
+            settings.database_url_async,
+            pool_size=20,          # Aumenta il pool size
+            max_overflow=30,        # Aumenta l'overflow
+            pool_timeout=60,       # Aumenta il timeout
+            pool_recycle=3600,     # Ricicla le connessioni ogni ora
+            pool_pre_ping=True     # Verifica le connessioni prima dell'uso
+        )
         AsyncSessionLocal = sessionmaker(
             async_engine, class_=AsyncSession, expire_on_commit=False
         )
