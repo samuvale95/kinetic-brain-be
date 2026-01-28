@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = 'add_strength_metrics'
-down_revision = None  # Update with latest revision
+down_revision = 'g1h2i3j4k5l6'  # After workout_skips
 branch_labels = None
 depends_on = None
 
