@@ -20,17 +20,17 @@ class User(Base):
     auth_provider = Column(String, default="email")  # email, google, etc.
     
     # Relationships
-    profile = relationship("UserProfile", back_populates="user", uselist=False)
-    performance_metrics = relationship("PerformanceMetrics", back_populates="user")
-    workout_plans = relationship("WorkoutPlan", back_populates="user")
-    workouts = relationship("Workout", back_populates="user")
-    workout_sessions = relationship("WorkoutSession", back_populates="user")
-    calendar_events = relationship("CalendarEvent", back_populates="user")
-    daily_metrics = relationship("DailyPerformanceMetrics", back_populates="user")
-    daily_readiness_metrics = relationship("DailyReadinessMetrics", back_populates="user")
-    weekly_training_summaries = relationship("WeeklyTrainingSummary", back_populates="user")
-    plan_versions = relationship("PlanVersion", back_populates="user")
-    healthkit_workouts = relationship("HealthKitWorkout", back_populates="user")
+    profile = relationship("UserProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    performance_metrics = relationship("PerformanceMetrics", back_populates="user", cascade="all, delete-orphan")
+    workout_plans = relationship("WorkoutPlan", back_populates="user", cascade="all, delete-orphan")
+    workouts = relationship("Workout", back_populates="user", cascade="all, delete-orphan")
+    workout_sessions = relationship("WorkoutSession", back_populates="user", cascade="all, delete-orphan")
+    calendar_events = relationship("CalendarEvent", back_populates="user", cascade="all, delete-orphan")
+    daily_metrics = relationship("DailyPerformanceMetrics", back_populates="user", cascade="all, delete-orphan")
+    daily_readiness_metrics = relationship("DailyReadinessMetrics", back_populates="user", cascade="all, delete-orphan")
+    weekly_training_summaries = relationship("WeeklyTrainingSummary", back_populates="user", cascade="all, delete-orphan")
+    plan_versions = relationship("PlanVersion", back_populates="user", cascade="all, delete-orphan")
+    healthkit_workouts = relationship("HealthKitWorkout", back_populates="user", cascade="all, delete-orphan")
     password_reset_tokens = relationship(
         "PasswordResetToken", 
         back_populates="user", 
@@ -59,6 +59,11 @@ class User(Base):
     )
     sync_history = relationship(
         "SyncHistory",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+    coach_memories = relationship(
+        "CoachMemory",
         back_populates="user",
         cascade="all, delete-orphan"
     )
